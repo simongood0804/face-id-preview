@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Face ID Preview</string>
+
+    <!-- 按钮 -->
+    <string name="btn_start_preview">Start Preview</string>
+    <string name="btn_stop_preview">Stop Preview</string>
+
+    <!-- 状态 -->
+    <string name="status_idle">Idle</string>
+    <string name="status_initializing">Initializing…</string>
+    <string name="status_previewing">Previewing</string>
+    <string name="status_error">Error: %s</string>
+    <string name="status_no_camera">No Camera Available</string>
+    <string name="status_camera_disconnected">Camera Disconnected</string>
+
+    <!-- 人脸识别 -->
+    <string name="face_id_label">Face ID:</string>
+    <string name="face_id_none">—</string>
+    <string name="face_confidence_label">Confidence:</string>
+    <string name="face_id_detected">Face Detected</string>
+    <string name="face_id_not_detected">No Face</string>
+
+    <!-- 帧率 -->
+    <string name="frame_rate_label">FPS:</string>
+    <string name="frame_rate_value">%d FPS</string>
+
+    <!-- 提示 -->
+    <string name="tap_to_toggle">Tap to start / stop preview</string>
+    <string name="camera_permission_denied">Camera permission denied</string>
+</resources>

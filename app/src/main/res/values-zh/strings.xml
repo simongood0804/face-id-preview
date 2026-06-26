@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">人脸识别预览</string>
+
+    <!-- 按钮 -->
+    <string name="btn_start_preview">开始预览</string>
+    <string name="btn_stop_preview">停止预览</string>
+
+    <!-- 状态 -->
+    <string name="status_idle">待机</string>
+    <string name="status_initializing">初始化中…</string>
+    <string name="status_previewing">预览中</string>
+    <string name="status_error">错误: %s</string>
+    <string name="status_no_camera">无可用摄像头</string>
+    <string name="status_camera_disconnected">摄像头已断开</string>
+
+    <!-- 人脸识别 -->
+    <string name="face_id_label">人脸 ID:</string>
+    <string name="face_id_none">—</string>
+    <string name="face_confidence_label">置信度:</string>
+    <string name="face_id_detected">检测到人脸</string>
+    <string name="face_id_not_detected">未检测到人脸</string>
+
+    <!-- 帧率 -->
+    <string name="frame_rate_label">帧率:</string>
+    <string name="frame_rate_value">%d FPS</string>
+
+    <!-- 提示 -->
+    <string name="tap_to_toggle">点击开始/停止预览</string>
+    <string name="camera_permission_denied">摄像头权限被拒绝</string>
+</resources>
