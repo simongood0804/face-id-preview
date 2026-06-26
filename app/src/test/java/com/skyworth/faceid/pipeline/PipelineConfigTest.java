@@ -72,11 +72,9 @@ public class PipelineConfigTest {
 
     @Test
     public void testFrameSkipIntervalMinimumIsOne() {
-        // 设置为 0 时，应被 Math.max(1, ...) 限制为 1
         mConfig.setFrameSkipInterval(0);
         assertEquals(1, mConfig.getFrameSkipInterval());
 
-        // 设置为负数时，应被限制为 1
         mConfig.setFrameSkipInterval(-1);
         assertEquals(1, mConfig.getFrameSkipInterval());
     }
@@ -86,14 +84,12 @@ public class PipelineConfigTest {
         mConfig.setFrameSkipInterval(3);
         assertEquals(3, mConfig.getFrameSkipInterval());
 
-        // 再次设置有效值，不应受影响
         mConfig.setFrameSkipInterval(1);
         assertEquals(1, mConfig.getFrameSkipInterval());
     }
 
     @Test
     public void testDefaultConstantsUnchanged() {
-        // 验证默认常量没有被意外修改
         assertEquals(3, PipelineConfig.DEFAULT_MAX_PENDING_FRAMES);
         assertEquals(500L, PipelineConfig.DEFAULT_PROCESS_TIMEOUT_MS);
         assertEquals(1000L, PipelineConfig.DEFAULT_BUFFER_RECYCLE_TIMEOUT_MS);
@@ -102,7 +98,6 @@ public class PipelineConfigTest {
 
     @Test
     public void testMultipleConfigurations() {
-        // 链式修改多个配置
         mConfig.setMaxPendingFrames(10);
         mConfig.setProcessTimeoutMs(200);
         mConfig.setBufferRecycleTimeoutMs(500);
@@ -127,7 +122,6 @@ public class PipelineConfigTest {
         assertTrue("toString 应包含默认值 500", str.contains("processTimeoutMs=500"));
     }
 
-    // JUnit 4 没有 assertAll，辅助方法
     private void assertAll(String message, Runnable... assertions) {
         for (Runnable assertion : assertions) {
             try {

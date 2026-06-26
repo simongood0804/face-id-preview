@@ -1,41 +1,22 @@
-/*
- * Copyright (C) 2024 Skyworth. All rights reserved.
- */
-
 package com.skyworth.faceid.camera;
 
 /**
  * 用于单元测试的 Mock CameraManager。
- *
- * <p>模拟 CameraManager 行为，不依赖真实 EvsSDK/HAL。
- * 通过 {@link MockEvsBufferDesc} 追踪 Buffer 是否被回收。
  */
 public class MockCameraManager extends CameraManager {
 
     private boolean mIsActive;
 
     public MockCameraManager() {
-        // 父类 CameraManager 需要非空 callback，传一个静默回调
         super(new StateCallback() {
             @Override
-            public void onCameraOpened() {
-                // no-op
-            }
-
+            public void onCameraOpened() {}
             @Override
-            public void onCameraClosed() {
-                // no-op
-            }
-
+            public void onCameraClosed() {}
             @Override
-            public void onHalDied() {
-                // no-op
-            }
-
+            public void onHalDied() {}
             @Override
-            public void onError(String message) {
-                // no-op
-            }
+            public void onError(String message) {}
         });
     }
 

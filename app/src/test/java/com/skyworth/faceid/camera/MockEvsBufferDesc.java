@@ -1,11 +1,13 @@
+/*
+ * Copyright (C) 2024 Skyworth. All rights reserved.
+ */
+
 package com.skyworth.faceid.camera;
 
 import com.android.car.evs.EvsBufferDesc;
 
 /**
  * 用于单元测试的 Mock EvsBufferDesc
- *
- * 模拟 EvsSDK 的 EvsBufferDesc，无需真实 HardwareBuffer 即可测试。
  */
 public class MockEvsBufferDesc extends EvsBufferDesc {
 
@@ -15,6 +17,7 @@ public class MockEvsBufferDesc extends EvsBufferDesc {
     private boolean mIsRecycled = false;
 
     public MockEvsBufferDesc(int id, int width, int height) {
+        super(id, width, height);
         this.mId = id;
         this.mWidth = width;
         this.mHeight = height;

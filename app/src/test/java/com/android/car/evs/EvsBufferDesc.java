@@ -2,9 +2,6 @@ package com.android.car.evs;
 
 /**
  * 测试用的 Stub：模拟 EvsSDK 的 EvsBufferDesc
- *
- * 仅包含 BufferManager 测试所需的字段和方法。
- * BufferID + 宽高 + 回收标记 足矣。
  */
 public class EvsBufferDesc {
 
@@ -19,6 +16,12 @@ public class EvsBufferDesc {
     }
 
     public EvsBufferDesc() {
+    }
+
+    public EvsBufferDesc(int id, int width, int height) {
+        this.mId = id;
+        this.mWidth = width;
+        this.mHeight = height;
     }
 
     public int getId() {
@@ -57,9 +60,6 @@ public class EvsBufferDesc {
         this.mState = State.NONE;
     }
 
-    /**
-     * 静态回收方法（EvsSDK 原生 API）
-     */
     public static void recycle(EvsBufferDesc buffer) {
         if (buffer != null) {
             buffer.recovery();
