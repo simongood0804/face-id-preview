@@ -6,6 +6,9 @@ import com.skyworth.faceid.camera.MockEvsBufferDesc;
 import org.junit.After;
 import org.junit.Before;
 import org.junit.Test;
+import org.junit.runner.RunWith;
+import org.robolectric.RobolectricTestRunner;
+import org.robolectric.shadows.ShadowLog;
 
 import static org.junit.Assert.*;
 
@@ -20,6 +23,7 @@ import static org.junit.Assert.*;
  *   5. shutdown 清理
  *   6. 并发安全性
  */
+@RunWith(RobolectricTestRunner.class)
 public class BufferManagerTest {
 
     private MockCameraManager mMockCameraManager;
@@ -28,6 +32,8 @@ public class BufferManagerTest {
 
     @Before
     public void setUp() {
+        // 启用 android.util.Log 输出（默认 Log 在 Robolectric 中被拦截）
+        ShadowLog.stream = System.out;
         mMockCameraManager = new MockCameraManager();
         mBufferManager = new BufferManager(mMockCameraManager, TIMEOUT_MS);
     }
@@ -239,6 +245,7 @@ public class BufferManagerTest {
     public void testConcurrentRegisterAndRecycle() throws InterruptedException {
         final int threadCount = 10;
         final int buffersPerThread = 20;
+        final int totalBuffers = threadCount * buffersPerThread;
         Thread[] threads = new Thread[threadCount];
 
         for (int t = 0; t < threadCount; t++) {
@@ -258,8 +265,15 @@ public class BufferManagerTest {
             thread.join();
         }
 
-        assertEquals("并发操作后活跃数应为 0", 0, mBufferManager.getActiveBufferCount());
+        // 等待所有 Buffer 完成回收（recycleBuffer 从 map 中移除是原子的）
+        // 由于 ConcurrentHashMap 在 recycleBuffer 中的 remove 操作是原子的，
+        // 最终活跃数应为 0
+        int activeCount = mBufferManager.getActiveBufferCount();
+        assertEquals("并发操作后活跃数应为 0，实际=" + activeCount,
+                0, activeCount);
         assertEquals("总帧数应等于所有注册的 Buffer 数",
-                threadCount * buffersPerThread, mBufferManager.getTotalFrameCount());
+                totalBuffers, mBufferManager.getTotalFrameCount());
+        assertEquals("不应有泄漏",
+                0, mBufferManager.getLeakCount());
     }
 }

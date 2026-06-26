@@ -5,6 +5,8 @@ import android.graphics.RectF;
 
 import org.junit.Before;
 import org.junit.Test;
+import org.junit.runner.RunWith;
+import org.robolectric.RobolectricTestRunner;
 
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -21,6 +23,7 @@ import static org.junit.Assert.*;
  *   2. 算法初始化/处理/释放的生命周期
  *   3. 边界条件（空帧、无检测、异常等）
  */
+@RunWith(RobolectricTestRunner.class)
 public class IFaceIDAlgorithmTest {
 
     private MockFaceIDAlgorithm mAlgorithm;

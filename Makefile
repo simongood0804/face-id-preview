@@ -7,6 +7,9 @@
 #   make push-system 推送 APK 到 /system/app/（需 root）
 #   make uninstall   卸载应用
 #   make run         启动应用
+#   make test        运行所有单元测试
+#   make test-class  运行指定测试类（例: make test-class CLASS=PipelineConfigTest）
+#   make test-suite  运行测试套件
 #   make log         查看实时日志（过滤 FaceID 相关）
 #   make log-crash   查看崩溃日志
 #   make log-evs     查看 EvsSDK 相关日志
@@ -30,7 +33,7 @@ YELLOW := \033[1;33m
 NC     := \033[0m
 
 .PHONY: build install push-system uninstall run log log-crash log-evs \
-        gpu top dumpsys clean help
+        gpu top dumpsys clean help test test-class test-suite
 
 # =============================================================================
 # 构建
@@ -167,6 +170,45 @@ pid:
 	@adb shell pidof $(PACKAGE_NAME) 2>/dev/null || echo "$(RED)not running$(NC)"
 
 # =============================================================================
+# 单元测试
+# =============================================================================
+
+## 运行所有单元测试
+test:
+	@echo "$(GREEN)[TEST] running all unit tests...$(NC)"
+	JAVA_HOME=/Users/simon/Library/Java/JavaVirtualMachines/corretto-11.0.25/Contents/Home \
+	./gradlew app:testDebugUnitTest --no-daemon
+	@echo "$(GREEN)[TEST] done$(NC)"
+
+## 运行指定测试类
+# 用法: make test-class CLASS=PipelineConfigTest
+#       make test-class CLASS=BufferManagerTest
+#       make test-class CLASS=IFaceIDAlgorithmTest
+test-class:
+	@if [ -z "$(CLASS)" ]; then \
+		echo "$(RED)请指定 CLASS 参数，例: make test-class CLASS=PipelineConfigTest$(NC)"; \
+		exit 1; \
+	fi
+	@echo "$(GREEN)[TEST-CLASS] running $(CLASS)...$(NC)"
+	JAVA_HOME=/Users/simon/Library/Java/JavaVirtualMachines/corretto-11.0.25/Contents/Home \
+	./gradlew app:testDebugUnitTest --no-daemon --tests "com.skyworth.faceid.pipeline.$(CLASS)" \
+		--tests "com.skyworth.faceid.algorithm.$(CLASS)"
+	@echo "$(GREEN)[TEST-CLASS] done$(NC)"
+
+## 运行测试套件
+test-suite:
+	@echo "$(GREEN)[TEST-SUITE] running test suite...$(NC)"
+	JAVA_HOME=/Users/simon/Library/Java/JavaVirtualMachines/corretto-11.0.25/Contents/Home \
+	./gradlew app:testDebugUnitTest --no-daemon --tests "com.skyworth.faceid.FaceIDPreviewTestSuite"
+	@echo "$(GREEN)[TEST-SUITE] done$(NC)"
+
+## 查看测试报告
+test-report:
+	@echo "$(GREEN)[TEST-REPORT] opening report...$(NC)"
+	@open app/build/reports/tests/testDebugUnitTest/index.html 2>/dev/null || \
+		echo "$(YELLOW)  报告文件: app/build/reports/tests/testDebugUnitTest/index.html$(NC)"
+
+# =============================================================================
 # 清理
 # =============================================================================
 
@@ -199,6 +241,12 @@ help:
 	@echo "  stop           强制停止应用"
 	@echo "  restart        重启应用"
 	@echo ""
+	@echo "--- 测试 ---"
+	@echo "  test           运行所有单元测试"
+	@echo "  test-class     运行指定测试类（CLASS=PipelineConfigTest）"
+	@echo "  test-suite     运行测试套件"
+	@echo "  test-report    打开测试报告"
+	@echo ""
 	@echo "--- 日志 ---"
 	@echo "  log            实时日志（过滤 FaceID 相关）"
 	@echo "  log-crash      查看崩溃日志"
@@ -218,6 +266,7 @@ help:
 	@echo "  clean          清理构建产物"
 	@echo ""
 	@echo "--- 示例 ---"
-	@echo "  make install && make run"
-	@echo "  make log"
-	@echo "  make gpu"
+	@echo "  make test                       # 运行所有测试"
+	@echo "  make test-class CLASS=PipelineConfigTest  # 运行指定测试"
+	@echo "  make test-suite                 # 运行测试套件"
+	@echo "  make install && make run        # 安装并启动"

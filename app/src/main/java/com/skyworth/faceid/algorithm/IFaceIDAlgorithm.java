@@ -62,7 +62,8 @@ public interface IFaceIDAlgorithm {
             mFaceId = faceId != null ? faceId : "";
             mConfidence = Math.max(0.0f, Math.min(1.0f, confidence));
             mFaceRect = faceRect;
-            mProcessedData = processedData;
+            // 防御性拷贝：防止外部修改影响内部数据
+            mProcessedData = processedData != null ? processedData.clone() : new byte[0];
             mLandmarks = landmarks;
         }
 
