@@ -34,6 +34,17 @@ class FaceIDCameraController : EvsBufferProvider {
     /** 当前取出的描述符。 */
     private var descriptor: EvsBufferDesc? = null
 
+    /** 最新帧的尺寸，供外部获取用于视口计算。 */
+    @Volatile
+    var frameWidth: Int = 0
+        private set
+    @Volatile
+    var frameHeight: Int = 0
+        private set
+
+    /** 帧尺寸变化回调（主线程）。 */
+    var onFrameSizeChanged: ((width: Int, height: Int) -> Unit)? = null
+
     /** 调度执行器（单线程）。 */
     private val dExecutor = EvsExecutorService("DISPATCH", true)
 
@@ -191,6 +202,12 @@ class FaceIDCameraController : EvsBufferProvider {
         try {
             for (desc in buffers) {
                 if (!desc.dequeue()) continue
+                // 首次获取帧时记录尺寸并回调
+                if (desc.width != frameWidth || desc.height != frameHeight) {
+                    frameWidth = desc.width
+                    frameHeight = desc.height
+                    onFrameSizeChanged?.invoke(frameWidth, frameHeight)
+                }
                 EvsBufferDesc.recycle(descriptor)
                 descriptor = desc
                 break

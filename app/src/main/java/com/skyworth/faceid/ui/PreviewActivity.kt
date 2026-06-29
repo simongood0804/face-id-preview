@@ -8,10 +8,12 @@ import android.content.Context
 import android.opengl.GLSurfaceView
 import android.os.Bundle
 import android.util.Log
+import android.view.View
 import android.widget.Button
 import android.widget.TextView
 import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
+import androidx.constraintlayout.widget.ConstraintLayout
 import com.android.car.evs.EvsGL20CameraRenderer
 import com.skyworth.faceid.R
 import com.skyworth.faceid.algorithm.IFaceIDAlgorithm
@@ -85,7 +87,12 @@ class PreviewActivity : AppCompatActivity() {
         mAlgorithm = createDummyAlgorithm()
 
         // 自定义控制器（与 FiveCameraController 的 MyEvsCameraController 一致）
-        mFaceIDController = FaceIDCameraController()
+        mFaceIDController = FaceIDCameraController().also { controller ->
+            // 帧尺寸回调：调整 GLSurfaceView 保持画面比例、靠左显示
+            controller.onFrameSizeChanged = { width, height ->
+                runOnUiThread { resizePreviewSurface(width, height) }
+            }
+        }
 
         // 摄像头管理器（传入同一个 controller 实例）
         mCameraManager = CameraManager(mFaceIDController!!)
@@ -103,7 +110,12 @@ class PreviewActivity : AppCompatActivity() {
         // 初始化状态文本
         mStatusText.setText(R.string.status_idle)
         mFaceIdText.text = getString(R.string.face_id_label) + " " + getString(R.string.face_id_none)
-        mFrameRateText.text = getString(R.string.frame_rate_label) + " 0 " + getString(R.string.frame_rate_value, 0)
+        mFrameRateText.text = getString(R.string.frame_rate_label) + " " + getString(R.string.frame_rate_value, 0)
+
+        // 观察帧率实时数据
+        mCameraManager?.frameRate?.value?.observe(this) { fps ->
+            mFrameRateText.text = getString(R.string.frame_rate_label) + " " + getString(R.string.frame_rate_value, fps)
+        }
     }
 
     // ============================================================
@@ -158,6 +170,44 @@ class PreviewActivity : AppCompatActivity() {
                     getString(R.string.frame_rate_value, 0)
             Log.i(TAG, "stopPreview: done")
         }
+    }
+
+    // ============================================================
+    // 视口调整
+    // ============================================================
+
+    /**
+     * 根据帧尺寸调整 [GLSurfaceView] 大小，保持画面原始宽高比、靠左显示。
+     * 未覆盖区域由黑色背景填充。
+     */
+    private fun resizePreviewSurface(frameW: Int, frameH: Int) {
+        val parent = mPreviewSurface.parent as View
+        val parentW = parent.width
+        val parentH = parent.height
+        if (parentW <= 0 || parentH <= 0 || frameW <= 0 || frameH <= 0) return
+
+        val frameAspect = frameW.toFloat() / frameH.toFloat()
+        val parentAspect = parentW.toFloat() / parentH.toFloat()
+
+        val targetW: Int
+        val targetH: Int
+        if (frameAspect > parentAspect) {
+            // 画面更宽：以父容器宽度为准，高度按比例缩放
+            targetW = parentW
+            targetH = (parentW / frameAspect).toInt()
+        } else {
+            // 画面更高：以父容器高度为准，宽度按比例缩放
+            targetH = parentH
+            targetW = (parentH * frameAspect).toInt()
+        }
+
+        val lp = mPreviewSurface.layoutParams as ConstraintLayout.LayoutParams
+        lp.width = targetW
+        lp.height = targetH
+        // 移除右侧和底部约束，保持顶部+左侧贴边
+        lp.rightToRight = ConstraintLayout.LayoutParams.UNSET
+        lp.bottomToTop = ConstraintLayout.LayoutParams.UNSET
+        mPreviewSurface.layoutParams = lp
     }
 
     // ============================================================

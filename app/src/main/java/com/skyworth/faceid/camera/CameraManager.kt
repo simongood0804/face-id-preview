@@ -23,6 +23,9 @@ open class CameraManager(
 ) {
     private val TAG = "CameraManager"
 
+    /** 摄像头帧率跟踪器，供外部观察 LiveData 更新 UI。 */
+    val frameRate: EvsFrameRate = EvsFrameRate()
+
     /** 摄像头是否已启动。 */
     @Volatile
     var isActive: Boolean = false
@@ -37,7 +40,7 @@ open class CameraManager(
             return
         }
         try {
-            controller.track(EvsFrameRate())
+            controller.track(frameRate)
             controller.startCamera(mCameraId)
             isActive = true
             Log.i(TAG, "openCamera: success, cameraId=$mCameraId")
