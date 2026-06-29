@@ -8,23 +8,7 @@ public class MockCameraManager extends CameraManager {
     private boolean mIsActive;
 
     public MockCameraManager() {
-        super(new StateCallback() {
-            @Override
-            public void onCameraOpened() {}
-            @Override
-            public void onCameraClosed() {}
-            @Override
-            public void onHalDied() {}
-            @Override
-            public void onError(String message) {}
-        });
-    }
-
-    @Override
-    public void returnBuffer(Object buffer) {
-        if (buffer instanceof MockEvsBufferDesc) {
-            ((MockEvsBufferDesc) buffer).markRecycled();
-        }
+        super(new FaceIDCameraController(), "test_camera");
     }
 
     @Override

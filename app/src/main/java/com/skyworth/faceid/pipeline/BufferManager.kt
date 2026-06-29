@@ -6,7 +6,6 @@ package com.skyworth.faceid.pipeline
 
 import android.util.Log
 import com.android.car.evs.EvsBufferDesc
-import com.skyworth.faceid.camera.CameraManager
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.Executors
 import java.util.concurrent.ScheduledExecutorService
@@ -23,10 +22,11 @@ import java.util.concurrent.atomic.AtomicInteger
  * - 监控 Buffer 泄漏并日志告警
  *
  * 线程安全：内部使用 ConcurrentHashMap 和 volatile 保证线程安全。
+ *
+ * 注意：EvsCameraController 内部会自管理回收，此管理器仅用于单元测试场景。
  */
 open class BufferManager
 @JvmOverloads constructor(
-    private val mCameraManager: CameraManager,
     private val mRecycleTimeoutMs: Long = DEFAULT_RECYCLE_TIMEOUT_MS
 ) {
     private val TAG = "BufferManager"
@@ -67,7 +67,7 @@ open class BufferManager
             return
         }
         entry.isRecycled = true
-        mCameraManager.returnBuffer(entry.buffer)
+        EvsBufferDesc.recycle(entry.buffer)
         Log.d(TAG, "recycleBuffer: id=$bufferId, elapsed=${System.currentTimeMillis() - entry.acquireTimeMs}ms")
     }
 
@@ -106,7 +106,7 @@ open class BufferManager
                 mLeakCount.incrementAndGet()
 
                 entry.isRecycled = true
-                mCameraManager.returnBuffer(entry.buffer)
+                EvsBufferDesc.recycle(entry.buffer)
 
                 iterator.remove()
             }
@@ -123,7 +123,7 @@ open class BufferManager
             Log.w(TAG, "shutdown: force recycle $remaining pending buffers")
             mActiveBuffers.values.forEach { entry ->
                 if (!entry.isRecycled) {
-                    mCameraManager.returnBuffer(entry.buffer)
+                    EvsBufferDesc.recycle(entry.buffer)
                 }
             }
             mActiveBuffers.clear()

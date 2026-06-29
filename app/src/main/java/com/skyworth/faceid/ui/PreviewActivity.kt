@@ -5,30 +5,24 @@
 package com.skyworth.faceid.ui
 
 import android.content.Context
+import android.opengl.GLSurfaceView
 import android.os.Bundle
 import android.util.Log
 import android.widget.Button
 import android.widget.TextView
 import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
+import com.android.car.evs.EvsGL20CameraRenderer
 import com.skyworth.faceid.R
 import com.skyworth.faceid.algorithm.IFaceIDAlgorithm
 import com.skyworth.faceid.camera.CameraManager
-import com.skyworth.faceid.pipeline.BufferManager
-import com.skyworth.faceid.pipeline.FramePipeline
-import com.skyworth.faceid.pipeline.PipelineConfig
-import com.skyworth.faceid.render.PreviewRenderer
+import com.skyworth.faceid.camera.FaceIDCameraController
 
 /**
  * Face ID 预览主界面。
  *
- * 职责：
- * - 初始化所有核心模块
- * - 管理 Activity 生命周期与流水线的绑定
- * - 提供开始/停止预览控制
- * - 显示 Face ID 检测状态信息
- *
- * 线程安全：UI 更新通过 [runOnUiThread] 进行，流水线在后台线程运行。
+ * 使用 [EvsGL20CameraRenderer] 渲染 EVS 摄像头画面，
+ * 通过 [FaceIDCameraController] 管理摄像头取流（含自动重试）。
  */
 class PreviewActivity : AppCompatActivity() {
 
@@ -38,7 +32,7 @@ class PreviewActivity : AppCompatActivity() {
     // UI 控件
     // ============================================================
 
-    private lateinit var mPreviewSurface: android.view.SurfaceView
+    private lateinit var mPreviewSurface: GLSurfaceView
     private lateinit var mToggleButton: Button
     private lateinit var mStatusText: TextView
     private lateinit var mFaceIdText: TextView
@@ -50,10 +44,8 @@ class PreviewActivity : AppCompatActivity() {
 
     private var mCameraManager: CameraManager? = null
     private var mAlgorithm: IFaceIDAlgorithm? = null
-    private var mBufferManager: BufferManager? = null
-    private var mPreviewRenderer: PreviewRenderer? = null
-    private var mFramePipeline: FramePipeline? = null
-    private var mPipelineConfig: PipelineConfig? = null
+    private var mFaceIDController: FaceIDCameraController? = null
+    private var mRenderer: EvsGL20CameraRenderer? = null
 
     /** 是否正在预览。 */
     private var mIsPreviewing = false
@@ -89,79 +81,29 @@ class PreviewActivity : AppCompatActivity() {
      * 初始化核心模块。
      */
     private fun initCoreModules() {
-        mPipelineConfig = PipelineConfig()
-
-        // 摄像头管理器
-        mCameraManager = CameraManager(object : CameraManager.StateCallback {
-            override fun onCameraOpened() {
-                runOnUiThread { mStatusText.setText(R.string.status_previewing) }
-            }
-
-            override fun onCameraClosed() {
-                runOnUiThread { mStatusText.setText(R.string.status_idle) }
-            }
-
-            override fun onHalDied() {
-                runOnUiThread {
-                    mStatusText.setText(R.string.status_camera_disconnected)
-                    Toast.makeText(this@PreviewActivity,
-                        R.string.status_camera_disconnected, Toast.LENGTH_LONG).show()
-                    stopPreview()
-                }
-            }
-
-            override fun onError(message: String) {
-                runOnUiThread {
-                    mStatusText.setText(getString(R.string.status_error, message))
-                    Toast.makeText(this@PreviewActivity,
-                        getString(R.string.status_error, message), Toast.LENGTH_LONG).show()
-                }
-            }
-        })
-
         // 算法接口 — 使用 Dummy 实现
         mAlgorithm = createDummyAlgorithm()
 
-        // 预览渲染器
-        mPreviewRenderer = PreviewRenderer()
-        mPreviewRenderer?.setSurfaceView(mPreviewSurface)
+        // 自定义控制器（与 FiveCameraController 的 MyEvsCameraController 一致）
+        mFaceIDController = FaceIDCameraController()
 
-        // Buffer 管理器
-        mBufferManager = BufferManager(
-            mCameraManager!!,
-            mPipelineConfig!!.bufferRecycleTimeoutMs
-        )
+        // 摄像头管理器（传入同一个 controller 实例）
+        mCameraManager = CameraManager(mFaceIDController!!)
+
+        // GL 渲染器（传入同一个 controller 实例）
+        mRenderer = EvsGL20CameraRenderer().apply {
+            setProvider(mFaceIDController!!)
+        }
+
+        // 配置 GLSurfaceView
+        mPreviewSurface.setEGLContextClientVersion(2)
+        mPreviewSurface.setRenderer(mRenderer!!)
+        mPreviewSurface.renderMode = GLSurfaceView.RENDERMODE_CONTINUOUSLY
 
         // 初始化状态文本
         mStatusText.setText(R.string.status_idle)
-        mFaceIdText.setText(getString(R.string.face_id_label) + " " + getString(R.string.face_id_none))
-        mFrameRateText.setText(getString(R.string.frame_rate_label) + " 0 " + getString(R.string.frame_rate_value, 0))
-    }
-
-    /**
-     * 创建流水线（仅在启动预览时创建）。
-     */
-    private fun createPipeline() {
-        mFramePipeline = object : FramePipeline(
-            mCameraManager!!,
-            mAlgorithm!!,
-            mBufferManager!!,
-            mPreviewRenderer!!,
-            mPipelineConfig!!
-        ) {
-            override fun onFaceIdDetected(result: IFaceIDAlgorithm.FaceIDResult) {
-                runOnUiThread {
-                    if (result.faceId.isNotEmpty()) {
-                        mFaceIdText.setText(getString(R.string.face_id_label) + " " +
-                                result.faceId +
-                                " (${String.format("%.1f", result.confidence * 100)}%)")
-                    } else {
-                        mFaceIdText.setText(getString(R.string.face_id_label) + " " +
-                                getString(R.string.face_id_not_detected))
-                    }
-                }
-            }
-        }
+        mFaceIdText.text = getString(R.string.face_id_label) + " " + getString(R.string.face_id_none)
+        mFrameRateText.text = getString(R.string.frame_rate_label) + " 0 " + getString(R.string.frame_rate_value, 0)
     }
 
     // ============================================================
@@ -183,17 +125,13 @@ class PreviewActivity : AppCompatActivity() {
 
         try {
             mCameraManager?.openCamera()
-            createPipeline()
-            mPreviewRenderer?.start()
-            mFramePipeline?.start()
-
             mIsPreviewing = true
             mToggleButton.setText(R.string.btn_stop_preview)
-            mStatusText.setText(R.string.status_initializing)
+            mStatusText.setText(R.string.status_previewing)
             Log.i(TAG, "startPreview: done")
         } catch (e: Exception) {
             Log.e(TAG, "startPreview: failed", e)
-            mStatusText.setText(getString(R.string.status_error, e.message ?: ""))
+            mStatusText.text = getString(R.string.status_error, e.message ?: "")
             Toast.makeText(this,
                 getString(R.string.status_error, e.message ?: ""),
                 Toast.LENGTH_LONG).show()
@@ -207,11 +145,6 @@ class PreviewActivity : AppCompatActivity() {
         if (!mIsPreviewing) return
 
         try {
-            mFramePipeline?.stop()
-            mFramePipeline = null
-
-            mPreviewRenderer?.stop()
-
             mCameraManager?.stopCamera()
         } catch (e: Exception) {
             Log.e(TAG, "stopPreview: error", e)
@@ -219,10 +152,10 @@ class PreviewActivity : AppCompatActivity() {
             mIsPreviewing = false
             mToggleButton.setText(R.string.btn_start_preview)
             mStatusText.setText(R.string.status_idle)
-            mFaceIdText.setText(getString(R.string.face_id_label) + " " +
-                    getString(R.string.face_id_none))
-            mFrameRateText.setText(getString(R.string.frame_rate_label) + " 0 " +
-                    getString(R.string.frame_rate_value, 0))
+            mFaceIdText.text = getString(R.string.face_id_label) + " " +
+                    getString(R.string.face_id_none)
+            mFrameRateText.text = getString(R.string.frame_rate_label) + " 0 " +
+                    getString(R.string.frame_rate_value, 0)
             Log.i(TAG, "stopPreview: done")
         }
     }
@@ -233,7 +166,13 @@ class PreviewActivity : AppCompatActivity() {
 
     override fun onPause() {
         super.onPause()
+        mPreviewSurface.onPause()
         stopPreview()
+    }
+
+    override fun onResume() {
+        super.onResume()
+        mPreviewSurface.onResume()
     }
 
     override fun onDestroy() {
@@ -266,13 +205,11 @@ class PreviewActivity : AppCompatActivity() {
                 height: Int,
                 format: Int
             ): IFaceIDAlgorithm.FaceIDResult {
-                // 模拟处理耗时
                 try {
                     Thread.sleep(5)
                 } catch (e: InterruptedException) {
                     Thread.currentThread().interrupt()
                 }
-                // 原样返回帧数据，不检测人脸
                 return IFaceIDAlgorithm.FaceIDResult(processedData = frameData)
             }
 

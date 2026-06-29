@@ -1,6 +1,5 @@
 package com.skyworth.faceid.pipeline;
 
-import com.skyworth.faceid.camera.MockCameraManager;
 import com.skyworth.faceid.camera.MockEvsBufferDesc;
 
 import org.junit.After;
@@ -18,15 +17,13 @@ import static org.junit.Assert.*;
 @RunWith(RobolectricTestRunner.class)
 public class BufferManagerTest {
 
-    private MockCameraManager mMockCameraManager;
     private BufferManager mBufferManager;
     private static final long TIMEOUT_MS = 500;
 
     @Before
     public void setUp() {
         ShadowLog.stream = System.out;
-        mMockCameraManager = new MockCameraManager();
-        mBufferManager = new BufferManager(mMockCameraManager, TIMEOUT_MS);
+        mBufferManager = new BufferManager(TIMEOUT_MS);
     }
 
     @After
@@ -106,7 +103,7 @@ public class BufferManagerTest {
 
     @Test(timeout = 3000)
     public void testTimeoutRecycle() throws InterruptedException {
-        BufferManager quickTimeoutManager = new BufferManager(mMockCameraManager, 100);
+        BufferManager quickTimeoutManager = new BufferManager(100);
         quickTimeoutManager.startTimeoutMonitor();
 
         MockEvsBufferDesc buffer = new MockEvsBufferDesc(1, 640, 480);
@@ -123,7 +120,7 @@ public class BufferManagerTest {
 
     @Test(timeout = 3000)
     public void testNoTimeoutIfRecycledInTime() throws InterruptedException {
-        BufferManager longTimeoutManager = new BufferManager(mMockCameraManager, 5000);
+        BufferManager longTimeoutManager = new BufferManager(5000);
         longTimeoutManager.startTimeoutMonitor();
 
         MockEvsBufferDesc buffer = new MockEvsBufferDesc(1, 640, 480);

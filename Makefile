@@ -22,9 +22,9 @@
 # ------ 项目配置 ------
 PACKAGE_NAME    := com.skyworth.faceid
 ACTIVITY_NAME   := .ui.PreviewActivity
-APK_PATH        := app/build/outputs/apk/debug/app-debug.apk
-SYSTEM_APP_DIR  := /system/app/FaceIDPreview
-APK_NAME        := FaceIDPreview.apk
+APK_PATH        := app/build/outputs/apk/release/app-release.apk
+SYSTEM_APP_DIR  := /system/app/DmsFace
+APK_NAME        := DmsFace.apk
 
 # ------ 颜色输出 ------
 RED    := \033[0;31m
