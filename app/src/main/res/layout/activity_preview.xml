@@ -16,6 +16,17 @@
         app:layout_constraintStart_toStartOf="parent"
         app:layout_constraintEnd_toEndOf="parent" />
 
+    <!-- 人脸框覆盖层 -->
+    <com.skyworth.faceid.ui.FaceOverlayView
+        android:id="@+id/face_overlay"
+        android:layout_width="0dp"
+        android:layout_height="0dp"
+        android:visibility="gone"
+        app:layout_constraintTop_toTopOf="@id/preview_surface"
+        app:layout_constraintBottom_toBottomOf="@id/preview_surface"
+        app:layout_constraintStart_toStartOf="@id/preview_surface"
+        app:layout_constraintEnd_toEndOf="@id/preview_surface" />
+
     <!-- 状态信息 -->
     <TextView
         android:id="@+id/tv_status"

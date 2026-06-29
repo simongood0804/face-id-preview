@@ -39,6 +39,7 @@ class PreviewActivity : AppCompatActivity() {
     // ============================================================
 
     private lateinit var mPreviewSurface: GLSurfaceView
+    private lateinit var mFaceOverlay: FaceOverlayView
     private lateinit var mToggleButton: Button
     private lateinit var mStatusText: TextView
     private lateinit var mFaceIdText: TextView
@@ -80,6 +81,7 @@ class PreviewActivity : AppCompatActivity() {
      */
     private fun initViews() {
         mPreviewSurface = findViewById(R.id.preview_surface)
+        mFaceOverlay = findViewById(R.id.face_overlay)
         mToggleButton = findViewById(R.id.btn_toggle)
         mStatusText = findViewById(R.id.tv_status)
         mFaceIdText = findViewById(R.id.tv_face_id)
@@ -290,7 +292,24 @@ class PreviewActivity : AppCompatActivity() {
                         mFaceIdText.text = getString(R.string.face_id_label) + " " +
                                 result.faceId +
                                 " (${String.format("%.1f", result.confidence * 100)}%)"
+
+                        // 传递人脸框到覆盖层
+                        if (result.faceRect != null) {
+                            val isDetected = result.faceId == "detected"
+                            mFaceOverlay.setFaces(
+                                listOf(FaceOverlayView.FaceBox(
+                                    rect = result.faceRect,
+                                    type = if (isDetected) FaceOverlayView.FaceType.DETECTED
+                                           else FaceOverlayView.FaceType.SPOOF,
+                                    confidence = result.confidence
+                                )),
+                                frameW, frameH
+                            )
+                            mFaceOverlay.visibility = View.VISIBLE
+                        }
                     }
+                } else {
+                    runOnUiThread { mFaceOverlay.clearFaces() }
                 }
             } catch (e: Exception) {
                 Log.e(TAG, "algorithm error", e)

@@ -87,6 +87,7 @@ Java_com_skyworth_faceid_algorithm_FaceIDAlgorithmImpl_nativeDetect(
         jfieldID x1_f = env->GetFieldID(rc, "x1", "F");
         jfieldID y1_f = env->GetFieldID(rc, "y1", "F");
         jfieldID x2_f = env->GetFieldID(rc, "x2", "F");
+        jfieldID y2_f = env->GetFieldID(rc, "y2", "F");
         jfieldID sc_f = env->GetFieldID(rc, "score", "F");
         jfieldID li_f = env->GetFieldID(rc, "liveness", "F");
         int cnt = n < max_faces ? n : max_faces;
@@ -95,6 +96,7 @@ Java_com_skyworth_faceid_algorithm_FaceIDAlgorithmImpl_nativeDetect(
             env->SetFloatField(obj, x1_f, results[i].x1);
             env->SetFloatField(obj, y1_f, results[i].y1);
             env->SetFloatField(obj, x2_f, results[i].x2);
+            env->SetFloatField(obj, y2_f, results[i].y2);
             env->SetFloatField(obj, sc_f, results[i].score);
             env->SetFloatField(obj, li_f, results[i].liveness);
         }
