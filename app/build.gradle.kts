@@ -6,6 +6,7 @@ plugins {
 android {
     namespace = "com.skyworth.faceid"
     compileSdk = rootProject.extra["compileSdkVersion"] as Int
+    ndkVersion = "25.2.9519653"
 
     defaultConfig {
         applicationId = "com.skyworth.faceid"
@@ -61,6 +62,31 @@ android {
     // 单元测试配置：允许使用 Android 类
     testOptions {
         unitTests.isIncludeAndroidResources = true
+    }
+
+    // CMake Native 编译
+    externalNativeBuild {
+        cmake {
+            path = file("src/main/cpp/CMakeLists.txt")
+            version = "3.18.1"
+        }
+    }
+
+    // 仅编译 arm64-v8a（libfaceid.so 只有此架构）
+    defaultConfig.ndk {
+        abiFilters.add("arm64-v8a")
+    }
+
+    // jniLibs 目录（打包 libfaceid.so 到 APK）
+    sourceSets {
+        getByName("main") {
+            jniLibs.srcDirs("src/main/jniLibs")
+        }
+    }
+
+    // CMake 编译 faceid_jni.so 时也产生了 libfaceid.so 的副本，此处去重
+    packagingOptions {
+        jniLibs.pickFirsts.add("lib/arm64-v8a/libfaceid.so")
     }
 }
 

@@ -9,6 +9,7 @@ local.properties
 
 # IDE
 .idea/
+.vscode/
 *.iml
 .DS_Store
 
@@ -18,8 +19,10 @@ keystore/
 # Maven repo
 .m2repo/
 
+# CMake build cache
+.cxx/
+
 # Native
-*.so
 *.o
 *.class
 

@@ -1,10 +1,12 @@
 package com.skyworth.faceid.camera
 
+import android.graphics.Bitmap
 import android.hardware.HardwareBuffer
 import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
 import android.util.Log
+import java.nio.ByteBuffer
 import com.android.car.evs.EvsBufferDesc
 import com.android.car.evs.EvsBufferProvider
 import com.android.car.evs.EvsExecutorService
@@ -44,6 +46,16 @@ class FaceIDCameraController : EvsBufferProvider {
 
     /** 帧尺寸变化回调（主线程）。 */
     var onFrameSizeChanged: ((width: Int, height: Int) -> Unit)? = null
+
+    /**
+     * 帧数据回调（算法处理）。
+     * 在 [getNewFrame] 中被调用，频率约为每 [FRAME_SKIP] 帧一次。
+     * 参数：[HardwareBuffer], 宽, 高。
+     */
+    var onFrameData: ((hwBuffer: HardwareBuffer, width: Int, height: Int) -> Unit)? = null
+
+    /** 跳帧计数器，避免每帧都跑算法。 */
+    private var mFrameSkipCounter = 0
 
     /** 调度执行器（单线程）。 */
     private val dExecutor = EvsExecutorService("DISPATCH", true)
@@ -202,18 +214,30 @@ class FaceIDCameraController : EvsBufferProvider {
         try {
             for (desc in buffers) {
                 if (!desc.dequeue()) continue
+                Log.d(TAG, "frame dequeued: id=${desc.id}, ${desc.width}x${desc.height}")
                 // 首次获取帧时记录尺寸并回调
                 if (desc.width != frameWidth || desc.height != frameHeight) {
                     frameWidth = desc.width
                     frameHeight = desc.height
                     onFrameSizeChanged?.invoke(frameWidth, frameHeight)
                 }
+                // 跳帧触发算法处理
+                mFrameSkipCounter++
+                if (mFrameSkipCounter % FRAME_SKIP == 0) {
+                    val hw = desc.hardwareBuffer
+                    if (hw != null) {
+                        Log.d(TAG, "firing onFrameData callback")
+                        onFrameData?.invoke(hw, desc.width, desc.height)
+                    } else {
+                        Log.w(TAG, "skip onFrameData: hardwareBuffer is null")
+                    }
+                }
                 EvsBufferDesc.recycle(descriptor)
                 descriptor = desc
                 break
             }
         } catch (e: Exception) {
-            if (DEBUG) Log.d(TAG, "getNewFrame", e)
+            Log.e(TAG, "getNewFrame error", e)
         }
         return descriptor
     }
@@ -310,5 +334,7 @@ class FaceIDCameraController : EvsBufferProvider {
         private const val MAX_RECEIVE_FRAME = 6
         private const val RETRY_INTERVAL_MS = 1000L
         private const val RETRY_WAIT_MS = 600L
+        /** 算法跳帧间隔（每 N 帧处理一次算法）。 */
+        private const val FRAME_SKIP = 5
     }
 }

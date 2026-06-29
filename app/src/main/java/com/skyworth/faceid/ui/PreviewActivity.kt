@@ -5,6 +5,7 @@
 package com.skyworth.faceid.ui
 
 import android.content.Context
+import android.graphics.Bitmap
 import android.opengl.GLSurfaceView
 import android.os.Bundle
 import android.util.Log
@@ -16,9 +17,12 @@ import androidx.appcompat.app.AppCompatActivity
 import androidx.constraintlayout.widget.ConstraintLayout
 import com.android.car.evs.EvsGL20CameraRenderer
 import com.skyworth.faceid.R
+import com.skyworth.faceid.algorithm.FaceIDAlgorithmImpl
 import com.skyworth.faceid.algorithm.IFaceIDAlgorithm
 import com.skyworth.faceid.camera.CameraManager
 import com.skyworth.faceid.camera.FaceIDCameraController
+import java.nio.ByteBuffer
+import java.util.concurrent.Executors
 
 /**
  * Face ID 预览主界面。
@@ -45,9 +49,14 @@ class PreviewActivity : AppCompatActivity() {
     // ============================================================
 
     private var mCameraManager: CameraManager? = null
-    private var mAlgorithm: IFaceIDAlgorithm? = null
+    @Volatile private var mAlgorithm: IFaceIDAlgorithm? = null
     private var mFaceIDController: FaceIDCameraController? = null
     private var mRenderer: EvsGL20CameraRenderer? = null
+
+    /** 算法处理线程池（单线程，避免 GL 线程阻塞）。 */
+    private val mAlgoExecutor = Executors.newSingleThreadExecutor { r ->
+        Thread(r, "AlgoProcessor").apply { isDaemon = true }
+    }
 
     /** 是否正在预览。 */
     private var mIsPreviewing = false
@@ -83,14 +92,26 @@ class PreviewActivity : AppCompatActivity() {
      * 初始化核心模块。
      */
     private fun initCoreModules() {
-        // 算法接口 — 使用 Dummy 实现
-        mAlgorithm = createDummyAlgorithm()
+        // 算法接口 — 使用 FaceID 原生算法
+        mAlgorithm = FaceIDAlgorithmImpl()
+        val algoConfig = mutableMapOf<String, Any>(
+            "runtime" to "dsp"
+        )
+        if (mAlgorithm?.initialize(this, algoConfig) == true) {
+            Log.i(TAG, "initCoreModules: algorithm initialized successfully")
+        } else {
+            Log.w(TAG, "initCoreModules: algorithm init failed, will retry")
+        }
 
         // 自定义控制器（与 FiveCameraController 的 MyEvsCameraController 一致）
         mFaceIDController = FaceIDCameraController().also { controller ->
             // 帧尺寸回调：调整 GLSurfaceView 保持画面比例、靠左显示
             controller.onFrameSizeChanged = { width, height ->
                 runOnUiThread { resizePreviewSurface(width, height) }
+            }
+            // 帧数据处理回调：传入算法进行人脸检测
+            controller.onFrameData = { hwBuffer, frameW, frameH ->
+                processWithAlgorithm(hwBuffer, frameW, frameH)
             }
         }
 
@@ -233,40 +254,59 @@ class PreviewActivity : AppCompatActivity() {
     }
 
     // ============================================================
-    // 算法实现
+    // 算法处理
     // ============================================================
 
     /**
-     * 创建模拟算法实现用于开发和测试。
+     * 后台异步执行算法检测。
+     *
+     * 1. GL 线程：wrapHardwareBuffer() 创建 HARDWARE Bitmap（轻量，仅 GPU 引用）
+     * 2. 后台线程：copy(ARGB_8888) → copyPixelsToBuffer → processFrame
+     *    copy() 在后台线程执行，避免 GL 线程 GPU 同步死锁
      */
-    private fun createDummyAlgorithm(): IFaceIDAlgorithm {
-        return object : IFaceIDAlgorithm {
-            private var mInitialized = false
+    private fun processWithAlgorithm(hwBuffer: android.hardware.HardwareBuffer, frameW: Int, frameH: Int) {
+        if (mAlgorithm == null) return
+        Log.d(TAG, "algo: enter ${frameW}x${frameH}")
 
-            override fun initialize(context: Context?, config: MutableMap<String, Any>): Boolean {
-                mInitialized = true
-                Log.i(TAG, "createDummyAlgorithm: dummy initialized")
-                return true
-            }
+        // 在 GL 线程上同步读取像素数据（此时 HardwareBuffer 有效）
+        val rawData = try {
+            nativeReadHardwareBuffer(hwBuffer, frameW, frameH)
+        } catch (e: Exception) {
+            Log.w(TAG, "algo: read failed", e)
+            return
+        }
+        if (rawData == null) { Log.w(TAG, "algo: read null"); return }
 
-            override fun processFrame(
-                frameData: ByteArray?,
-                width: Int,
-                height: Int,
-                format: Int
-            ): IFaceIDAlgorithm.FaceIDResult {
-                try {
-                    Thread.sleep(5)
-                } catch (e: InterruptedException) {
-                    Thread.currentThread().interrupt()
+        // 像素数据已拷贝到 Java heap，后台线程安全使用
+        mAlgoExecutor.submit {
+            try {
+                val t0 = System.currentTimeMillis()
+                val result = mAlgorithm?.processFrame(rawData, frameW, frameH, 0) // UYVY
+                val t1 = System.currentTimeMillis()
+                Log.i(TAG, "algorithm: ${t1 - t0}ms, faceId=${result?.faceId}")
+
+                if (result != null && result.faceId.isNotEmpty()) {
+                    runOnUiThread {
+                        mFaceIdText.text = getString(R.string.face_id_label) + " " +
+                                result.faceId +
+                                " (${String.format("%.1f", result.confidence * 100)}%)"
+                    }
                 }
-                return IFaceIDAlgorithm.FaceIDResult(processedData = frameData)
-            }
-
-            override fun release() {
-                mInitialized = false
-                Log.i(TAG, "createDummyAlgorithm: dummy released")
+            } catch (e: Exception) {
+                Log.e(TAG, "algorithm error", e)
             }
         }
     }
+
+    companion object {
+        init {
+            try {
+                System.loadLibrary("faceid_jni")
+            } catch (_: UnsatisfiedLinkError) { }
+        }
+    }
+
+    private external fun nativeReadHardwareBuffer(
+        hwBuffer: android.hardware.HardwareBuffer, width: Int, height: Int
+    ): ByteArray?
 }

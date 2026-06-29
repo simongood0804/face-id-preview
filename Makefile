@@ -71,6 +71,8 @@ push-system: build
 	@echo "$(GREEN)[PUSH-SYSTEM] setting permissions...$(NC)"
 	adb shell chmod 644 $(SYSTEM_APP_DIR)/$(APK_NAME)
 	adb shell chown root:root $(SYSTEM_APP_DIR)/$(APK_NAME)
+	@echo "$(GREEN)[PUSH-SYSTEM] clearing old extracted libs and oat cache...$(NC)"
+	adb shell rm -rf $(SYSTEM_APP_DIR)/lib $(SYSTEM_APP_DIR)/oat
 	@echo "$(GREEN)[PUSH-SYSTEM] rebooting...$(NC)"
 	adb reboot
 	@echo "$(GREEN)[PUSH-SYSTEM] waiting for device...$(NC)"
