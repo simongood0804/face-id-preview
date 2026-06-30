@@ -32,7 +32,7 @@ class FaceIDCameraController : EvsBufferProvider {
     )
 
     /** 当前取出的描述符。 */
-    private var descriptor: EvsBufferDesc? = null
+    @Volatile private var descriptor: EvsBufferDesc? = null
 
     /** 最新帧的尺寸，供外部获取用于视口计算。 */
     @Volatile
@@ -51,9 +51,6 @@ class FaceIDCameraController : EvsBufferProvider {
      * 参数：[HardwareBuffer], 宽, 高。
      */
     var onFrameData: ((hwBuffer: HardwareBuffer, width: Int, height: Int) -> Unit)? = null
-
-    /** 跳帧计数器，避免每帧都跑算法。 */
-    private var mFrameSkipCounter = 0
 
     /** 调度执行器（单线程）。 */
     private val dExecutor = EvsExecutorService("DISPATCH", true)
@@ -80,7 +77,7 @@ class FaceIDCameraController : EvsBufferProvider {
     private val mHandler = Handler(Looper.getMainLooper())
 
     /** 上一帧成功的描述符（无新帧时复用，防止黑屏）。 */
-    private var mLastFrame: EvsBufferDesc? = null
+    @Volatile private var mLastFrame: EvsBufferDesc? = null
 
     /** 断线重连任务。 */
     private val mConnectRunnable: Runnable = object : Runnable {
@@ -121,14 +118,26 @@ class FaceIDCameraController : EvsBufferProvider {
                 if (DEBUG) Log.d(TAG, "onNewFrame: $i")
                 frameRate?.post()
                 var accept = false
+                var frameW = 0
+                var frameH = 0
                 for (desc in buffers) {
                     if (desc.state != EvsBufferDesc.State.NONE) continue
                     accept = desc.queue(i, buffer, resolution)
+                    if (accept) {
+                        frameW = desc.width
+                        frameH = desc.height
+                    }
                     break
                 }
                 if (!accept) {
                     Log.w(TAG, "drop frame because over size($MAX_RECEIVE_FRAME) for: $i")
                     evsHalWrapper.doneWithFrame(i)
+                } else {
+                    // 直接从 HAL 回调触发算法（独立于渲染器 getNewFrame）
+                    // 使用 desc.width/height（保证正确），不依赖 HardwareBuffer 属性
+                    if (frameW > 0 && frameH > 0) {
+                        onFrameData?.invoke(buffer, frameW, frameH)
+                    }
                 }
             } catch (e: Exception) {
                 Log.e(TAG, "onNewFrame", e)
@@ -230,14 +239,6 @@ class FaceIDCameraController : EvsBufferProvider {
                     frameWidth = desc.width
                     frameHeight = desc.height
                     onFrameSizeChanged?.invoke(frameWidth, frameHeight)
-                }
-                // 跳帧触发算法处理
-                mFrameSkipCounter++
-                if (mFrameSkipCounter % FRAME_SKIP == 0) {
-                    Log.d(TAG, "firing onFrameData callback")
-                    onFrameData?.invoke(hw, desc.width, desc.height)
-                    // 算法线程会通过 nativeReadHardwareBuffer 做 Level 2 像素检测
-                    // （全黑帧 → JNI 返回 null → FrameProcessor 跳过处理）
                 }
 
                 // 推进：回收上一帧，切换到当前帧
@@ -361,7 +362,5 @@ class FaceIDCameraController : EvsBufferProvider {
         private const val MAX_RECEIVE_FRAME = 6
         private const val RETRY_INTERVAL_MS = 1000L
         private const val RETRY_WAIT_MS = 600L
-        /** 算法跳帧间隔。 */
-        private const val FRAME_SKIP = 1
     }
 }
