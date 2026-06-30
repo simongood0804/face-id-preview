@@ -37,7 +37,9 @@ interface IFaceIDAlgorithm {
         /** 处理后的帧数据（算法绘制人脸框后的数据）。 */
         processedData: ByteArray? = null,
         /** 人脸关键点（可选），null 表示未提供。 */
-        val landmarks: List<PointF>? = null
+        val landmarks: List<PointF>? = null,
+        /** 是否为新录入的人脸。 */
+        val isNewEnrollment: Boolean = false
     ) {
         /** Face ID 唯一标识，不为 null。 */
         val faceId: String = faceId ?: ""

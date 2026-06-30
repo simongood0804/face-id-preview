@@ -17,6 +17,7 @@ import androidx.appcompat.app.AppCompatActivity
 import androidx.constraintlayout.widget.ConstraintLayout
 import com.android.car.evs.EvsGL20CameraRenderer
 import com.skyworth.faceid.R
+import com.skyworth.faceid.algorithm.FaceEnrollmentManager
 import com.skyworth.faceid.algorithm.FaceIDAlgorithmImpl
 import com.skyworth.faceid.algorithm.IFaceIDAlgorithm
 import com.skyworth.faceid.camera.CameraManager
@@ -50,7 +51,8 @@ class PreviewActivity : AppCompatActivity() {
     // ============================================================
 
     private var mCameraManager: CameraManager? = null
-    @Volatile private var mAlgorithm: IFaceIDAlgorithm? = null
+    @Volatile private var mAlgorithm: FaceIDAlgorithmImpl? = null
+    private var mEnrollmentManager: FaceEnrollmentManager? = null
     private var mFaceIDController: FaceIDCameraController? = null
     private var mRenderer: EvsGL20CameraRenderer? = null
 
@@ -96,6 +98,11 @@ class PreviewActivity : AppCompatActivity() {
     private fun initCoreModules() {
         // 算法接口 — 使用 FaceID 原生算法
         mAlgorithm = FaceIDAlgorithmImpl()
+
+        // 人脸录入管理器（持久化存储 embedding）
+        mEnrollmentManager = FaceEnrollmentManager(this, mAlgorithm!!)
+        mAlgorithm!!.setEnrollmentManager(mEnrollmentManager!!)
+        Log.i(TAG, "initCoreModules: enrolled faces: ${mEnrollmentManager?.getCount()}")
         val algoConfig = mutableMapOf<String, Any>(
             "runtime" to "dsp"
         )
@@ -268,8 +275,6 @@ class PreviewActivity : AppCompatActivity() {
      */
     private fun processWithAlgorithm(hwBuffer: android.hardware.HardwareBuffer, frameW: Int, frameH: Int) {
         if (mAlgorithm == null) return
-        Log.d(TAG, "algo: enter ${frameW}x${frameH}")
-
         // 在 GL 线程上同步读取像素数据（此时 HardwareBuffer 有效）
         val rawData = try {
             nativeReadHardwareBuffer(hwBuffer, frameW, frameH)
@@ -282,26 +287,36 @@ class PreviewActivity : AppCompatActivity() {
         // 像素数据已拷贝到 Java heap，后台线程安全使用
         mAlgoExecutor.submit {
             try {
-                val t0 = System.currentTimeMillis()
                 val result = mAlgorithm?.processFrame(rawData, frameW, frameH, 0) // UYVY
-                val t1 = System.currentTimeMillis()
-                Log.i(TAG, "algorithm: ${t1 - t0}ms, faceId=${result?.faceId}")
 
                 if (result != null && result.faceId.isNotEmpty()) {
                     runOnUiThread {
-                        mFaceIdText.text = getString(R.string.face_id_label) + " " +
-                                result.faceId +
-                                " (${String.format("%.1f", result.confidence * 100)}%)"
+                        val enrolledTotal = mEnrollmentManager?.getCount() ?: 0
+                        val displayText = getString(R.string.face_id_label) + " " + result.faceId +
+                                " (${String.format("%.1f", result.confidence * 100)}%)" +
+                                " | 已录入: $enrolledTotal"
+                        mFaceIdText.text = displayText
+
+                        // 新录入弹出 Toast
+                        if (result.isNewEnrollment) {
+                            Toast.makeText(this,
+                                "录入成功: $displayText",
+                                Toast.LENGTH_SHORT).show()
+                        }
 
                         // 传递人脸框到覆盖层
                         if (result.faceRect != null) {
-                            val isDetected = result.faceId == "detected"
+                            val isNamed = result.faceId != "detected" &&
+                                    result.faceId != "spoof" &&
+                                    result.faceId.isNotEmpty()
+                            val isDetected = isNamed || result.faceId == "detected"
                             mFaceOverlay.setFaces(
                                 listOf(FaceOverlayView.FaceBox(
                                     rect = result.faceRect,
                                     type = if (isDetected) FaceOverlayView.FaceType.DETECTED
                                            else FaceOverlayView.FaceType.SPOOF,
-                                    confidence = result.confidence
+                                    confidence = result.confidence,
+                                    label = if (isNamed) result.faceId else null
                                 )),
                                 frameW, frameH
                             )

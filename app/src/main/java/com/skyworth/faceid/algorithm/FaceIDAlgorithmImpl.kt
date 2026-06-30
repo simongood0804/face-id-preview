@@ -37,10 +37,20 @@ class FaceIDAlgorithmImpl : IFaceIDAlgorithm {
     /** 模型文件存储目录。 */
     private var mModelDir: String = ""
 
+    /** 录入管理器（延迟初始化）。 */
+    private var mEnrollmentManager: FaceEnrollmentManager? = null
+
     init {
         for (i in 0 until MAX_FACES) {
             mNativeResults[i] = FaceIDNativeResult()
         }
+    }
+
+    /**
+     * 设置录入管理器（在 [initialize] 之后调用）。
+     */
+    fun setEnrollmentManager(manager: FaceEnrollmentManager) {
+        mEnrollmentManager = manager
     }
 
     // ============================================================
@@ -134,51 +144,49 @@ class FaceIDAlgorithmImpl : IFaceIDAlgorithm {
                 else -> FACEID_FMT_UYVY
             }
 
-            val t0 = System.currentTimeMillis()
             val n = nativeDetect(
                 mNativeHandle, frameData, width, height, 0,
                 nativeFormat, mNativeResults, MAX_FACES
             )
-            val t1 = System.currentTimeMillis()
-
-            Log.i(TAG, "detect: ${width}x$height format=$nativeFormat -> $n faces, took=${t1 - t0}ms")
 
             if (n < 0) {
-                Log.e(TAG, "processFrame: nativeDetect returned error=$n")
+                Log.e(TAG, "processFrame: nativeDetect error=$n")
                 return IFaceIDAlgorithm.FaceIDResult(processedData = frameData)
             }
 
             if (n > 0 && n <= MAX_FACES) {
                 val r = mNativeResults[0]!!
-                Log.i(TAG, "  face[0]: bbox=[${r.x1},${r.y1},${r.x2},${r.y2}] " +
-                        "score=${String.format("%.3f", r.score)} " +
-                        "liveness=${String.format("%.3f", r.liveness)}")
-
-                if (n > 1) {
-                    for (i in 1 until n) {
-                        val fi = mNativeResults[i]!!
-                        Log.d(TAG, "  face[$i]: bbox=[${fi.x1},${fi.y1},${fi.x2},${fi.y2}] " +
-                                "score=${String.format("%.3f", fi.score)}")
-                    }
-                }
 
                 val faceRect = RectF(r.x1, r.y1, r.x2, r.y2)
                 val confidence = r.score.coerceIn(0f, 1f)
-                val faceId = when {
-                    r.liveness < 0f -> "detected"
-                    r.liveness > 0.5f -> "detected"
-                    else -> "spoof"
+
+                var faceId = "detected"
+                var isNewEnroll = false
+                val enrollMgr = mEnrollmentManager
+                val emb = r.emb
+                if (enrollMgr != null && emb != null && emb.size == 512) {
+                    val result = enrollMgr.recognize(emb, r.score, r.liveness)
+                    if (result.name != null) {
+                        faceId = result.name
+                        isNewEnroll = result.isNewEnroll
+                    }
+                } else {
+                    faceId = when {
+                        r.liveness < 0f -> "detected"
+                        r.liveness > 0.5f -> "detected"
+                        else -> "spoof"
+                    }
                 }
 
-                if (faceId.isNotEmpty()) {
-                    Log.i(TAG, "  result: faceId=$faceId, confidence=${String.format("%.1f", confidence * 100)}%")
-                }
+                Log.i(TAG, "faceId=$faceId, conf=${String.format("%.1f", confidence * 100)}%" +
+                        if (isNewEnroll) " [NEW]" else "")
 
                 IFaceIDAlgorithm.FaceIDResult(
                     faceId = faceId,
                     confidence = confidence,
                     faceRect = faceRect,
-                    processedData = frameData
+                    processedData = frameData,
+                    isNewEnrollment = isNewEnroll
                 )
             } else {
                 if (n == 0) Log.i(TAG, "  no face detected")
@@ -288,6 +296,15 @@ class FaceIDAlgorithmImpl : IFaceIDAlgorithm {
                 Log.e("FaceIDAlgorithm", "Failed to load faceid_jni library", e)
             }
         }
+
+    }
+
+    /**
+     * 比对两个512-D特征向量的余弦相似度。
+     * 线程安全。
+     */
+    fun compare(emb1: FloatArray, emb2: FloatArray): Float {
+        return nativeCompare(emb1, emb2)
     }
 
     private external fun nativeInit(modelDir: String, runtime: String): Long
@@ -312,5 +329,6 @@ class FaceIDAlgorithmImpl : IFaceIDAlgorithm {
         @JvmField var y2: Float = 0f
         @JvmField var score: Float = 0f
         @JvmField var liveness: Float = -1f
+        @JvmField var emb: FloatArray? = null
     }
 }

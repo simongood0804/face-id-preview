@@ -99,7 +99,7 @@ class FaceOverlayView @JvmOverloads constructor(
                 FaceType.DETECTED -> mGreenPaint
                 FaceType.SPOOF -> mRedPaint
             }
-            val label = when (face.type) {
+            val label = face.label ?: when (face.type) {
                 FaceType.DETECTED -> "detected"
                 FaceType.SPOOF -> "spoof"
             }
@@ -122,7 +122,9 @@ class FaceOverlayView @JvmOverloads constructor(
     data class FaceBox(
         val rect: RectF,
         val type: FaceType,
-        val confidence: Float
+        val confidence: Float,
+        /** 显示名称，null 则使用默认文字（detected/spoof）。 */
+        val label: String? = null
     )
 
     enum class FaceType { DETECTED, SPOOF }

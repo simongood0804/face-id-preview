@@ -90,6 +90,7 @@ Java_com_skyworth_faceid_algorithm_FaceIDAlgorithmImpl_nativeDetect(
         jfieldID y2_f = env->GetFieldID(rc, "y2", "F");
         jfieldID sc_f = env->GetFieldID(rc, "score", "F");
         jfieldID li_f = env->GetFieldID(rc, "liveness", "F");
+        jfieldID emb_f = env->GetFieldID(rc, "emb", "[F");
         int cnt = n < max_faces ? n : max_faces;
         for (int i = 0; i < cnt; i++) {
             jobject obj = env->GetObjectArrayElement(results_array, i);
@@ -99,6 +100,12 @@ Java_com_skyworth_faceid_algorithm_FaceIDAlgorithmImpl_nativeDetect(
             env->SetFloatField(obj, y2_f, results[i].y2);
             env->SetFloatField(obj, sc_f, results[i].score);
             env->SetFloatField(obj, li_f, results[i].liveness);
+            // Copy 512-D embedding if valid
+            if (results[i].emb_valid && emb_f != nullptr) {
+                jfloatArray emb_arr = env->NewFloatArray(512);
+                env->SetFloatArrayRegion(emb_arr, 0, 512, results[i].emb);
+                env->SetObjectField(obj, emb_f, emb_arr);
+            }
         }
     }
     return n;
