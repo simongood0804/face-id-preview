@@ -216,6 +216,15 @@ class FaceIDCameraController : EvsBufferProvider {
             for (desc in buffers) {
                 if (!desc.dequeue()) continue
                 Log.d(TAG, "frame dequeued: id=${desc.id}, ${desc.width}x${desc.height}")
+
+                // Level 1: buffer 生命周期检查（null / closed）
+                val hw = desc.hardwareBuffer
+                if (hw == null || hw.isClosed) {
+                    EvsBufferDesc.recycle(desc)
+                    Log.w(TAG, "new frame buffer invalid (null/closed), keeping previous")
+                    break
+                }
+
                 // 首次获取帧时记录尺寸并回调
                 if (desc.width != frameWidth || desc.height != frameHeight) {
                     frameWidth = desc.width
@@ -225,32 +234,30 @@ class FaceIDCameraController : EvsBufferProvider {
                 // 跳帧触发算法处理
                 mFrameSkipCounter++
                 if (mFrameSkipCounter % FRAME_SKIP == 0) {
-                    val hw = desc.hardwareBuffer
-                    if (hw != null) {
-                        Log.d(TAG, "firing onFrameData callback")
-                        onFrameData?.invoke(hw, desc.width, desc.height)
-                    } else {
-                        Log.w(TAG, "skip onFrameData: hardwareBuffer is null")
-                    }
+                    Log.d(TAG, "firing onFrameData callback")
+                    onFrameData?.invoke(hw, desc.width, desc.height)
+                    // 算法线程会通过 nativeReadHardwareBuffer 做 Level 2 像素检测
+                    // （全黑帧 → JNI 返回 null → FrameProcessor 跳过处理）
                 }
+
+                // 推进：回收上一帧，切换到当前帧
                 EvsBufferDesc.recycle(descriptor)
                 descriptor = desc
-                mLastFrame = desc  // 缓存上一帧，无新帧时复用
+                mLastFrame = desc
                 break
             }
         } catch (e: Exception) {
             Log.e(TAG, "getNewFrame error", e)
         }
-        // 无新帧时返回上一帧的缓存，防止黑屏
+        // 无新帧或新帧被丢弃 → 返回当前 descriptor（未变，保持上一帧画面）
         if (descriptor == null || descriptor!!.hardwareBuffer == null ||
                 descriptor!!.hardwareBuffer!!.isClosed) {
-            Log.w(TAG, "descriptor invalid (closed=${descriptor?.hardwareBuffer?.isClosed}), " +
-                    "fallback to mLastFrame")
+            Log.w(TAG, "descriptor invalid, fallback to mLastFrame")
             if (mLastFrame != null && mLastFrame!!.hardwareBuffer != null &&
                     !mLastFrame!!.hardwareBuffer!!.isClosed) {
                 Log.w(TAG, "mLastFrame valid, returning it")
             } else {
-                Log.w(TAG, "mLastFrame also invalid, will cause black screen")
+                Log.w(TAG, "mLastFrame also invalid")
             }
             return mLastFrame
         }

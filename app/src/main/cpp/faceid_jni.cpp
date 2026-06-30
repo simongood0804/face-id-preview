@@ -7,6 +7,7 @@
 
 #define LOG_TAG "FaceID_JNI"
 #define LOGI(...) __android_log_print(ANDROID_LOG_INFO, LOG_TAG, __VA_ARGS__)
+#define LOGW(...) __android_log_print(ANDROID_LOG_WARN, LOG_TAG, __VA_ARGS__)
 #define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, LOG_TAG, __VA_ARGS__)
 
 // ============================================================
@@ -176,10 +177,28 @@ Java_com_skyworth_faceid_ui_PreviewActivity_nativeReadHardwareBuffer(
     jbyte *dst = env->GetByteArrayElements(result, nullptr);
     if (!dst) { AHardwareBuffer_unlock(native_buf, nullptr); AHardwareBuffer_release(native_buf); return nullptr; }
     memcpy(dst, data, total);
-    env->ReleaseByteArrayElements(result, dst, 0);
 
+    // 黑帧检测：采样中心 3×3 区域 Y 值，全 ≤ 10 视为黑帧
+    bool is_black = true;
+    const uint8_t *pixels = static_cast<const uint8_t *>(data);
+    int cy = height / 2, cx = width / 2;
+    for (int dy = -1; dy <= 1 && is_black; dy++) {
+        for (int dx = -1; dx <= 1; dx++) {
+            int row = cy + dy, col = cx + dx;
+            if (row < 0 || row >= height || col < 0 || col >= width) continue;
+            if (pixels[row * width * 2 + col * 2 + 1] > 10) { is_black = false; break; }
+        }
+    }
+
+    env->ReleaseByteArrayElements(result, dst, 0);
     AHardwareBuffer_unlock(native_buf, nullptr);
     AHardwareBuffer_release(native_buf);
+
+    if (is_black) {
+        LOGW("black frame detected %dx%d, dropping", width, height);
+        env->DeleteLocalRef(result);
+        return nullptr;
+    }
     return result;
 }
 

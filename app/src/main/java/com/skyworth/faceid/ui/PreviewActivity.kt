@@ -113,9 +113,10 @@ class PreviewActivity : AppCompatActivity() {
             Log.w(TAG, "initCoreModules: algorithm init failed, will retry")
         }
 
-        // 帧处理器（单槽替换，GL 线程读取 byte[]，算法线程推理）
+        // 帧处理器（单槽替换，算法线程读取+推理，GL 线程不阻塞）
         mFrameProcessor = FrameProcessor(
-            mAlgorithm!!, mAlgoExecutor
+            mAlgorithm!!, mAlgoExecutor,
+            mReadBuffer = { hw, w, h -> nativeReadHardwareBuffer(hw, w, h) }
         ) { result ->
             runOnUiThread { handleAlgorithmResult(result) }
         }
@@ -289,19 +290,14 @@ class PreviewActivity : AppCompatActivity() {
     private val FACE_HIDE_THRESHOLD = 5
 
     /**
-     * GL 线程回调：读取 HardwareBuffer 后提交 byte[] 给 FrameProcessor。
+     * GL 线程回调：提交 HardwareBuffer 引用给 FrameProcessor（非阻塞）。
+     * 算法线程负责读取 + 推理，JNI 有 acquire 保护。
      */
     private fun processWithAlgorithm(hwBuffer: android.hardware.HardwareBuffer, frameW: Int, frameH: Int) {
         val fp = mFrameProcessor ?: return
         mCurrentFrameW = frameW
         mCurrentFrameH = frameH
-        val rawData = try {
-            nativeReadHardwareBuffer(hwBuffer, frameW, frameH)
-        } catch (e: Exception) {
-            Log.w(TAG, "algo: read failed", e); return
-        }
-        if (rawData == null) { Log.w(TAG, "algo: read null"); return }
-        fp.submitFrame(rawData, frameW, frameH)
+        fp.submitFrame(hwBuffer, frameW, frameH)
     }
 
     /**
