@@ -93,6 +93,8 @@ Java_com_skyworth_faceid_algorithm_FaceIDAlgorithmImpl_nativeDetect(
         jfieldID li_f = env->GetFieldID(rc, "liveness", "F");
         jfieldID emb_f = env->GetFieldID(rc, "emb", "[F");
         jfieldID kps_f = env->GetFieldID(rc, "kps", "[F");
+        jfieldID lm_f = env->GetFieldID(rc, "landmarks", "[F");
+        jfieldID lmv_f = env->GetFieldID(rc, "landmarksValid", "Z");
         int cnt = n < max_faces ? n : max_faces;
         for (int i = 0; i < cnt; i++) {
             jobject obj = env->GetObjectArrayElement(results_array, i);
@@ -118,6 +120,20 @@ Java_com_skyworth_faceid_algorithm_FaceIDAlgorithmImpl_nativeDetect(
                 }
                 env->SetFloatArrayRegion(kps_arr, 0, 10, flat);
                 env->SetObjectField(obj, kps_f, kps_arr);
+            }
+            // Copy 106 dense landmarks (flatten float[106][2] → float[212])
+            if (lm_f != nullptr && results[i].landmarks_valid) {
+                jfloatArray lm_arr = env->NewFloatArray(212);
+                float flat_lm[212];
+                for (int k = 0; k < 106; k++) {
+                    flat_lm[k * 2]     = results[i].landmarks[k][0];
+                    flat_lm[k * 2 + 1] = results[i].landmarks[k][1];
+                }
+                env->SetFloatArrayRegion(lm_arr, 0, 212, flat_lm);
+                env->SetObjectField(obj, lm_f, lm_arr);
+            }
+            if (lmv_f != nullptr) {
+                env->SetBooleanField(obj, lmv_f, results[i].landmarks_valid ? JNI_TRUE : JNI_FALSE);
             }
         }
     }

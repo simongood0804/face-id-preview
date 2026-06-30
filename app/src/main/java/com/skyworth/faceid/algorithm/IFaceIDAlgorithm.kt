@@ -36,10 +36,12 @@ interface IFaceIDAlgorithm {
         val faceRect: RectF? = null,
         /** 处理后的帧数据（算法绘制人脸框后的数据）。 */
         processedData: ByteArray? = null,
-        /** 人脸关键点（可选），null 表示未提供。 */
+        /** 人脸密集地标（可选），null 表示未提供。 */
         val landmarks: List<PointF>? = null,
         /** 是否为新录入的人脸。 */
-        val isNewEnrollment: Boolean = false
+        val isNewEnrollment: Boolean = false,
+        /** 5 个面部关键点（左眼、右眼、鼻尖、左嘴角、右嘴角）。 */
+        val keypoints: List<PointF>? = null
     ) {
         /** Face ID 唯一标识，不为 null。 */
         val faceId: String = faceId ?: ""

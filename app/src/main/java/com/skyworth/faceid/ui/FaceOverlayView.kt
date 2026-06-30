@@ -4,6 +4,7 @@ import android.content.Context
 import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.Paint
+import android.graphics.PointF
 import android.graphics.RectF
 import android.util.AttributeSet
 import android.view.View
@@ -45,6 +46,18 @@ class FaceOverlayView @JvmOverloads constructor(
     /** 文字背景画笔（半透明）。 */
     private val mBgPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         color = Color.argb(160, 0, 0, 0)
+        style = Paint.Style.FILL
+    }
+
+    /** 蓝色关键点画笔（5 点）。 */
+    private val mBluePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = Color.BLUE
+        style = Paint.Style.FILL
+    }
+
+    /** 黄色密集地标画笔（106 点）。 */
+    private val mYellowPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = Color.YELLOW
         style = Paint.Style.FILL
     }
 
@@ -115,6 +128,16 @@ class FaceOverlayView @JvmOverloads constructor(
             // 置信度（小字）
             val confText = "${(face.confidence * 100).toInt()}%"
             canvas.drawText(confText, left + 6, bottom + labelHeight + 4, mLabelPaint)
+
+            // 绘制 106 密集地标（黄色）
+            face.denseLandmarks?.forEach { pt ->
+                canvas.drawCircle(pt.x * scaleX, pt.y * scaleY, 2f, mYellowPaint)
+            }
+
+            // 绘制 5 关键点（蓝色）
+            face.keypoints?.forEach { pt ->
+                canvas.drawCircle(pt.x * scaleX, pt.y * scaleY, 4f, mBluePaint)
+            }
         }
     }
 
@@ -124,7 +147,11 @@ class FaceOverlayView @JvmOverloads constructor(
         val type: FaceType,
         val confidence: Float,
         /** 显示名称，null 则使用默认文字（detected/spoof）。 */
-        val label: String? = null
+        val label: String? = null,
+        /** 5 个面部关键点（蓝色）。 */
+        val keypoints: List<PointF>? = null,
+        /** 106 个密集地标（黄色）。 */
+        val denseLandmarks: List<PointF>? = null
     )
 
     enum class FaceType { DETECTED, SPOOF }

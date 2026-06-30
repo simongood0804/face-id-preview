@@ -334,7 +334,9 @@ class PreviewActivity : AppCompatActivity() {
                         rect = result.faceRect,
                         type = overlayType,
                         confidence = result.confidence,
-                        label = if (isNamed) faceId else null
+                        label = if (isNamed) faceId else null,
+                        keypoints = result.keypoints,
+                        denseLandmarks = result.landmarks
                     )),
                     frameW, frameH
                 )

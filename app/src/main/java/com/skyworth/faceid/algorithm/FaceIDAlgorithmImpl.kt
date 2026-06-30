@@ -183,12 +183,29 @@ class FaceIDAlgorithmImpl : IFaceIDAlgorithm {
                 Log.i(TAG, "faceId=$faceId, conf=${String.format("%.1f", confidence * 100)}%" +
                         if (isNewEnroll) " [NEW]" else "")
 
+                // 转换 5 关键点
+                val kpsList = r.kps?.let { arr ->
+                    if (arr.size >= 10) {
+                        (0 until 5).map { PointF(arr[it * 2], arr[it * 2 + 1]) }
+                    } else null
+                }
+                // 转换 106 密集地标
+                val lmList = if (r.landmarksValid) {
+                    r.landmarks?.let { arr ->
+                        if (arr.size >= 212) {
+                            (0 until 106).map { PointF(arr[it * 2], arr[it * 2 + 1]) }
+                        } else null
+                    }
+                } else null
+
                 IFaceIDAlgorithm.FaceIDResult(
                     faceId = faceId,
                     confidence = confidence,
                     faceRect = faceRect,
                     processedData = frameData,
-                    isNewEnrollment = isNewEnroll
+                    isNewEnrollment = isNewEnroll,
+                    keypoints = kpsList,
+                    landmarks = lmList
                 )
             } else {
                 if (n == 0) Log.i(TAG, "  no face detected")
@@ -337,5 +354,9 @@ class FaceIDAlgorithmImpl : IFaceIDAlgorithm {
         @JvmField var emb: FloatArray? = null
         /** 5 个面部关键点 [左眼, 右眼, 鼻尖, 左嘴角, 右嘴角]。 */
         @JvmField var kps: FloatArray? = null
+        /** 106 个密集地标（212 floats）。 */
+        @JvmField var landmarks: FloatArray? = null
+        /** 106 点是否有效。 */
+        @JvmField var landmarksValid: Boolean = false
     }
 }
