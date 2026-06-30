@@ -244,6 +244,14 @@ class FaceIDCameraController : EvsBufferProvider {
         // 无新帧时返回上一帧的缓存，防止黑屏
         if (descriptor == null || descriptor!!.hardwareBuffer == null ||
                 descriptor!!.hardwareBuffer!!.isClosed) {
+            Log.w(TAG, "descriptor invalid (closed=${descriptor?.hardwareBuffer?.isClosed}), " +
+                    "fallback to mLastFrame")
+            if (mLastFrame != null && mLastFrame!!.hardwareBuffer != null &&
+                    !mLastFrame!!.hardwareBuffer!!.isClosed) {
+                Log.w(TAG, "mLastFrame valid, returning it")
+            } else {
+                Log.w(TAG, "mLastFrame also invalid, will cause black screen")
+            }
             return mLastFrame
         }
         return descriptor

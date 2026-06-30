@@ -153,56 +153,33 @@ Java_com_skyworth_faceid_algorithm_FaceIDAlgorithmImpl_nativeVersion(
 // HardwareBuffer → raw byte[] (标准 NDK API)
 // ============================================================
 
+/** 读取全图（首帧或 fallback）。 */
 JNIEXPORT jbyteArray JNICALL
 Java_com_skyworth_faceid_ui_PreviewActivity_nativeReadHardwareBuffer(
     JNIEnv *env, jclass /*clazz*/,
     jobject hw_buffer, jint width, jint height) {
 
-    // 使用标准 NDK 桥接 API 获取 AHardwareBuffer 指针
     AHardwareBuffer *native_buf = AHardwareBuffer_fromHardwareBuffer(env, hw_buffer);
-    if (!native_buf) { LOGE("AHardwareBuffer_fromHardwareBuffer failed"); return nullptr; }
+    if (!native_buf) { LOGE("fromHB failed"); return nullptr; }
 
-    // acquire 增加引用计数，防止并发 close() 导致 use-after-free
     AHardwareBuffer_acquire(native_buf);
 
-    // lock 获取可读指针 (UYVY = 2 bytes/pixel)
     void *data = nullptr;
     int ret = AHardwareBuffer_lock(native_buf,
                                    AHARDWAREBUFFER_USAGE_CPU_READ_OFTEN,
-                                   -1,   // fence
-                                   nullptr,  // rect
-                                   &data);
-    if (ret != 0) {
-        AHardwareBuffer_release(native_buf);
-        LOGE("AHardwareBuffer_lock failed: %d", ret);
-        return nullptr;
-    }
+                                   -1, nullptr, &data);
+    if (ret != 0) { AHardwareBuffer_release(native_buf); LOGE("lock failed: %d", ret); return nullptr; }
 
-    // UYVY 格式：width*2 bytes per row, height rows
-    int rowBytes = width * 2;
-    int total = height * rowBytes;
-    uint8_t *src = (uint8_t *)data;
-
+    int total = height * width * 2;
     jbyteArray result = env->NewByteArray(total);
-    if (result == nullptr) {
-        AHardwareBuffer_unlock(native_buf, nullptr);
-        AHardwareBuffer_release(native_buf);
-        LOGE("NewByteArray failed");
-        return nullptr;
-    }
+    if (!result) { AHardwareBuffer_unlock(native_buf, nullptr); AHardwareBuffer_release(native_buf); return nullptr; }
     jbyte *dst = env->GetByteArrayElements(result, nullptr);
-    if (dst == nullptr) {
-        AHardwareBuffer_unlock(native_buf, nullptr);
-        AHardwareBuffer_release(native_buf);
-        LOGE("GetByteArrayElements failed");
-        return nullptr;
-    }
-    memcpy(dst, src, total);
+    if (!dst) { AHardwareBuffer_unlock(native_buf, nullptr); AHardwareBuffer_release(native_buf); return nullptr; }
+    memcpy(dst, data, total);
     env->ReleaseByteArrayElements(result, dst, 0);
 
     AHardwareBuffer_unlock(native_buf, nullptr);
     AHardwareBuffer_release(native_buf);
-
     return result;
 }
 

@@ -6,7 +6,6 @@ package com.skyworth.faceid.ui
 
 import android.content.Context
 import android.graphics.Bitmap
-import android.graphics.RectF
 import android.opengl.GLSurfaceView
 import android.os.Bundle
 import android.util.Log
@@ -279,8 +278,18 @@ class PreviewActivity : AppCompatActivity() {
     private var mCurrentFrameW = 0
     private var mCurrentFrameH = 0
 
+    // ============================================================
+    // 绘制防抖
+    // ============================================================
+
+    /** 连续无结果帧计数（达到阈值才清除画框）。 */
+    private var mNoFaceCount = 0
+
+    /** 隐藏画框所需的连续无检测帧数（约 5×16ms = 80ms 延迟）。 */
+    private val FACE_HIDE_THRESHOLD = 5
+
     /**
-     * GL 线程回调：同步读取 HardwareBuffer 后提交 byte[] 给 FrameProcessor。
+     * GL 线程回调：读取 HardwareBuffer 后提交 byte[] 给 FrameProcessor。
      */
     private fun processWithAlgorithm(hwBuffer: android.hardware.HardwareBuffer, frameW: Int, frameH: Int) {
         val fp = mFrameProcessor ?: return
@@ -297,64 +306,52 @@ class PreviewActivity : AppCompatActivity() {
 
     /**
      * 算法结果回调（AlgoProcessor 线程 → runOnUiThread）。
+     * 仅对隐藏做防抖：连续 N 帧无人脸才清除画框。
+     * 显示和位置更新不做防抖，保证即时响应。
      */
     private fun handleAlgorithmResult(result: IFaceIDAlgorithm.FaceIDResult) {
         val frameW = mCurrentFrameW
         val frameH = mCurrentFrameH
 
         if (result.faceId.isNotEmpty()) {
+            // 有人脸 → 即时显示，无防抖
+            mNoFaceCount = 0
+
+            val faceId = result.faceId
             val enrolledTotal = mEnrollmentManager?.getCount() ?: 0
-            val displayText = getString(R.string.face_id_label) + " " + result.faceId +
+            val displayText = getString(R.string.face_id_label) + " " + faceId +
                     " (${String.format("%.1f", result.confidence * 100)}%)" +
                     " | 已录入: $enrolledTotal"
             mFaceIdText.text = displayText
 
-            // 新录入弹出 Toast
             if (result.isNewEnrollment) {
                 Toast.makeText(this, "录入成功: $displayText", Toast.LENGTH_SHORT).show()
             }
 
-            // 基于当前人脸框计算黄色防抖框（始终为正方形，靠边时整体平移）
-            val cropRect = if (result.faceRect != null) {
-                val fr = result.faceRect
-                val cx = (fr.left + fr.right) / 2f
-                val cy = (fr.top + fr.bottom) / 2f
-                val faceSize = maxOf(fr.width(), fr.height())
-                val rawSize = (faceSize * 1.5f).toInt().coerceAtLeast(64)
-                val half = rawSize / 2f
-                val fw = frameW.toFloat()
-                val fh = frameH.toFloat()
-                var l = cx - half; var t = cy - half
-                var r = cx + half; var b = cy + half
-                // 整体平移保持正方形
-                if (l < 0f) { r -= l; l = 0f }
-                if (t < 0f) { b -= t; t = 0f }
-                if (r > fw) { l -= (r - fw); r = fw }
-                if (b > fh) { t -= (b - fh); b = fh }
-                RectF(l, t, r, b)
-            } else null
-
-            // 传递人脸框到覆盖层
             if (result.faceRect != null) {
-                val isNamed = result.faceId != "detected" &&
-                        result.faceId != "spoof" &&
-                        result.faceId.isNotEmpty()
-                val isDetected = isNamed || result.faceId == "detected"
+                val isNamed = faceId != "detected" && faceId != "spoof"
+                val overlayType = if (isNamed || faceId == "detected")
+                    FaceOverlayView.FaceType.DETECTED
+                else FaceOverlayView.FaceType.SPOOF
                 mFaceOverlay.setFaces(
                     listOf(FaceOverlayView.FaceBox(
                         rect = result.faceRect,
-                        type = if (isDetected) FaceOverlayView.FaceType.DETECTED
-                               else FaceOverlayView.FaceType.SPOOF,
+                        type = overlayType,
                         confidence = result.confidence,
-                        label = if (isNamed) result.faceId else null,
-                        cropRect = cropRect
+                        label = if (isNamed) faceId else null
                     )),
                     frameW, frameH
                 )
                 mFaceOverlay.visibility = View.VISIBLE
             }
         } else {
-            mFaceOverlay.clearFaces()
+            // 无人脸 → 防抖隐藏
+            mNoFaceCount++
+            if (mNoFaceCount >= FACE_HIDE_THRESHOLD) {
+                mFaceOverlay.clearFaces()
+                mFaceIdText.text = getString(R.string.face_id_label) + " " +
+                        getString(R.string.face_id_none)
+            }
         }
     }
 
