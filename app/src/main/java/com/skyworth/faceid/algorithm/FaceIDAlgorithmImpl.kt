@@ -164,7 +164,9 @@ class FaceIDAlgorithmImpl : IFaceIDAlgorithm {
                 var isNewEnroll = false
                 val enrollMgr = mEnrollmentManager
                 val emb = r.emb
-                if (enrollMgr != null && emb != null && emb.size == 512) {
+                val faceSize = maxOf(r.x2 - r.x1, r.y2 - r.y1)
+                if (enrollMgr != null && emb != null && emb.size == 512 &&
+                        faceSize >= MIN_FACE_SIZE) {
                     val result = enrollMgr.recognize(emb, r.score, r.liveness)
                     if (result.name != null) {
                         faceId = result.name
@@ -289,6 +291,9 @@ class FaceIDAlgorithmImpl : IFaceIDAlgorithm {
         private const val FACEID_FLAG_RECOG = 1 shl 3
         private const val FACEID_FLAG_ALL = 0x0F
 
+        /** 录入所需的最小人脸像素尺寸（RECOG 需要足够大的对齐人脸）。 */
+        private const val MIN_FACE_SIZE = 200
+
         init {
             try {
                 System.loadLibrary("faceid_jni")
@@ -330,5 +335,7 @@ class FaceIDAlgorithmImpl : IFaceIDAlgorithm {
         @JvmField var score: Float = 0f
         @JvmField var liveness: Float = -1f
         @JvmField var emb: FloatArray? = null
+        /** 5 个面部关键点 [左眼, 右眼, 鼻尖, 左嘴角, 右嘴角]。 */
+        @JvmField var kps: FloatArray? = null
     }
 }

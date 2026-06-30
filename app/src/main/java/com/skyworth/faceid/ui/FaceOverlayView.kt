@@ -35,6 +35,14 @@ class FaceOverlayView @JvmOverloads constructor(
         strokeWidth = 4f
     }
 
+    /** 黄色防抖框画笔（ROI 裁切区间）。 */
+    private val mYellowPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = Color.YELLOW
+        style = Paint.Style.STROKE
+        strokeWidth = 2f
+        pathEffect = android.graphics.DashPathEffect(floatArrayOf(10f, 10f), 0f)
+    }
+
     /** 标签文字画笔。 */
     private val mLabelPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         color = Color.WHITE
@@ -95,6 +103,15 @@ class FaceOverlayView @JvmOverloads constructor(
             val bottom = face.rect.bottom * scaleY
             val scaled = RectF(left, top, right, bottom)
 
+            // 绘制黄色防抖裁切框（在脸框下层，先绘制）
+            if (face.cropRect != null) {
+                val cl = face.cropRect.left * scaleX
+                val ct = face.cropRect.top * scaleY
+                val cr = face.cropRect.right * scaleX
+                val cb = face.cropRect.bottom * scaleY
+                canvas.drawRect(RectF(cl, ct, cr, cb), mYellowPaint)
+            }
+
             val paint = when (face.type) {
                 FaceType.DETECTED -> mGreenPaint
                 FaceType.SPOOF -> mRedPaint
@@ -124,7 +141,9 @@ class FaceOverlayView @JvmOverloads constructor(
         val type: FaceType,
         val confidence: Float,
         /** 显示名称，null 则使用默认文字（detected/spoof）。 */
-        val label: String? = null
+        val label: String? = null,
+        /** 防抖裁切框（原图坐标），null 表示不绘制。 */
+        val cropRect: RectF? = null
     )
 
     enum class FaceType { DETECTED, SPOOF }

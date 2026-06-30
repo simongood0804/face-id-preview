@@ -91,6 +91,7 @@ Java_com_skyworth_faceid_algorithm_FaceIDAlgorithmImpl_nativeDetect(
         jfieldID sc_f = env->GetFieldID(rc, "score", "F");
         jfieldID li_f = env->GetFieldID(rc, "liveness", "F");
         jfieldID emb_f = env->GetFieldID(rc, "emb", "[F");
+        jfieldID kps_f = env->GetFieldID(rc, "kps", "[F");
         int cnt = n < max_faces ? n : max_faces;
         for (int i = 0; i < cnt; i++) {
             jobject obj = env->GetObjectArrayElement(results_array, i);
@@ -105,6 +106,17 @@ Java_com_skyworth_faceid_algorithm_FaceIDAlgorithmImpl_nativeDetect(
                 jfloatArray emb_arr = env->NewFloatArray(512);
                 env->SetFloatArrayRegion(emb_arr, 0, 512, results[i].emb);
                 env->SetObjectField(obj, emb_f, emb_arr);
+            }
+            // Copy 5 facial keypoints (flatten float[5][2] → float[10])
+            if (kps_f != nullptr) {
+                jfloatArray kps_arr = env->NewFloatArray(10);
+                float flat[10];
+                for (int k = 0; k < 5; k++) {
+                    flat[k * 2]     = results[i].kps[k][0];
+                    flat[k * 2 + 1] = results[i].kps[k][1];
+                }
+                env->SetFloatArrayRegion(kps_arr, 0, 10, flat);
+                env->SetObjectField(obj, kps_f, kps_arr);
             }
         }
     }
@@ -150,6 +162,9 @@ Java_com_skyworth_faceid_ui_PreviewActivity_nativeReadHardwareBuffer(
     AHardwareBuffer *native_buf = AHardwareBuffer_fromHardwareBuffer(env, hw_buffer);
     if (!native_buf) { LOGE("AHardwareBuffer_fromHardwareBuffer failed"); return nullptr; }
 
+    // acquire 增加引用计数，防止并发 close() 导致 use-after-free
+    AHardwareBuffer_acquire(native_buf);
+
     // lock 获取可读指针 (UYVY = 2 bytes/pixel)
     void *data = nullptr;
     int ret = AHardwareBuffer_lock(native_buf,
@@ -157,7 +172,11 @@ Java_com_skyworth_faceid_ui_PreviewActivity_nativeReadHardwareBuffer(
                                    -1,   // fence
                                    nullptr,  // rect
                                    &data);
-    if (ret != 0) { LOGE("AHardwareBuffer_lock failed: %d", ret); return nullptr; }
+    if (ret != 0) {
+        AHardwareBuffer_release(native_buf);
+        LOGE("AHardwareBuffer_lock failed: %d", ret);
+        return nullptr;
+    }
 
     // UYVY 格式：width*2 bytes per row, height rows
     int rowBytes = width * 2;
@@ -165,13 +184,25 @@ Java_com_skyworth_faceid_ui_PreviewActivity_nativeReadHardwareBuffer(
     uint8_t *src = (uint8_t *)data;
 
     jbyteArray result = env->NewByteArray(total);
+    if (result == nullptr) {
+        AHardwareBuffer_unlock(native_buf, nullptr);
+        AHardwareBuffer_release(native_buf);
+        LOGE("NewByteArray failed");
+        return nullptr;
+    }
     jbyte *dst = env->GetByteArrayElements(result, nullptr);
+    if (dst == nullptr) {
+        AHardwareBuffer_unlock(native_buf, nullptr);
+        AHardwareBuffer_release(native_buf);
+        LOGE("GetByteArrayElements failed");
+        return nullptr;
+    }
     memcpy(dst, src, total);
     env->ReleaseByteArrayElements(result, dst, 0);
 
     AHardwareBuffer_unlock(native_buf, nullptr);
+    AHardwareBuffer_release(native_buf);
 
-    LOGI("readHB: %dx%d UYVY -> %d bytes", width, height, total);
     return result;
 }
 

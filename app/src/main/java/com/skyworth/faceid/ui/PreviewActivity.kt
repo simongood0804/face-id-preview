@@ -6,6 +6,7 @@ package com.skyworth.faceid.ui
 
 import android.content.Context
 import android.graphics.Bitmap
+import android.graphics.RectF
 import android.opengl.GLSurfaceView
 import android.os.Bundle
 import android.util.Log
@@ -19,10 +20,10 @@ import com.android.car.evs.EvsGL20CameraRenderer
 import com.skyworth.faceid.R
 import com.skyworth.faceid.algorithm.FaceEnrollmentManager
 import com.skyworth.faceid.algorithm.FaceIDAlgorithmImpl
+import com.skyworth.faceid.algorithm.FrameProcessor
 import com.skyworth.faceid.algorithm.IFaceIDAlgorithm
 import com.skyworth.faceid.camera.CameraManager
 import com.skyworth.faceid.camera.FaceIDCameraController
-import java.nio.ByteBuffer
 import java.util.concurrent.Executors
 
 /**
@@ -55,6 +56,7 @@ class PreviewActivity : AppCompatActivity() {
     private var mEnrollmentManager: FaceEnrollmentManager? = null
     private var mFaceIDController: FaceIDCameraController? = null
     private var mRenderer: EvsGL20CameraRenderer? = null
+    private var mFrameProcessor: FrameProcessor? = null
 
     /** 算法处理线程池（单线程，避免 GL 线程阻塞）。 */
     private val mAlgoExecutor = Executors.newSingleThreadExecutor { r ->
@@ -112,13 +114,20 @@ class PreviewActivity : AppCompatActivity() {
             Log.w(TAG, "initCoreModules: algorithm init failed, will retry")
         }
 
+        // 帧处理器（单槽替换，GL 线程读取 byte[]，算法线程推理）
+        mFrameProcessor = FrameProcessor(
+            mAlgorithm!!, mAlgoExecutor
+        ) { result ->
+            runOnUiThread { handleAlgorithmResult(result) }
+        }
+
         // 自定义控制器（与 FiveCameraController 的 MyEvsCameraController 一致）
         mFaceIDController = FaceIDCameraController().also { controller ->
             // 帧尺寸回调：调整 GLSurfaceView 保持画面比例、靠左显示
             controller.onFrameSizeChanged = { width, height ->
                 runOnUiThread { resizePreviewSurface(width, height) }
             }
-            // 帧数据处理回调：传入算法进行人脸检测
+            // 帧数据处理回调：传入算法进行人脸检测（GL 线程）
             controller.onFrameData = { hwBuffer, frameW, frameH ->
                 processWithAlgorithm(hwBuffer, frameW, frameH)
             }
@@ -266,69 +275,86 @@ class PreviewActivity : AppCompatActivity() {
     // 算法处理
     // ============================================================
 
+    /** 当前帧尺寸缓存（供 handleAlgorithmResult 使用）。 */
+    private var mCurrentFrameW = 0
+    private var mCurrentFrameH = 0
+
     /**
-     * 后台异步执行算法检测。
-     *
-     * 1. GL 线程：wrapHardwareBuffer() 创建 HARDWARE Bitmap（轻量，仅 GPU 引用）
-     * 2. 后台线程：copy(ARGB_8888) → copyPixelsToBuffer → processFrame
-     *    copy() 在后台线程执行，避免 GL 线程 GPU 同步死锁
+     * GL 线程回调：同步读取 HardwareBuffer 后提交 byte[] 给 FrameProcessor。
      */
     private fun processWithAlgorithm(hwBuffer: android.hardware.HardwareBuffer, frameW: Int, frameH: Int) {
-        if (mAlgorithm == null) return
-        // 在 GL 线程上同步读取像素数据（此时 HardwareBuffer 有效）
+        val fp = mFrameProcessor ?: return
+        mCurrentFrameW = frameW
+        mCurrentFrameH = frameH
         val rawData = try {
             nativeReadHardwareBuffer(hwBuffer, frameW, frameH)
         } catch (e: Exception) {
-            Log.w(TAG, "algo: read failed", e)
-            return
+            Log.w(TAG, "algo: read failed", e); return
         }
         if (rawData == null) { Log.w(TAG, "algo: read null"); return }
+        fp.submitFrame(rawData, frameW, frameH)
+    }
 
-        // 像素数据已拷贝到 Java heap，后台线程安全使用
-        mAlgoExecutor.submit {
-            try {
-                val result = mAlgorithm?.processFrame(rawData, frameW, frameH, 0) // UYVY
+    /**
+     * 算法结果回调（AlgoProcessor 线程 → runOnUiThread）。
+     */
+    private fun handleAlgorithmResult(result: IFaceIDAlgorithm.FaceIDResult) {
+        val frameW = mCurrentFrameW
+        val frameH = mCurrentFrameH
 
-                if (result != null && result.faceId.isNotEmpty()) {
-                    runOnUiThread {
-                        val enrolledTotal = mEnrollmentManager?.getCount() ?: 0
-                        val displayText = getString(R.string.face_id_label) + " " + result.faceId +
-                                " (${String.format("%.1f", result.confidence * 100)}%)" +
-                                " | 已录入: $enrolledTotal"
-                        mFaceIdText.text = displayText
+        if (result.faceId.isNotEmpty()) {
+            val enrolledTotal = mEnrollmentManager?.getCount() ?: 0
+            val displayText = getString(R.string.face_id_label) + " " + result.faceId +
+                    " (${String.format("%.1f", result.confidence * 100)}%)" +
+                    " | 已录入: $enrolledTotal"
+            mFaceIdText.text = displayText
 
-                        // 新录入弹出 Toast
-                        if (result.isNewEnrollment) {
-                            Toast.makeText(this,
-                                "录入成功: $displayText",
-                                Toast.LENGTH_SHORT).show()
-                        }
-
-                        // 传递人脸框到覆盖层
-                        if (result.faceRect != null) {
-                            val isNamed = result.faceId != "detected" &&
-                                    result.faceId != "spoof" &&
-                                    result.faceId.isNotEmpty()
-                            val isDetected = isNamed || result.faceId == "detected"
-                            mFaceOverlay.setFaces(
-                                listOf(FaceOverlayView.FaceBox(
-                                    rect = result.faceRect,
-                                    type = if (isDetected) FaceOverlayView.FaceType.DETECTED
-                                           else FaceOverlayView.FaceType.SPOOF,
-                                    confidence = result.confidence,
-                                    label = if (isNamed) result.faceId else null
-                                )),
-                                frameW, frameH
-                            )
-                            mFaceOverlay.visibility = View.VISIBLE
-                        }
-                    }
-                } else {
-                    runOnUiThread { mFaceOverlay.clearFaces() }
-                }
-            } catch (e: Exception) {
-                Log.e(TAG, "algorithm error", e)
+            // 新录入弹出 Toast
+            if (result.isNewEnrollment) {
+                Toast.makeText(this, "录入成功: $displayText", Toast.LENGTH_SHORT).show()
             }
+
+            // 基于当前人脸框计算黄色防抖框（始终为正方形，靠边时整体平移）
+            val cropRect = if (result.faceRect != null) {
+                val fr = result.faceRect
+                val cx = (fr.left + fr.right) / 2f
+                val cy = (fr.top + fr.bottom) / 2f
+                val faceSize = maxOf(fr.width(), fr.height())
+                val rawSize = (faceSize * 1.5f).toInt().coerceAtLeast(64)
+                val half = rawSize / 2f
+                val fw = frameW.toFloat()
+                val fh = frameH.toFloat()
+                var l = cx - half; var t = cy - half
+                var r = cx + half; var b = cy + half
+                // 整体平移保持正方形
+                if (l < 0f) { r -= l; l = 0f }
+                if (t < 0f) { b -= t; t = 0f }
+                if (r > fw) { l -= (r - fw); r = fw }
+                if (b > fh) { t -= (b - fh); b = fh }
+                RectF(l, t, r, b)
+            } else null
+
+            // 传递人脸框到覆盖层
+            if (result.faceRect != null) {
+                val isNamed = result.faceId != "detected" &&
+                        result.faceId != "spoof" &&
+                        result.faceId.isNotEmpty()
+                val isDetected = isNamed || result.faceId == "detected"
+                mFaceOverlay.setFaces(
+                    listOf(FaceOverlayView.FaceBox(
+                        rect = result.faceRect,
+                        type = if (isDetected) FaceOverlayView.FaceType.DETECTED
+                               else FaceOverlayView.FaceType.SPOOF,
+                        confidence = result.confidence,
+                        label = if (isNamed) result.faceId else null,
+                        cropRect = cropRect
+                    )),
+                    frameW, frameH
+                )
+                mFaceOverlay.visibility = View.VISIBLE
+            }
+        } else {
+            mFaceOverlay.clearFaces()
         }
     }
 

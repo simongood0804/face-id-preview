@@ -39,10 +39,25 @@ class FaceEnrollmentManager(
     )
 
     /** 匹配阈值（余弦相似度）。 */
-    private val MATCH_THRESHOLD = 0.30f
+    private val MATCH_THRESHOLD = 0.40f
 
-    /** 自动录入所需的检测置信度。 */
-    private val ENROLL_CONFIDENCE = 0.6f
+    /** 最佳匹配与次优匹配的最小间隔，防止身份来回跳。 */
+    private val MATCH_MARGIN = 0.05f
+
+    /** 自动录入所需的最低检测置信度。 */
+    private val ENROLL_CONFIDENCE = 0.65f
+
+    /** 自动录入前需要连续检测到人脸的帧数。 */
+    private val ENROLL_CONSECUTIVE_FRAMES = 10
+
+    /** 录入冷却帧数（录入成功后暂停自动录入）。 */
+    private val ENROLL_COOLDOWN_FRAMES = 60
+
+    /** 连续检测到稳定人脸的帧数计数器。 */
+    private var mStableFrames = 0
+
+    /** 录入冷却计数器。 */
+    private var mCooldown = 0
 
     init {
         load()
@@ -59,32 +74,59 @@ class FaceEnrollmentManager(
 
     /**
      * 识别或自动录入。
-     * 名称用完时，替换最早录入的人。
+     *
+     * @param emb       512-D 特征向量
+     * @param score     检测置信度
+     * @param liveness  活体分数
      */
     fun recognize(emb: FloatArray, score: Float, liveness: Float): RecognitionResult {
         if (emb.size != 512) return RecognitionResult(null, false)
 
-        // 1. 尝试匹配已录入的人
+        // 冷却计数器递减
+        if (mCooldown > 0) mCooldown--
+
+        // 1. 尝试匹配已录入的人（不受冷却和稳定帧约束）
         if (mGallery.isNotEmpty()) {
             var bestName: String? = null
             var bestSim = -1f
+            var secondSim = -1f
             for ((name, stored) in mGallery) {
                 val sim = mAlgorithm.compare(stored, emb)
                 if (sim > bestSim) {
+                    secondSim = bestSim
                     bestSim = sim
                     bestName = name
+                } else if (sim > secondSim) {
+                    secondSim = sim
                 }
             }
             if (bestName != null && bestSim >= MATCH_THRESHOLD) {
-                return RecognitionResult(bestName, false)
+                mStableFrames = 0
+                if (mGallery.size <= 1 || bestSim - secondSim >= MATCH_MARGIN) {
+                    return RecognitionResult(bestName, false)
+                }
+                Log.d(TAG, "reject: best=$bestName sim=${String.format("%.3f", bestSim)} " +
+                        "second=${String.format("%.3f", secondSim)} margin=${String.format("%.3f", bestSim - secondSim)}")
             }
         }
 
-        // 2. 没匹配到 → 自动录入（高置信度且非 spoof）
+        // 2. 自动录入前检查：冷却中
+        if (mCooldown > 0) return RecognitionResult(null, false)
+
+        // 3. 自动录入前检查：置信度、活体、稳定帧
         if (score >= ENROLL_CONFIDENCE && (liveness < 0f || liveness > 0.5f)) {
+            mStableFrames++
+            if (mStableFrames < ENROLL_CONSECUTIVE_FRAMES) {
+                Log.d(TAG, "enroll pending: ${mStableFrames}/${ENROLL_CONSECUTIVE_FRAMES}")
+                return RecognitionResult(null, false)
+            }
             val name = pickName()
             enroll(name, emb)
+            mStableFrames = 0
+            mCooldown = ENROLL_COOLDOWN_FRAMES
             return RecognitionResult(name, true)
+        } else {
+            mStableFrames = 0
         }
 
         return RecognitionResult(null, false)

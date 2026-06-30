@@ -21,8 +21,6 @@ import java.util.Collections
  *
  * 与 [FiveCameraController] 中的 [MyEvsCameraController] 实现一致，
  * 关键特性：当摄像头打开失败时自动断线重试，确保 DMS 摄像头最终可用。
- *
- * 线程安全：使用 dExecutor 单线程处理摄像头操作。
  */
 class FaceIDCameraController : EvsBufferProvider {
 
@@ -80,6 +78,9 @@ class FaceIDCameraController : EvsBufferProvider {
     private var mConnectCount = 0
 
     private val mHandler = Handler(Looper.getMainLooper())
+
+    /** 上一帧成功的描述符（无新帧时复用，防止黑屏）。 */
+    private var mLastFrame: EvsBufferDesc? = null
 
     /** 断线重连任务。 */
     private val mConnectRunnable: Runnable = object : Runnable {
@@ -234,10 +235,16 @@ class FaceIDCameraController : EvsBufferProvider {
                 }
                 EvsBufferDesc.recycle(descriptor)
                 descriptor = desc
+                mLastFrame = desc  // 缓存上一帧，无新帧时复用
                 break
             }
         } catch (e: Exception) {
             Log.e(TAG, "getNewFrame error", e)
+        }
+        // 无新帧时返回上一帧的缓存，防止黑屏
+        if (descriptor == null || descriptor!!.hardwareBuffer == null ||
+                descriptor!!.hardwareBuffer!!.isClosed) {
+            return mLastFrame
         }
         return descriptor
     }
@@ -297,6 +304,7 @@ class FaceIDCameraController : EvsBufferProvider {
 
     private fun resetBuffers() {
         descriptor = null
+        mLastFrame = null
         for (desc in buffers) {
             returnBuffer(desc, false)
         }
@@ -312,13 +320,17 @@ class FaceIDCameraController : EvsBufferProvider {
     private fun returnBuffer(value: EvsBufferDesc?, done: Boolean) {
         if (null == value || value.id < 0) return
         if (DEBUG) Log.d(TAG, "returnFrameBuffer: " + value.id)
-        try {
-            val buffer = value.hardwareBuffer
-            if (null != buffer && !buffer.isClosed) {
-                buffer.close()
+        // 保留 mLastFrame 的 buffer 不关闭，供后续帧复用防止黑屏
+        val isLastFrame = mLastFrame != null && value.id == mLastFrame!!.id
+        if (!isLastFrame) {
+            try {
+                val buffer = value.hardwareBuffer
+                if (null != buffer && !buffer.isClosed) {
+                    buffer.close()
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "close HardwareBuffer", e)
             }
-        } catch (e: Exception) {
-            Log.e(TAG, "close HardwareBuffer", e)
         }
         try {
             if (done) evsHalWrapper.doneWithFrame(value.id)
@@ -334,7 +346,7 @@ class FaceIDCameraController : EvsBufferProvider {
         private const val MAX_RECEIVE_FRAME = 6
         private const val RETRY_INTERVAL_MS = 1000L
         private const val RETRY_WAIT_MS = 600L
-        /** 算法跳帧间隔（每 N 帧处理一次算法）。 */
-        private const val FRAME_SKIP = 5
+        /** 算法跳帧间隔。 */
+        private const val FRAME_SKIP = 1
     }
 }
