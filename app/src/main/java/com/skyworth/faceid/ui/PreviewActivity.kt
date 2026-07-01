@@ -309,6 +309,18 @@ class PreviewActivity : AppCompatActivity() {
         val frameW = mCurrentFrameW
         val frameH = mCurrentFrameH
 
+        // 更新裁剪窗口（黄色采样框）
+        val fp = mFrameProcessor
+        if (fp != null) {
+            val size = 900
+            mFaceOverlay.setCropRect(
+                android.graphics.RectF(
+                    fp.cropLeft.toFloat(), fp.cropTop.toFloat(),
+                    (fp.cropLeft + size).toFloat(), (fp.cropTop + size).toFloat()
+                )
+            )
+        }
+
         if (result.faceId.isNotEmpty()) {
             // 有人脸 → 即时显示，无防抖
             mNoFaceCount = 0

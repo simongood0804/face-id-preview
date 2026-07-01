@@ -34,6 +34,10 @@ class FaceIDAlgorithmImpl : IFaceIDAlgorithm {
     /** 人脸检测结果缓存（避免每帧 new 对象）。 */
     private val mNativeResults = arrayOfNulls<FaceIDNativeResult>(MAX_FACES)
 
+    /** 裁剪偏移（FrameProcessor 在 processFrame 前设置）。 */
+    @Volatile var mCropOffsetX: Int = 0
+    @Volatile var mCropOffsetY: Int = 0
+
     /** 模型文件存储目录。 */
     private var mModelDir: String = ""
 
@@ -152,6 +156,33 @@ class FaceIDAlgorithmImpl : IFaceIDAlgorithm {
             if (n < 0) {
                 Log.e(TAG, "processFrame: nativeDetect error=$n")
                 return IFaceIDAlgorithm.FaceIDResult(processedData = frameData)
+            }
+
+            // 将检测结果坐标从裁剪空间修正回原图空间
+            if ((mCropOffsetX != 0 || mCropOffsetY != 0) && n > 0 && n <= MAX_FACES) {
+                for (i in 0 until n) {
+                    val r = mNativeResults[i]!!
+                    r.x1 += mCropOffsetX
+                    r.y1 += mCropOffsetY
+                    r.x2 += mCropOffsetX
+                    r.y2 += mCropOffsetY
+                    // 5 关键点
+                    val kps = r.kps
+                    if (kps != null) {
+                        for (p in 0 until 5) {
+                            kps[p * 2] = kps[p * 2] + mCropOffsetX
+                            kps[p * 2 + 1] = kps[p * 2 + 1] + mCropOffsetY
+                        }
+                    }
+                    // 106 密集地标
+                    val lm = r.landmarks
+                    if (lm != null) {
+                        for (p in 0 until 106) {
+                            lm[p * 2] = lm[p * 2] + mCropOffsetX
+                            lm[p * 2 + 1] = lm[p * 2 + 1] + mCropOffsetY
+                        }
+                    }
+                }
             }
 
             if (n > 0 && n <= MAX_FACES) {

@@ -3,6 +3,7 @@ package com.skyworth.faceid.ui
 import android.content.Context
 import android.graphics.Canvas
 import android.graphics.Color
+import android.graphics.DashPathEffect
 import android.graphics.Paint
 import android.graphics.PointF
 import android.graphics.RectF
@@ -21,6 +22,9 @@ class FaceOverlayView @JvmOverloads constructor(
 
     /** 当前帧的人脸列表。 */
     @Volatile private var mFaces: List<FaceBox> = emptyList()
+
+    /** 当前裁剪窗口（原图坐标，null 表示不绘制）。 */
+    @Volatile private var mCropRect: RectF? = null
 
     /** 绿色画框画笔（detected）。 */
     private val mGreenPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
@@ -61,6 +65,14 @@ class FaceOverlayView @JvmOverloads constructor(
         style = Paint.Style.FILL
     }
 
+    /** 黄色裁剪框画笔（虚线描边）。 */
+    private val mCropBoxPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = Color.YELLOW
+        style = Paint.Style.STROKE
+        strokeWidth = 2f
+        pathEffect = DashPathEffect(floatArrayOf(10f, 8f), 0f)
+    }
+
     /**
      * 更新人脸列表并重绘。
      * 坐标 [rect] 应在原图空间，会在绘制时自动缩放至 View 尺寸。
@@ -72,6 +84,15 @@ class FaceOverlayView @JvmOverloads constructor(
     fun setFaces(faces: List<FaceBox>, imgW: Int, imgH: Int) {
         mFaces = faces
         tag = "${imgW}x${imgH}"  // 暂存原图尺寸，用于缩放
+        postInvalidate()
+    }
+
+    /**
+     * 设置裁剪窗口矩形（用于绘制黄色采样框）。
+     * @param rect 原图坐标，null 时不绘制
+     */
+    fun setCropRect(rect: RectF?) {
+        mCropRect = rect
         postInvalidate()
     }
 
@@ -99,6 +120,15 @@ class FaceOverlayView @JvmOverloads constructor(
 
         val scaleX = vw / imgW
         val scaleY = vh / imgH
+
+        // 绘制裁剪窗口（黄色描边）
+        mCropRect?.let { crop ->
+            canvas.drawRect(
+                crop.left * scaleX, crop.top * scaleY,
+                crop.right * scaleX, crop.bottom * scaleY,
+                mCropBoxPaint
+            )
+        }
 
         for (face in faces) {
             // 缩放至 View 空间

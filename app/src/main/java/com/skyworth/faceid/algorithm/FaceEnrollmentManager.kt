@@ -113,8 +113,8 @@ class FaceEnrollmentManager(
         // 2. 自动录入前检查：冷却中
         if (mCooldown > 0) return RecognitionResult(null, false)
 
-        // 3. 自动录入前检查：置信度、活体、稳定帧
-        if (score >= ENROLL_CONFIDENCE && (liveness < 0f || liveness > 0.5f)) {
+        // 3. 自动录入前检查：置信度、稳定帧（裁剪后活体不可靠，跳过 liveness 检查）
+        if (score >= ENROLL_CONFIDENCE) {
             mStableFrames++
             if (mStableFrames < ENROLL_CONSECUTIVE_FRAMES) {
                 Log.d(TAG, "enroll pending: ${mStableFrames}/${ENROLL_CONSECUTIVE_FRAMES}")
