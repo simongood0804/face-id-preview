@@ -33,21 +33,20 @@ extern "C" {
 JNIEXPORT jlong JNICALL
 Java_com_skyworth_faceid_algorithm_FaceIDAlgorithmImpl_nativeInit(
     JNIEnv *env, jobject /*thiz*/,
-    jstring model_dir, jstring runtime) {
+    jstring manifest_path) {
 
-    const char *dir = env->GetStringUTFChars(model_dir, nullptr);
-    const char *rt = env->GetStringUTFChars(runtime, nullptr);
+    const char *path = env->GetStringUTFChars(manifest_path, nullptr);
+    LOGI("faceid_init: manifest=%s", path);
 
-    FaceIDHandle handle = faceid_init(dir, rt);
-
-    env->ReleaseStringUTFChars(model_dir, dir);
-    env->ReleaseStringUTFChars(runtime, rt);
+    FaceIDHandle handle = faceid_init(path);
 
     if (handle == nullptr) {
-        LOGE("faceid_init failed: dir=%s, runtime=%s", dir, rt);
+        LOGE("faceid_init failed: path=%s", path);
+        env->ReleaseStringUTFChars(manifest_path, path);
         return 0;
     }
     LOGI("faceid_init success: handle=%p", handle);
+    env->ReleaseStringUTFChars(manifest_path, path);
     return reinterpret_cast<jlong>(handle);
 }
 

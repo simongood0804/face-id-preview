@@ -1,0 +1,130 @@
+{
+  "version": "1.0",
+  "name": "faceid-pipeline",
+  "models": [
+    {
+      "id": "det_500m",
+      "name": "Face Detection (SCRFD 0.5M)",
+      "backend": "snpe",
+      "model_path": "/vendor/etc/faceid/det_500m_int8.dlc",
+      "load_strategy": "eager",
+      "inputs": [
+        {
+          "name": "input.1",
+          "shape": [1, 640, 640, 3],
+          "dtype": "float32",
+          "layout": "NHWC",
+          "disable_pipeline": true,
+          "pipeline": []
+        }
+      ],
+      "outputs": [
+        {"name": "443", "shape": [12800, 1],  "dtype": "float32"},
+        {"name": "468", "shape": [3200, 1],   "dtype": "float32"},
+        {"name": "493", "shape": [800, 1],    "dtype": "float32"},
+        {"name": "446", "shape": [12800, 4],  "dtype": "float32"},
+        {"name": "471", "shape": [3200, 4],   "dtype": "float32"},
+        {"name": "496", "shape": [800, 4],    "dtype": "float32"},
+        {"name": "449", "shape": [12800, 10], "dtype": "float32"},
+        {"name": "474", "shape": [3200, 10],  "dtype": "float32"},
+        {"name": "499", "shape": [800, 10],   "dtype": "float32"}
+      ],
+      "config":
+        {
+          "num_threads": "2",
+          "runtime": "dsp",
+          "performance_profile": "high_performance"
+        }
+    },
+    {
+      "id": "face_antispoof",
+      "name": "Face Anti-spoofing (Facenox)",
+      "backend": "snpe",
+      "model_path": "/vendor/etc/faceid/face_antispoof_int8.dlc",
+      "load_strategy": "lazy",
+      "inputs": [
+        {
+          "name": "input",
+          "shape": [1, 128, 128, 3],
+          "dtype": "float32",
+          "layout": "NHWC",
+          "disable_pipeline": true,
+          "pipeline": []
+        }
+      ],
+      "outputs": [
+        {
+          "name": "output",
+          "shape": [1, 2],
+          "dtype": "float32"
+        }
+      ],
+      "config":
+        {
+          "num_threads": "2",
+          "runtime": "dsp",
+          "performance_profile": "high_performance"
+        }
+    },
+    {
+      "id": "2d106det",
+      "name": "2D 106-point Landmark",
+      "backend": "snpe",
+      "model_path": "/vendor/etc/faceid/2d106det_int8.dlc",
+      "load_strategy": "lazy",
+      "inputs": [
+        {
+          "name": "data",
+          "shape": [1, 192, 192, 3],
+          "dtype": "float32",
+          "layout": "NHWC",
+          "disable_pipeline": true,
+          "pipeline": []
+        }
+      ],
+      "outputs": [
+        {
+          "name": "fc1",
+          "shape": [1, 212],
+          "dtype": "float32"
+        }
+      ],
+      "config":
+        {
+          "num_threads": "2",
+          "runtime": "dsp",
+          "performance_profile": "high_performance"
+        }
+    },
+    {
+      "id": "w600k_mbf",
+      "name": "Face Recognition (MobileFace 512-D)",
+      "backend": "snpe",
+      "model_path": "/vendor/etc/faceid/w600k_mbf_int8.dlc",
+      "load_strategy": "lazy",
+      "inputs": [
+        {
+          "name": "input.1",
+          "shape": [1, 112, 112, 3],
+          "dtype": "float32",
+          "layout": "NHWC",
+          "disable_pipeline": true,
+          "pipeline": []
+        }
+      ],
+      "outputs": [
+        {
+          "name": "516",
+          "shape": [1, 512],
+          "dtype": "float32"
+        }
+      ],
+      "config":
+        {
+          "num_threads": "2",
+          "runtime": "dsp",
+          "performance_profile": "high_performance"
+        }
+    }
+  ]
+}

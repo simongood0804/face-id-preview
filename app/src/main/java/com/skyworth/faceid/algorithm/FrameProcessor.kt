@@ -7,14 +7,13 @@ import java.util.concurrent.ExecutorService
 /**
  * 帧数据处理管理器（单槽替换 + ROI 裁剪）。
  *
- * GL 线程仅传递 HardwareBuffer 引用（~0ms），
- * 算法线程读取 → 裁剪 ROI（650×650）→ 推理。
+ * GL 线程读取 HardwareBuffer → ByteArray 后再传给此处理器，
+ * 算法线程接收 ByteArray → 裁剪 ROI（900×900）→ 推理。
  * 裁剪窗口跟随人脸，人脸中心位于窗口上方 2/3 处。
  */
 class FrameProcessor(
     private val mAlgorithm: FaceIDAlgorithmImpl,
     private val mExecutor: ExecutorService,
-    private val mReadBuffer: (android.hardware.HardwareBuffer, Int, Int) -> ByteArray?,
     private val mCallback: (IFaceIDAlgorithm.FaceIDResult) -> Unit
 ) {
     private val TAG = "FrameProcessor"
@@ -32,7 +31,7 @@ class FrameProcessor(
     private var mNoFaceCount = 0
 
     private data class PendingFrame(
-        val buffer: android.hardware.HardwareBuffer,
+        val data: ByteArray,
         val w: Int, val h: Int
     )
 
@@ -45,9 +44,9 @@ class FrameProcessor(
         Log.i(TAG, "FrameProcessor started, crop=$CROP_SIZE")
     }
 
-    fun submitFrame(hwBuffer: android.hardware.HardwareBuffer, w: Int, h: Int) {
+    fun submitFrame(data: ByteArray, w: Int, h: Int) {
         synchronized(this) {
-            mPending = PendingFrame(hwBuffer, w, h)
+            mPending = PendingFrame(data, w, h)
             if (!mProcessing) {
                 mProcessing = true
                 mExecutor.submit { processLoop() }
@@ -64,12 +63,8 @@ class FrameProcessor(
                     mPending = null
                 }
 
-                // 算法线程读取 HardwareBuffer
-                val data = mReadBuffer(p.buffer, p.w, p.h)
-                if (data == null) { Log.w(TAG, "read null, skip"); continue }
-
                 // 裁剪 ROI 并设置偏移（算法内坐标会被修正回原图空间）
-                val cropped = cropFrame(data, p.w, p.h)
+                val cropped = cropFrame(p.data, p.w, p.h)
                 mAlgorithm.mCropOffsetX = cropLeft
                 mAlgorithm.mCropOffsetY = cropTop
 

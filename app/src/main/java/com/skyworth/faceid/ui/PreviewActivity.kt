@@ -113,10 +113,9 @@ class PreviewActivity : AppCompatActivity() {
             Log.w(TAG, "initCoreModules: algorithm init failed, will retry")
         }
 
-        // 帧处理器（单槽替换，算法线程读取+推理，GL 线程不阻塞）
+        // 帧处理器（单槽替换，GL 线程读取 HardwareBuffer 后以 ByteArray 提交）
         mFrameProcessor = FrameProcessor(
-            mAlgorithm!!, mAlgoExecutor,
-            mReadBuffer = { hw, w, h -> nativeReadHardwareBuffer(hw, w, h) }
+            mAlgorithm!!, mAlgoExecutor
         ) { result ->
             runOnUiThread { handleAlgorithmResult(result) }
         }
@@ -290,14 +289,19 @@ class PreviewActivity : AppCompatActivity() {
     private val FACE_HIDE_THRESHOLD = 5
 
     /**
-     * GL 线程回调：提交 HardwareBuffer 引用给 FrameProcessor（非阻塞）。
-     * 算法线程负责读取 + 推理，JNI 有 acquire 保护。
+     * GL 线程回调：立即读取 HardwareBuffer 转为 ByteArray，再提交给算法线程（非阻塞）。
+     * 必须在 GL 线程读取 buffer，因为 EVS 帧回调返回后 buffer 可能被回收。
      */
     private fun processWithAlgorithm(hwBuffer: android.hardware.HardwareBuffer, frameW: Int, frameH: Int) {
         val fp = mFrameProcessor ?: return
         mCurrentFrameW = frameW
         mCurrentFrameH = frameH
-        fp.submitFrame(hwBuffer, frameW, frameH)
+
+        // 在 GL 线程立即读取 buffer 数据（buffer 此时有效）
+        val data = nativeReadHardwareBuffer(hwBuffer, frameW, frameH)
+        if (data == null) return
+
+        fp.submitFrame(data, frameW, frameH)
     }
 
     /**

@@ -86,13 +86,9 @@ class FaceIDAlgorithmImpl : IFaceIDAlgorithm {
                 Log.w(TAG, "initialize: model dir does not exist: $mModelDir")
             }
 
-            // 2. 获取运行时
-            val runtime = config["runtime"] as? String ?: DEFAULT_RUNTIME
-            Log.i(TAG, "initialize: runtime=$runtime")
-
-            // 3. 初始化 native
+            // 2. 初始化 native（新 API 传 manifest.json 全路径）
             val t0 = System.currentTimeMillis()
-            mNativeHandle = nativeInit(mModelDir, runtime)
+            mNativeHandle = nativeInit("$mModelDir/manifest.json")
             val t1 = System.currentTimeMillis()
             Log.i(TAG, "initialize: nativeInit -> handle=$mNativeHandle, took=${t1 - t0}ms")
 
@@ -282,10 +278,16 @@ class FaceIDAlgorithmImpl : IFaceIDAlgorithm {
         Log.i(TAG, "extractModels: target dir=$dir")
 
         if (dir.exists()) {
-            val existing = dir.listFiles()?.filter { it.name.endsWith(".dlc") } ?: emptyList()
-            Log.i(TAG, "extractModels: already exists, ${existing.size} DLC files found")
-            existing.forEach { Log.i(TAG, "  ${it.name} (${it.length()} bytes)") }
-            return dir.absolutePath
+            val existing = dir.listFiles() ?: emptyArray()
+            val dlcCount = existing.count { it.name.endsWith(".dlc") }
+            val hasManifest = existing.any { it.name == "manifest.json" }
+            Log.i(TAG, "extractModels: already exists, $dlcCount DLC, manifest=$hasManifest")
+            if (dlcCount > 0 && hasManifest) {
+                return dir.absolutePath
+            }
+            Log.w(TAG, "extractModels: incomplete, re-extracting...")
+            dir.deleteRecursively()
+            dir.mkdirs()
         }
 
         dir.mkdirs()
@@ -296,11 +298,11 @@ class FaceIDAlgorithmImpl : IFaceIDAlgorithm {
             Log.i(TAG, "extractModels: assets/models/ contains ${allAssets.size} entries")
             allAssets.forEach { Log.d(TAG, "  asset: $it") }
 
-            val dlcFiles = allAssets.filter { it.endsWith(".dlc") }
-            Log.i(TAG, "extractModels: found ${dlcFiles.size} DLC files to extract")
+            val modelFiles = allAssets.filter { it.endsWith(".dlc") || it == "manifest.json" }
+            Log.i(TAG, "extractModels: found ${modelFiles.size} files to extract (DLC + manifest)")
 
             var extracted = 0
-            for (file in dlcFiles) {
+            for (file in modelFiles) {
                 val outFile = File(dir, file)
                 assetManager.open("$MODEL_ASSET_PATH/$file").use { input ->
                     outFile.outputStream().use { output ->
@@ -360,7 +362,7 @@ class FaceIDAlgorithmImpl : IFaceIDAlgorithm {
         return nativeCompare(emb1, emb2)
     }
 
-    private external fun nativeInit(modelDir: String, runtime: String): Long
+    private external fun nativeInit(modelDir: String): Long
     private external fun nativeConfigure(handle: Long, flags: Int): Int
     private external fun nativeDetect(
         handle: Long, imgData: ByteArray,
