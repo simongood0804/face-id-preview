@@ -359,7 +359,7 @@ class FaceIDCameraController : EvsBufferProvider {
 
     companion object {
         private const val DEBUG = false
-        private const val MAX_RECEIVE_FRAME = 6
+        private const val MAX_RECEIVE_FRAME = 2
         private const val RETRY_INTERVAL_MS = 1000L
         private const val RETRY_WAIT_MS = 600L
     }
