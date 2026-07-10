@@ -2,9 +2,9 @@
 <resources>
     <string name="app_name">Face ID Preview</string>
 
-    <!-- 按钮 -->
-    <string name="btn_start_preview">Start Preview</string>
-    <string name="btn_stop_preview">Stop Preview</string>
+    <!-- 算法开关 -->
+    <string name="btn_algo_on">Algo: ON</string>
+    <string name="btn_algo_off">Algo: OFF</string>
 
     <!-- 状态 -->
     <string name="status_idle">Idle</string>

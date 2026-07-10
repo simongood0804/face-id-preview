@@ -5,6 +5,7 @@
 package com.skyworth.faceid.ui
 
 import android.content.Context
+import android.content.SharedPreferences
 import android.graphics.Bitmap
 import android.opengl.GLSurfaceView
 import android.os.Bundle
@@ -65,6 +66,9 @@ class PreviewActivity : AppCompatActivity() {
     /** 是否正在预览。 */
     private var mIsPreviewing = false
 
+    /** 算法是否开启。 */
+    private var mAlgorithmEnabled = true
+
     // ============================================================
     // Activity 生命周期
     // ============================================================
@@ -75,6 +79,9 @@ class PreviewActivity : AppCompatActivity() {
 
         initViews()
         initCoreModules()
+
+        // 自动开始预览
+        startPreview()
 
         Log.i(TAG, "onCreate: done")
     }
@@ -90,7 +97,11 @@ class PreviewActivity : AppCompatActivity() {
         mFaceIdText = findViewById(R.id.tv_face_id)
         mFrameRateText = findViewById(R.id.tv_frame_rate)
 
-        mToggleButton.setOnClickListener { togglePreview() }
+        loadAlgorithmState()
+        mToggleButton.setOnClickListener { toggleAlgorithm() }
+        mToggleButton.setText(
+            if (mAlgorithmEnabled) R.string.btn_algo_on else R.string.btn_algo_off
+        )
     }
 
     /**
@@ -157,15 +168,24 @@ class PreviewActivity : AppCompatActivity() {
     }
 
     // ============================================================
-    // 预览控制
+    // 算法开关控制
     // ============================================================
 
     /**
-     * 切换预览状态（开始/停止）。
+     * 切换算法开启/关闭状态。
      */
-    private fun togglePreview() {
-        if (mIsPreviewing) stopPreview() else startPreview()
+    private fun toggleAlgorithm() {
+        mAlgorithmEnabled = !mAlgorithmEnabled
+        mToggleButton.setText(
+            if (mAlgorithmEnabled) R.string.btn_algo_on else R.string.btn_algo_off
+        )
+        saveAlgorithmState()
+        Log.i(TAG, "algorithm ${if (mAlgorithmEnabled) "enabled" else "disabled"}")
     }
+
+    // ============================================================
+    // 预览控制
+    // ============================================================
 
     /**
      * 开始预览。
@@ -176,7 +196,6 @@ class PreviewActivity : AppCompatActivity() {
         try {
             mCameraManager?.openCamera()
             mIsPreviewing = true
-            mToggleButton.setText(R.string.btn_stop_preview)
             mStatusText.setText(R.string.status_previewing)
             Log.i(TAG, "startPreview: done")
         } catch (e: Exception) {
@@ -200,7 +219,6 @@ class PreviewActivity : AppCompatActivity() {
             Log.e(TAG, "stopPreview: error", e)
         } finally {
             mIsPreviewing = false
-            mToggleButton.setText(R.string.btn_start_preview)
             mStatusText.setText(R.string.status_idle)
             mFaceIdText.text = getString(R.string.face_id_label) + " " +
                     getString(R.string.face_id_none)
@@ -261,6 +279,9 @@ class PreviewActivity : AppCompatActivity() {
     override fun onResume() {
         super.onResume()
         mPreviewSurface.onResume()
+        if (!mIsPreviewing) {
+            startPreview()
+        }
     }
 
     override fun onDestroy() {
@@ -293,6 +314,8 @@ class PreviewActivity : AppCompatActivity() {
      * 必须在 GL 线程读取 buffer，因为 EVS 帧回调返回后 buffer 可能被回收。
      */
     private fun processWithAlgorithm(hwBuffer: android.hardware.HardwareBuffer, frameW: Int, frameH: Int) {
+        if (!mAlgorithmEnabled) return  // 算法关闭，跳过处理
+
         val fp = mFrameProcessor ?: return
         mCurrentFrameW = frameW
         mCurrentFrameH = frameH
@@ -369,7 +392,26 @@ class PreviewActivity : AppCompatActivity() {
         }
     }
 
+    // ============================================================
+    // 状态持久化
+    // ============================================================
+
+    private fun loadAlgorithmState() {
+        val prefs = getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        mAlgorithmEnabled = prefs.getBoolean(KEY_ALGO_ENABLED, true)
+    }
+
+    private fun saveAlgorithmState() {
+        getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            .edit()
+            .putBoolean(KEY_ALGO_ENABLED, mAlgorithmEnabled)
+            .apply()
+    }
+
     companion object {
+        private const val PREFS_NAME = "faceid_prefs"
+        private const val KEY_ALGO_ENABLED = "algorithm_enabled"
+
         init {
             try {
                 System.loadLibrary("faceid_jni")
