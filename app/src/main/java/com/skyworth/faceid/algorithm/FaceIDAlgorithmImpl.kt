@@ -41,6 +41,18 @@ class FaceIDAlgorithmImpl : IFaceIDAlgorithm {
     /** 模型文件存储目录。 */
     private var mModelDir: String = ""
 
+    /** 模型文件清单。 */
+    private val REQUIRED_MODEL_FILES = listOf(
+        "det_500m_int8.dlc",
+        "face_antispoof_int8.dlc",
+        "2d106det_int8.dlc",
+        "w600k_mbf_int8.dlc",
+        "manifest.json"
+    )
+
+    /** 系统级模型目录（可被外部更新）。 */
+    private val VENDOR_MODEL_DIR = "/vendor/etc/faceid"
+
     /** 录入管理器（延迟初始化）。 */
     private var mEnrollmentManager: FaceEnrollmentManager? = null
 
@@ -69,22 +81,9 @@ class FaceIDAlgorithmImpl : IFaceIDAlgorithm {
         }
 
         return try {
-            // 1. 确定模型路径
-            mModelDir = config["model_dir"] as? String
-                ?: extractModels(context)
+            // 1. 确定模型路径：优先 vendor 目录，fallback 到应用自身
+            mModelDir = resolveModelDir(context)
             Log.i(TAG, "initialize: model_dir=$mModelDir")
-
-            // 列出模型目录内容
-            val modelDirFile = File(mModelDir)
-            if (modelDirFile.exists()) {
-                val files = modelDirFile.listFiles() ?: emptyArray()
-                Log.i(TAG, "initialize: model dir contains ${files.size} files")
-                files.forEach { f ->
-                    Log.i(TAG, "  model file: ${f.name} (${f.length()} bytes)")
-                }
-            } else {
-                Log.w(TAG, "initialize: model dir does not exist: $mModelDir")
-            }
 
             // 2. 初始化 native（新 API 传 manifest.json 全路径）
             val t0 = System.currentTimeMillis()
@@ -264,6 +263,49 @@ class FaceIDAlgorithmImpl : IFaceIDAlgorithm {
     // ============================================================
     // 模型管理
     // ============================================================
+
+    /**
+     * 解析模型目录：优先使用 vendor 目录，fallback 到应用自身。
+     *
+     * 优先检查 /vendor/etc/faceid/ 下是否有所需的全部模型文件，
+     * 如果存在则直接使用 vendor 目录（外部可更新）。
+     * 如果 vendor 目录不存在或不完整，则使用应用 data 目录下的默认模型。
+     */
+    private fun resolveModelDir(context: Context?): String {
+        // 1. 检查 vendor 目录
+        val vendorDir = File(VENDOR_MODEL_DIR)
+        if (vendorDir.exists()) {
+            val hasAllFiles = REQUIRED_MODEL_FILES.all { file ->
+                File(vendorDir, file).exists()
+            }
+            if (hasAllFiles) {
+                Log.i(TAG, "using vendor model dir: $VENDOR_MODEL_DIR")
+                return VENDOR_MODEL_DIR
+            }
+        }
+
+        // 2. Fallback：应用自身模型
+        val appDir = extractModels(context)
+        patchManifestForAppDir(appDir)
+        Log.i(TAG, "using app model dir: $appDir")
+        return appDir
+    }
+
+    /**
+     * 修正 manifest.json 中的 model_path：将 /vendor/etc/faceid/ 前缀
+     * 替换为应用 data 目录的实际路径，使 native 库能正确加载。
+     */
+    private fun patchManifestForAppDir(appDir: String) {
+        val manifestFile = File(appDir, "manifest.json")
+        if (!manifestFile.exists()) return
+        try {
+            val content = manifestFile.readText()
+            val patched = content.replace("/vendor/etc/faceid/", "$appDir/")
+            if (patched != content) {
+                manifestFile.writeText(patched)
+            }
+        } catch (_: Exception) { }
+    }
 
     /**
      * 将 assets/models/ 下的 DLC 文件解压到应用内部存储。
