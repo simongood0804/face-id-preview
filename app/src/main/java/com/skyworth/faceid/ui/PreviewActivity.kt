@@ -7,6 +7,7 @@ package com.skyworth.faceid.ui
 import android.content.Context
 import android.content.SharedPreferences
 import android.graphics.Bitmap
+import android.hardware.HardwareBuffer
 import android.opengl.GLSurfaceView
 import android.os.Bundle
 import android.util.Log
@@ -108,7 +109,7 @@ class PreviewActivity : AppCompatActivity() {
      * 初始化核心模块。
      */
     private fun initCoreModules() {
-        // 算法接口 — 使用 FaceID 原生算法
+        // 算法接口 — 使用 FaceID AAR SDK
         mAlgorithm = FaceIDAlgorithmImpl()
 
         // 人脸录入管理器（持久化存储 embedding）
@@ -313,7 +314,7 @@ class PreviewActivity : AppCompatActivity() {
      * GL 线程回调：立即读取 HardwareBuffer 转为 ByteArray，再提交给算法线程（非阻塞）。
      * 必须在 GL 线程读取 buffer，因为 EVS 帧回调返回后 buffer 可能被回收。
      */
-    private fun processWithAlgorithm(hwBuffer: android.hardware.HardwareBuffer, frameW: Int, frameH: Int) {
+    private fun processWithAlgorithm(hwBuffer: HardwareBuffer, frameW: Int, frameH: Int) {
         if (!mAlgorithmEnabled) return  // 算法关闭，跳过处理
 
         val fp = mFrameProcessor ?: return
@@ -321,7 +322,7 @@ class PreviewActivity : AppCompatActivity() {
         mCurrentFrameH = frameH
 
         // 在 GL 线程立即读取 buffer 数据（buffer 此时有效）
-        val data = nativeReadHardwareBuffer(hwBuffer, frameW, frameH)
+        val data = readHardwareBuffer(hwBuffer, frameW, frameH)
         if (data == null) return
 
         fp.submitFrame(data, frameW, frameH)
@@ -414,12 +415,20 @@ class PreviewActivity : AppCompatActivity() {
 
         init {
             try {
-                System.loadLibrary("faceid_jni")
+                System.loadLibrary("hardware_buffer_reader")
             } catch (_: UnsatisfiedLinkError) { }
         }
     }
 
+    /**
+     * JNI 调用读取 HardwareBuffer 数据到 ByteArray。
+     * 黑帧检测在 JNI 侧完成。
+     */
+    private fun readHardwareBuffer(hwBuffer: HardwareBuffer, width: Int, height: Int): ByteArray? {
+        return nativeReadHardwareBuffer(hwBuffer, width, height)
+    }
+
     private external fun nativeReadHardwareBuffer(
-        hwBuffer: android.hardware.HardwareBuffer, width: Int, height: Int
+        hwBuffer: HardwareBuffer, width: Int, height: Int
     ): ByteArray?
 }

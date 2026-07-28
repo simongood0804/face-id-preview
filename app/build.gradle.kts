@@ -64,7 +64,7 @@ android {
         unitTests.isIncludeAndroidResources = true
     }
 
-    // CMake Native 编译
+    // 仅编译 HardwareBuffer 读取器（极小 JNI，不依赖算法库）
     externalNativeBuild {
         cmake {
             path = file("src/main/cpp/CMakeLists.txt")
@@ -72,25 +72,27 @@ android {
         }
     }
 
-    // 仅编译 arm64-v8a（libfaceid.so 只有此架构）
-    defaultConfig.ndk {
-        abiFilters.add("arm64-v8a")
-    }
-
-    // jniLibs 目录（打包 libfaceid.so 到 APK）
-    sourceSets {
-        getByName("main") {
-            jniLibs.srcDirs("src/main/jniLibs")
+    defaultConfig {
+        ndk {
+            abiFilters.add("arm64-v8a")
+        }
+        externalNativeBuild {
+            cmake {
+                // AHardwareBuffer_fromHardwareBuffer 需要 API 26+
+                arguments("-DANDROID_PLATFORM=android-29")
+            }
         }
     }
 
-    // CMake 编译 faceid_jni.so 时也产生了 libfaceid.so 的副本，此处去重
     packagingOptions {
-        jniLibs.pickFirsts.add("lib/arm64-v8a/libfaceid.so")
+        jniLibs.pickFirsts.add("lib/arm64-v8a/libc++_shared.so")
     }
 }
 
 dependencies {
+    // AAR 算法库（替换原生 so + JNI）
+    implementation(files("libs/face-sdk-v1.1.4.aar"))
+
     // EvsSDK AOSP 依赖（通过 maven-repo-plugin 加载）
     implementation("${rootProject.extra["aosp_evs_lib"]}:${rootProject.extra["aosp_evs_lib_version"]}")
     implementation("${rootProject.extra["aosp_car_lib"]}:${rootProject.extra["aosp_car_lib_version"]}")

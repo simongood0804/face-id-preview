@@ -8,15 +8,19 @@ import android.content.Context
 import android.graphics.PointF
 import android.graphics.RectF
 import android.util.Log
+import atlas.face.sdk.FaceFlag
+import atlas.face.sdk.FaceImage
+import atlas.face.sdk.FaceResult
+import atlas.face.sdk.FaceSDK
 import java.io.File
 
 /**
- * Face ID 算法实现 —— 基于 [libfaceid.so] + SNPE DSP。
+ * Face ID 算法实现 —— 基于 [face-sdk-v1.1.4.aar]（AAR 集成）。
  *
- * 对接文档：docs/FaceID_SO对接说明.md
+ * 对接文档：proposals/FACEP-006-迁移算法库为AAR集成.md
  * 部署步骤：
  *   1. DLC 模型文件从 assets/models/ 解压到设备存储
- *   2. 调用 [initialize] 时初始化 native pipeline
+ *   2. 调用 [initialize] 时初始化 AAR SDK pipeline
  *   3. 每帧调用 [processFrame] 进行人脸检测/活体/识别
  *
  * 线程安全：一个实例绑定一个线程，不支持多线程共享。
@@ -28,11 +32,11 @@ class FaceIDAlgorithmImpl : IFaceIDAlgorithm {
     @Volatile
     private var mInitialized = false
 
-    /** Native 句柄，对应 [FaceIDHandle]。 */
-    private var mNativeHandle: Long = 0L
+    /** AAR FaceSDK 实例，替代旧 mNativeHandle。 */
+    private var mFaceSDK: FaceSDK? = null
 
-    /** 人脸检测结果缓存（避免每帧 new 对象）。 */
-    private val mNativeResults = arrayOfNulls<FaceIDNativeResult>(MAX_FACES)
+    /** AAR FaceResult 缓存数组（避免每帧 new 对象）。 */
+    private val mAARResults = arrayOfNulls<FaceResult>(MAX_FACES)
 
     /** 裁剪偏移（FrameProcessor 在 processFrame 前设置）。 */
     @Volatile var mCropOffsetX: Int = 0
@@ -58,7 +62,7 @@ class FaceIDAlgorithmImpl : IFaceIDAlgorithm {
 
     init {
         for (i in 0 until MAX_FACES) {
-            mNativeResults[i] = FaceIDNativeResult()
+            mAARResults[i] = FaceResult()
         }
     }
 
@@ -85,33 +89,25 @@ class FaceIDAlgorithmImpl : IFaceIDAlgorithm {
             mModelDir = resolveModelDir(context)
             Log.i(TAG, "initialize: model_dir=$mModelDir")
 
-            // 2. 初始化 native（新 API 传 manifest.json 全路径）
+            // 2. 初始化 AAR FaceSDK
             val t0 = System.currentTimeMillis()
-            mNativeHandle = nativeInit("$mModelDir/manifest.json")
+            val sdk = FaceSDK.init("$mModelDir/manifest.json")
             val t1 = System.currentTimeMillis()
-            Log.i(TAG, "initialize: nativeInit -> handle=$mNativeHandle, took=${t1 - t0}ms")
+            Log.i(TAG, "initialize: FaceSDK.init took=${t1 - t0}ms")
 
-            if (mNativeHandle == 0L) {
-                Log.e(TAG, "initialize: nativeInit returned null handle")
+            if (sdk == null) {
+                Log.e(TAG, "initialize: FaceSDK.init returned null")
                 return false
             }
 
-            // 4. 配置启用所有模型
-            val flags = FACEID_FLAG_ALL
+            // 3. 配置启用所有模型
             val t2 = System.currentTimeMillis()
-            val ret = nativeConfigure(mNativeHandle, flags)
+            sdk.configure(FaceFlag.ALL)
             val t3 = System.currentTimeMillis()
-            Log.i(TAG, "initialize: nativeConfigure(flags=$flags) -> ret=$ret, took=${t3 - t2}ms")
+            Log.i(TAG, "initialize: configure(ALL) took=${t3 - t2}ms")
 
-            if (ret != 0) {
-                Log.e(TAG, "initialize: nativeConfigure failed, ret=$ret")
-                nativeDestroy(mNativeHandle)
-                mNativeHandle = 0L
-                return false
-            }
-
-            val version = nativeVersion()
-            Log.i(TAG, "initialize: success, handle=$mNativeHandle, version=$version")
+            mFaceSDK = sdk
+            Log.i(TAG, "initialize: success")
             mInitialized = true
             true
         } catch (e: Exception) {
@@ -126,7 +122,8 @@ class FaceIDAlgorithmImpl : IFaceIDAlgorithm {
         height: Int,
         format: Int
     ): IFaceIDAlgorithm.FaceIDResult {
-        if (!mInitialized || mNativeHandle == 0L) {
+        val sdk = mFaceSDK
+        if (!mInitialized || sdk == null) {
             Log.w(TAG, "processFrame: not initialized")
             return IFaceIDAlgorithm.FaceIDResult(processedData = frameData)
         }
@@ -137,60 +134,54 @@ class FaceIDAlgorithmImpl : IFaceIDAlgorithm {
         }
 
         return try {
-            val nativeFormat = when (format) {
-                0 -> FACEID_FMT_UYVY
-                1 -> FACEID_FMT_RGB
-                else -> FACEID_FMT_UYVY
-            }
+            // 转换图像格式：UYVY → NV21（AAR 不支持 UYVY）
+            val nv21 = if (format == 0) uyvyToNv21(frameData, width, height) else frameData
+            val image = FaceImage(nv21, width, height, width, FaceImage.FACE_FMT_NV21)
 
-            val n = nativeDetect(
-                mNativeHandle, frameData, width, height, 0,
-                nativeFormat, mNativeResults, MAX_FACES
-            )
+            val n = sdk.infer(image, mAARResults, MAX_FACES)
 
             if (n < 0) {
-                Log.e(TAG, "processFrame: nativeDetect error=$n")
+                Log.e(TAG, "processFrame: infer error=$n")
                 return IFaceIDAlgorithm.FaceIDResult(processedData = frameData)
             }
 
             // 将检测结果坐标从裁剪空间修正回原图空间
             if ((mCropOffsetX != 0 || mCropOffsetY != 0) && n > 0 && n <= MAX_FACES) {
                 for (i in 0 until n) {
-                    val r = mNativeResults[i]!!
-                    r.x1 += mCropOffsetX
-                    r.y1 += mCropOffsetY
-                    r.x2 += mCropOffsetX
-                    r.y2 += mCropOffsetY
+                    val r = mAARResults[i] ?: continue
+                    if (r.box != null && r.box.size >= 4) {
+                        val b = r.box
+                        r.box = floatArrayOf(b[0] + mCropOffsetX, b[1] + mCropOffsetY,
+                                             b[2] + mCropOffsetX, b[3] + mCropOffsetY)
+                    }
                     // 5 关键点
-                    val kps = r.kps
-                    if (kps != null) {
+                    if (r.keypoints != null) {
+                        val kp = r.keypoints
                         for (p in 0 until 5) {
-                            kps[p * 2] = kps[p * 2] + mCropOffsetX
-                            kps[p * 2 + 1] = kps[p * 2 + 1] + mCropOffsetY
+                            kp[p] = floatArrayOf(kp[p][0] + mCropOffsetX, kp[p][1] + mCropOffsetY)
                         }
                     }
                     // 106 密集地标
-                    val lm = r.landmarks
-                    if (lm != null) {
+                    if (r.landmarks != null) {
+                        val lm = r.landmarks
                         for (p in 0 until 106) {
-                            lm[p * 2] = lm[p * 2] + mCropOffsetX
-                            lm[p * 2 + 1] = lm[p * 2 + 1] + mCropOffsetY
+                            lm[p] = floatArrayOf(lm[p][0] + mCropOffsetX, lm[p][1] + mCropOffsetY)
                         }
                     }
                 }
             }
 
             if (n > 0 && n <= MAX_FACES) {
-                val r = mNativeResults[0]!!
+                val r = mAARResults[0]!!
 
-                val faceRect = RectF(r.x1, r.y1, r.x2, r.y2)
+                val faceRect = RectF(r.box[0], r.box[1], r.box[2], r.box[3])
                 val confidence = r.score.coerceIn(0f, 1f)
 
                 var faceId = "detected"
                 var isNewEnroll = false
                 val enrollMgr = mEnrollmentManager
-                val emb = r.emb
-                val faceSize = maxOf(r.x2 - r.x1, r.y2 - r.y1)
+                val emb = r.embedding
+                val faceSize = maxOf(r.box[2] - r.box[0], r.box[3] - r.box[1])
                 if (enrollMgr != null && emb != null && emb.size == 512 &&
                         faceSize >= MIN_FACE_SIZE) {
                     val result = enrollMgr.recognize(emb, r.score, r.liveness)
@@ -209,20 +200,18 @@ class FaceIDAlgorithmImpl : IFaceIDAlgorithm {
                 Log.i(TAG, "faceId=$faceId, conf=${String.format("%.1f", confidence * 100)}%" +
                         if (isNewEnroll) " [NEW]" else "")
 
-                // 转换 5 关键点
-                val kpsList = r.kps?.let { arr ->
-                    if (arr.size >= 10) {
-                        (0 until 5).map { PointF(arr[it * 2], arr[it * 2 + 1]) }
+                // 转换 5 关键点（float[5][2] → List<PointF>）
+                val kpsList = r.keypoints?.let { arr ->
+                    if (arr.size >= 5) {
+                        (0 until 5).map { PointF(arr[it][0], arr[it][1]) }
                     } else null
                 }
-                // 转换 106 密集地标
-                val lmList = if (r.landmarksValid) {
-                    r.landmarks?.let { arr ->
-                        if (arr.size >= 212) {
-                            (0 until 106).map { PointF(arr[it * 2], arr[it * 2 + 1]) }
-                        } else null
-                    }
-                } else null
+                // 转换 106 密集地标（float[106][2] → List<PointF>）
+                val lmList = r.landmarks?.let { arr ->
+                    if (arr.size >= 106) {
+                        (0 until 106).map { PointF(arr[it][0], arr[it][1]) }
+                    } else null
+                }
 
                 IFaceIDAlgorithm.FaceIDResult(
                     faceId = faceId,
@@ -244,18 +233,9 @@ class FaceIDAlgorithmImpl : IFaceIDAlgorithm {
     }
 
     override fun release() {
-        Log.i(TAG, "release: start, handle=$mNativeHandle, initialized=$mInitialized")
-        if (mNativeHandle != 0L) {
-            try {
-                val t0 = System.currentTimeMillis()
-                nativeDestroy(mNativeHandle)
-                val t1 = System.currentTimeMillis()
-                Log.i(TAG, "release: nativeDestroy done, took=${t1 - t0}ms")
-            } catch (e: Exception) {
-                Log.e(TAG, "release: nativeDestroy error", e)
-            }
-            mNativeHandle = 0L
-        }
+        Log.i(TAG, "release: start, sdk=$mFaceSDK, initialized=$mInitialized")
+        mFaceSDK?.destroy()
+        mFaceSDK = null
         mInitialized = false
         Log.i(TAG, "release: done")
     }
@@ -266,13 +246,8 @@ class FaceIDAlgorithmImpl : IFaceIDAlgorithm {
 
     /**
      * 解析模型目录：优先使用 vendor 目录，fallback 到应用自身。
-     *
-     * 优先检查 /vendor/etc/faceid/ 下是否有所需的全部模型文件，
-     * 如果存在则直接使用 vendor 目录（外部可更新）。
-     * 如果 vendor 目录不存在或不完整，则使用应用 data 目录下的默认模型。
      */
     private fun resolveModelDir(context: Context?): String {
-        // 1. 检查 vendor 目录
         val vendorDir = File(VENDOR_MODEL_DIR)
         if (vendorDir.exists()) {
             val hasAllFiles = REQUIRED_MODEL_FILES.all { file ->
@@ -283,18 +258,12 @@ class FaceIDAlgorithmImpl : IFaceIDAlgorithm {
                 return VENDOR_MODEL_DIR
             }
         }
-
-        // 2. Fallback：应用自身模型
         val appDir = extractModels(context)
         patchManifestForAppDir(appDir)
         Log.i(TAG, "using app model dir: $appDir")
         return appDir
     }
 
-    /**
-     * 修正 manifest.json 中的 model_path：将 /vendor/etc/faceid/ 前缀
-     * 替换为应用 data 目录的实际路径，使 native 库能正确加载。
-     */
     private fun patchManifestForAppDir(appDir: String) {
         val manifestFile = File(appDir, "manifest.json")
         if (!manifestFile.exists()) return
@@ -307,23 +276,16 @@ class FaceIDAlgorithmImpl : IFaceIDAlgorithm {
         } catch (_: Exception) { }
     }
 
-    /**
-     * 将 assets/models/ 下的 DLC 文件解压到应用内部存储。
-     */
     private fun extractModels(context: Context?): String {
         if (context == null) {
             Log.w(TAG, "extractModels: context is null, using default: $DEFAULT_MODEL_DIR")
             return DEFAULT_MODEL_DIR
         }
-
         val dir = File(context.filesDir, MODEL_ASSET_PATH)
-        Log.i(TAG, "extractModels: target dir=$dir")
-
         if (dir.exists()) {
             val existing = dir.listFiles() ?: emptyArray()
             val dlcCount = existing.count { it.name.endsWith(".dlc") }
             val hasManifest = existing.any { it.name == "manifest.json" }
-            Log.i(TAG, "extractModels: already exists, $dlcCount DLC, manifest=$hasManifest")
             if (dlcCount > 0 && hasManifest) {
                 return dir.absolutePath
             }
@@ -331,69 +293,72 @@ class FaceIDAlgorithmImpl : IFaceIDAlgorithm {
             dir.deleteRecursively()
             dir.mkdirs()
         }
-
         dir.mkdirs()
         val assetManager = context.assets
-
         try {
             val allAssets = assetManager.list(MODEL_ASSET_PATH) ?: emptyArray()
-            Log.i(TAG, "extractModels: assets/models/ contains ${allAssets.size} entries")
-            allAssets.forEach { Log.d(TAG, "  asset: $it") }
-
             val modelFiles = allAssets.filter { it.endsWith(".dlc") || it == "manifest.json" }
-            Log.i(TAG, "extractModels: found ${modelFiles.size} files to extract (DLC + manifest)")
-
-            var extracted = 0
             for (file in modelFiles) {
                 val outFile = File(dir, file)
                 assetManager.open("$MODEL_ASSET_PATH/$file").use { input ->
                     outFile.outputStream().use { output ->
-                        val bytes = input.copyTo(output)
-                        Log.i(TAG, "extracted: $file -> ${outFile.absolutePath} ($bytes bytes)")
+                        input.copyTo(output)
                     }
                 }
-                extracted++
             }
-            Log.i(TAG, "extractModels: done, $extracted files extracted to ${dir.absolutePath}")
-        } catch (e: Exception) {
-            Log.e(TAG, "extractModels: failed", e)
-        }
-
+        } catch (_: Exception) { }
         return dir.absolutePath
     }
 
     // ============================================================
-    // JNI
+    // 格式转换：UYVY → NV21
+    // ============================================================
+
+    /**
+     * UYVY（YUV422 交错）→ NV21（YUV420 半平面）转换。
+     *
+     * UYVY 排列：U0 Y0 V0 Y1 | U2 Y2 V2 Y3 | ...
+     * NV21 排列：Y0 Y1 Y2 ... (w*h) | V0 U0 V1 U1 ... (w*h/2)
+     *
+     * AAR 的 FaceImage 不支持 UYVY，需转为 NV21 输入。
+     */
+    private fun uyvyToNv21(uyvy: ByteArray, w: Int, h: Int): ByteArray {
+        val ySize = w * h
+        val uvSize = w * h / 2
+        val nv21 = ByteArray(ySize + uvSize)
+
+        var yIdx = 0
+        // Y 分量：UYVY 中每 4 bytes 包含 2 个 Y（位置 1, 3）
+        for (i in uyvy.indices step 2) {
+            nv21[yIdx++] = uyvy[i + 1]  // Y0
+            if (yIdx < ySize) {
+                nv21[yIdx++] = uyvy[i + 3]  // Y1（如果有）
+            }
+        }
+
+        // UV 分量：每 2×2 块取一组 UV（交错 UYVY 中 U 在 0, V 在 2）
+        var uvIdx = ySize
+        for (row in 0 until h / 2) {
+            for (col in 0 until w / 2) {
+                val srcPos = (row * 2 * w + col * 2) * 2
+                nv21[uvIdx++] = uyvy[srcPos + 2]  // V
+                nv21[uvIdx++] = uyvy[srcPos]      // U
+            }
+        }
+        return nv21
+    }
+
+    // ============================================================
+    // Companion
     // ============================================================
 
     companion object {
         private const val MAX_FACES = 10
-        private const val DEFAULT_RUNTIME = "dsp"
         private const val DEFAULT_MODEL_DIR = "/data/faceid/models"
         private const val MODEL_ASSET_PATH = "models"
 
-        // 格式常量（对应 FaceIDFormat 枚举）
-        private const val FACEID_FMT_UYVY = 0
-        private const val FACEID_FMT_RGB = 1
-
-        // 配置标志（对应 FaceIDFlag 枚举）
-        private const val FACEID_FLAG_DET = 1 shl 0
-        private const val FACEID_FLAG_LIVENESS = 1 shl 1
-        private const val FACEID_FLAG_LANDMARK = 1 shl 2
-        private const val FACEID_FLAG_RECOG = 1 shl 3
-        private const val FACEID_FLAG_ALL = 0x0F
-
         /** 录入所需的最小人脸像素尺寸（RECOG 需要足够大的对齐人脸）。 */
         private const val MIN_FACE_SIZE = 200
-
-        init {
-            try {
-                System.loadLibrary("faceid_jni")
-            } catch (e: UnsatisfiedLinkError) {
-                Log.e("FaceIDAlgorithm", "Failed to load faceid_jni library", e)
-            }
-        }
-
     }
 
     /**
@@ -401,37 +366,6 @@ class FaceIDAlgorithmImpl : IFaceIDAlgorithm {
      * 线程安全。
      */
     fun compare(emb1: FloatArray, emb2: FloatArray): Float {
-        return nativeCompare(emb1, emb2)
-    }
-
-    private external fun nativeInit(modelDir: String): Long
-    private external fun nativeConfigure(handle: Long, flags: Int): Int
-    private external fun nativeDetect(
-        handle: Long, imgData: ByteArray,
-        width: Int, height: Int, stride: Int, format: Int,
-        results: Array<FaceIDNativeResult?>, maxFaces: Int
-    ): Int
-    private external fun nativeCompare(emb1: FloatArray, emb2: FloatArray): Float
-    private external fun nativeDestroy(handle: Long)
-    private external fun nativeVersion(): String
-
-    /**
-     * Java 侧用于接收 native 人脸检测结果的数据类。
-     * 字段名与 [faceid_jni.cpp] 中 JNI 访问的字段一致。
-     */
-    class FaceIDNativeResult {
-        @JvmField var x1: Float = 0f
-        @JvmField var y1: Float = 0f
-        @JvmField var x2: Float = 0f
-        @JvmField var y2: Float = 0f
-        @JvmField var score: Float = 0f
-        @JvmField var liveness: Float = -1f
-        @JvmField var emb: FloatArray? = null
-        /** 5 个面部关键点 [左眼, 右眼, 鼻尖, 左嘴角, 右嘴角]。 */
-        @JvmField var kps: FloatArray? = null
-        /** 106 个密集地标（212 floats）。 */
-        @JvmField var landmarks: FloatArray? = null
-        /** 106 点是否有效。 */
-        @JvmField var landmarksValid: Boolean = false
+        return FaceSDK.compare(emb1, emb2)
     }
 }
