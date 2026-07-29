@@ -29,6 +29,8 @@ Java_com_skyworth_faceid_ui_PreviewActivity_nativeReadHardwareBuffer(
         return nullptr;
     }
 
+    // 仍然返回 UYVY 数据（快速 memcpy，不阻塞 GL 线程）
+    // RGB 转换移到算法线程上异步执行，避免卡预览
     int total = height * width * 2;
     jbyteArray result = env->NewByteArray(total);
     if (!result) {

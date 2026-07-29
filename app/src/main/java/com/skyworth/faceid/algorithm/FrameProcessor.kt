@@ -94,13 +94,34 @@ class FrameProcessor(
         cropLeft = left
         cropTop = top
 
-        val out = ByteArray(size * size * 2) // UYVY: 2 bytes/pixel
+        // 裁剪 UYVY → 同时转换为 RGB888（避免两次循环）
+        val rgb = ByteArray(size * size * 3)
+        var srcRow = top
+        var dstIdx = 0
         for (row in 0 until size) {
-            val srcPos = (top + row) * imgW * 2 + left * 2
-            val dstPos = row * size * 2
-            System.arraycopy(data, srcPos, out, dstPos, size * 2)
+            var srcCol = left
+            for (col in 0 until size step 2) {
+                val srcPos = srcRow * imgW * 2 + srcCol * 2
+                val u = data[srcPos].toInt() and 0xFF
+                val y0 = data[srcPos + 1].toInt() and 0xFF
+                val v = data[srcPos + 2].toInt() and 0xFF
+                val y1 = data[srcPos + 3].toInt() and 0xFF
+                srcCol += 2
+
+                fun clamp(v: Int): Byte = when { v < 0 -> 0; v > 255 -> 255; else -> v }.toByte()
+                val c0 = y0 - 16; val d = u - 128; val e = v - 128
+                rgb[dstIdx++] = clamp((298 * c0 + 409 * e + 128) shr 8)
+                rgb[dstIdx++] = clamp((298 * c0 - 100 * d - 208 * e + 128) shr 8)
+                rgb[dstIdx++] = clamp((298 * c0 + 516 * d + 128) shr 8)
+
+                val c1 = y1 - 16
+                rgb[dstIdx++] = clamp((298 * c1 + 409 * e + 128) shr 8)
+                rgb[dstIdx++] = clamp((298 * c1 - 100 * d - 208 * e + 128) shr 8)
+                rgb[dstIdx++] = clamp((298 * c1 + 516 * d + 128) shr 8)
+            }
+            srcRow++
         }
-        return out
+        return rgb
     }
 
     // ============================================================

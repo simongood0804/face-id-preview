@@ -134,13 +134,10 @@ class FaceIDAlgorithmImpl : IFaceIDAlgorithm {
         }
 
         return try {
-            // 转换图像格式：UYVY → RGB888（AAR pipeline 需要 RGB 输入）
-            val rgb = if (format == 0) uyvyToRgb(frameData, width, height) else frameData
-            val image = FaceImage(rgb, width, height, width * 3, FaceImage.FACE_FMT_RGB)
-            Log.d(TAG, "processFrame: rgb_size=${rgb.size}, ${width}x${height}")
+            // FrameProcessor 已裁剪并转为 RGB888
+            val image = FaceImage(frameData, width, height, width * 3, FaceImage.FACE_FMT_RGB)
 
             val n = sdk.infer(image, mAARResults, MAX_FACES)
-            Log.d(TAG, "processFrame: infer=$n, score=${mAARResults[0]?.score}, box=${mAARResults[0]?.box?.contentToString()}")
 
             if (n < 0) {
                 Log.e(TAG, "processFrame: infer error=$n")
@@ -313,60 +310,14 @@ class FaceIDAlgorithmImpl : IFaceIDAlgorithm {
     }
 
     // ============================================================
-    // 格式转换：UYVY → NV21
+    // 格式转换：UYVY → RGB888 / NV21
     // ============================================================
 
     /**
-     * UYVY（YUV422 交错）→ RGB888 转换。
-     *
-     * UYVY 排列：U0 Y0 V0 Y1 | U2 Y2 V2 Y3 | ...
-     * RGB888 排列：R0 G0 B0 R1 G1 B1 ...
-     *
-     * AAR pipeline 的 nearest_norm_u8 需要 RGB 输入。
-     */
-    private fun uyvyToRgb(uyvy: ByteArray, w: Int, h: Int): ByteArray {
-        val rgb = ByteArray(w * h * 3)
-        var srcIdx = 0
-        var dstIdx = 0
-        for (row in 0 until h) {
-            for (col in 0 until w step 2) {
-                val u = uyvy[srcIdx].toInt() and 0xFF
-                val y0 = uyvy[srcIdx + 1].toInt() and 0xFF
-                val v = uyvy[srcIdx + 2].toInt() and 0xFF
-                val y1 = uyvy[srcIdx + 3].toInt() and 0xFF
-                srcIdx += 4
-
-                // YUV → RGB 标准转换
-                val c = y0 - 16
-                val d = u - 128
-                val e = v - 128
-                rgb[dstIdx++] = clamp((298 * c + 409 * e + 128) shr 8)       // R
-                rgb[dstIdx++] = clamp((298 * c - 100 * d - 208 * e + 128) shr 8)  // G
-                rgb[dstIdx++] = clamp((298 * c + 516 * d + 128) shr 8)       // B
-
-                val c1 = y1 - 16
-                rgb[dstIdx++] = clamp((298 * c1 + 409 * e + 128) shr 8)
-                rgb[dstIdx++] = clamp((298 * c1 - 100 * d - 208 * e + 128) shr 8)
-                rgb[dstIdx++] = clamp((298 * c1 + 516 * d + 128) shr 8)
-            }
-        }
-        return rgb
-    }
-
-    /** 将 RGB 值钳位到 [0, 255]。 */
-    private fun clamp(value: Int): Byte = when {
-        value < 0 -> 0.toByte()
-        value > 255 -> 255.toByte()
-        else -> value.toByte()
-    }
-
-    /**
-     * UYVY（YUV422 交错）→ NV21（YUV420 半平面）转换。
+     * UYVY（YUV422 交错）→ NV21（YUV420 半平面）转换（保留，旧 AAR 兼容用）。
      *
      * UYVY 排列：U0 Y0 V0 Y1 | U2 Y2 V2 Y3 | ...
      * NV21 排列：Y0 Y1 Y2 ... (w*h) | V0 U0 V1 U1 ... (w*h/2)
-     *
-     * AAR 的 FaceImage 不支持 UYVY，需转为 NV21 输入。
      */
     private fun uyvyToNv21(uyvy: ByteArray, w: Int, h: Int): ByteArray {
         val ySize = w * h

@@ -421,7 +421,8 @@ class PreviewActivity : AppCompatActivity() {
     }
 
     /**
-     * JNI 调用读取 HardwareBuffer 数据到 ByteArray。
+     * JNI 调用读取 HardwareBuffer UYVY 数据到 ByteArray（快速 memcpy）。
+     * UYVY→RGB 转换在 FrameProcessor 算法线程上异步完成。
      * 黑帧检测在 JNI 侧完成。
      */
     private fun readHardwareBuffer(hwBuffer: HardwareBuffer, width: Int, height: Int): ByteArray? {
