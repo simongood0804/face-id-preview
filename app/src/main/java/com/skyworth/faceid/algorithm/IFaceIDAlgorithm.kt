@@ -41,7 +41,13 @@ interface IFaceIDAlgorithm {
         /** 是否为新录入的人脸。 */
         val isNewEnrollment: Boolean = false,
         /** 5 个面部关键点（左眼、右眼、鼻尖、左嘴角、右嘴角）。 */
-        val keypoints: List<PointF>? = null
+        val keypoints: List<PointF>? = null,
+        /** 头部姿态：俯仰角（Pitch），单位度。 */
+        val headposePitch: Float = 0f,
+        /** 头部姿态：偏航角（Yaw），单位度。 */
+        val headposeYaw: Float = 0f,
+        /** 头部姿态：翻滚角（Roll），单位度。 */
+        val headposeRoll: Float = 0f
     ) {
         /** Face ID 唯一标识，不为 null。 */
         val faceId: String = faceId ?: ""

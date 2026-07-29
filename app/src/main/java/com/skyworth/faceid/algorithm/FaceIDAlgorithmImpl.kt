@@ -212,6 +212,9 @@ class FaceIDAlgorithmImpl : IFaceIDAlgorithm {
                     } else null
                 }
 
+                Log.i(TAG, "headpose: pitch=%.1f yaw=%.1f roll=%.1f".format(
+                    r.headpose_pitch, r.headpose_yaw, r.headpose_roll))
+
                 IFaceIDAlgorithm.FaceIDResult(
                     faceId = faceId,
                     confidence = confidence,
@@ -219,7 +222,10 @@ class FaceIDAlgorithmImpl : IFaceIDAlgorithm {
                     processedData = frameData,
                     isNewEnrollment = isNewEnroll,
                     keypoints = kpsList,
-                    landmarks = lmList
+                    landmarks = lmList,
+                    headposePitch = r.headpose_pitch,
+                    headposeYaw = r.headpose_yaw,
+                    headposeRoll = r.headpose_roll
                 )
             } else {
                 if (n == 0) Log.i(TAG, "  no face detected")

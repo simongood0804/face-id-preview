@@ -144,6 +144,41 @@
           "use_buffer": "true",
           "performance_profile": "high_performance"
         }
+    },
+    {
+      "id": "hopenet_mbv2",
+      "name": "Head Pose Estimation (MobileNetV2 + 6DRepNet)",
+      "backend": "snpe",
+      "model_path": "/vendor/etc/faceid/hopenet_mbv2_int8.dlc",
+      "load_strategy": "lazy",
+      "inputs": [
+        {
+          "name": "data",
+          "shape": [1, 224, 224, 3],
+          "dtype": "float32",
+          "layout": "NHWC",
+          "pipeline": [
+            {"name": "face::affine_warp", "params": {"output_size": "224", "transform": "from_bbox", "normalize": "false", "nchw": "false"}}
+          ]
+        }
+      ],
+      "outputs": [
+        {
+          "name": "pose_6d",
+          "shape": [1, 6],
+          "dtype": "float32",
+          "pipeline": [
+            {"name": "face::headpose_decode"}
+          ]
+        }
+      ],
+      "config":
+        {
+          "num_threads": "2",
+          "runtime": "dsp",
+          "use_buffer": "true",
+          "performance_profile": "high_performance"
+        }
     }
   ]
 }

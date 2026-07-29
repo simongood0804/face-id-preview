@@ -376,7 +376,10 @@ class PreviewActivity : AppCompatActivity() {
                         confidence = result.confidence,
                         label = if (isNamed) faceId else null,
                         keypoints = result.keypoints,
-                        denseLandmarks = result.landmarks
+                        denseLandmarks = result.landmarks,
+                        pitch = result.headposePitch,
+                        yaw = result.headposeYaw,
+                        roll = result.headposeRoll
                     )),
                     frameW, frameH
                 )

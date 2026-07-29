@@ -47,6 +47,13 @@ class FaceOverlayView @JvmOverloads constructor(
         style = Paint.Style.FILL
     }
 
+    /** 头姿文字画笔（小字）。 */
+    private val mPosePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = Color.argb(200, 255, 255, 255)
+        textSize = 20f
+        style = Paint.Style.FILL
+    }
+
     /** 文字背景画笔（半透明）。 */
     private val mBgPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         color = Color.argb(160, 0, 0, 0)
@@ -142,22 +149,28 @@ class FaceOverlayView @JvmOverloads constructor(
                 FaceType.DETECTED -> mGreenPaint
                 FaceType.SPOOF -> mRedPaint
             }
-            val label = face.label ?: when (face.type) {
-                FaceType.DETECTED -> "detected"
-                FaceType.SPOOF -> "spoof"
+            val label = buildString {
+                append(face.label ?: when (face.type) {
+                    FaceType.DETECTED -> "detected"
+                    FaceType.SPOOF -> "spoof"
+                })
+                append(" ${(face.confidence * 100).toInt()}%")
             }
 
             canvas.drawRect(scaled, paint)
 
-            // 标签背景 + 文字
+            // 标签背景 + 文字（名称 + 置信度）
             val labelWidth = mLabelPaint.measureText(label)
             val labelHeight = mLabelPaint.textSize
             canvas.drawRect(left, top - labelHeight - 8, left + labelWidth + 12, top, mBgPaint)
             canvas.drawText(label, left + 6, top - 6, mLabelPaint)
 
-            // 置信度（小字）
-            val confText = "${(face.confidence * 100).toInt()}%"
-            canvas.drawText(confText, left + 6, bottom + labelHeight + 4, mLabelPaint)
+            // 头姿信息（小字，框下方）
+            val poseText = "P:%.0f Y:%.0f R:%.0f".format(face.pitch, face.yaw, face.roll)
+            val poseWidth = mPosePaint.measureText(poseText)
+            val poseHeight = mPosePaint.textSize
+            canvas.drawRect(left, bottom + 2, left + poseWidth + 8, bottom + poseHeight + 6, mBgPaint)
+            canvas.drawText(poseText, left + 4, bottom + poseHeight + 1, mPosePaint)
 
             // 绘制 106 密集地标（黄色）
             face.denseLandmarks?.forEach { pt ->
@@ -181,7 +194,11 @@ class FaceOverlayView @JvmOverloads constructor(
         /** 5 个面部关键点（蓝色）。 */
         val keypoints: List<PointF>? = null,
         /** 106 个密集地标（黄色）。 */
-        val denseLandmarks: List<PointF>? = null
+        val denseLandmarks: List<PointF>? = null,
+        /** 头部姿态角（度）。 */
+        val pitch: Float = 0f,
+        val yaw: Float = 0f,
+        val roll: Float = 0f
     )
 
     enum class FaceType { DETECTED, SPOOF }
