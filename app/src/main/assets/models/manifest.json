@@ -1,6 +1,12 @@
 {
   "version": "1.0",
   "name": "faceid-pipeline",
+  "description": "Phase 2 — uint8 Pipeline nodes + quantization adaptation (AdaptU8ToTf8)",
+  "profile": {
+    "enabled": "true",
+    "output_path": "/data/logs",
+    "modules": "infer"
+  },
   "models": [
     {
       "id": "det_500m",
@@ -12,10 +18,10 @@
         {
           "name": "input.1",
           "shape": [1, 640, 640, 3],
-          "dtype": "float32",
           "layout": "NHWC",
-          "disable_pipeline": true,
-          "pipeline": []
+          "pipeline": [
+            {"name": "face::nearest_norm_u8", "params": {"height": "640", "width": "640"}}
+          ]
         }
       ],
       "outputs": [
@@ -33,6 +39,7 @@
         {
           "num_threads": "2",
           "runtime": "dsp",
+          "use_buffer": "true",
           "performance_profile": "high_performance"
         }
     },
@@ -46,23 +53,27 @@
         {
           "name": "input",
           "shape": [1, 128, 128, 3],
-          "dtype": "float32",
           "layout": "NHWC",
-          "disable_pipeline": true,
-          "pipeline": []
+          "pipeline": [
+            {"name": "face::nearest_norm_u8", "params": {"height": "128", "width": "128"}}
+          ]
         }
       ],
       "outputs": [
         {
           "name": "output",
           "shape": [1, 2],
-          "dtype": "float32"
+          "dtype": "float32",
+          "pipeline": [
+            {"name": "face::liveness_softmax"}
+          ]
         }
       ],
       "config":
         {
           "num_threads": "2",
           "runtime": "dsp",
+          "use_buffer": "true",
           "performance_profile": "high_performance"
         }
     },
@@ -76,23 +87,27 @@
         {
           "name": "data",
           "shape": [1, 192, 192, 3],
-          "dtype": "float32",
           "layout": "NHWC",
-          "disable_pipeline": true,
-          "pipeline": []
+          "pipeline": [
+            {"name": "face::affine_warp_u8", "params": {"output_size": "192", "transform": "from_bbox"}}
+          ]
         }
       ],
       "outputs": [
         {
           "name": "fc1",
           "shape": [1, 212],
-          "dtype": "float32"
+          "dtype": "float32",
+          "pipeline": [
+            {"name": "face::landmark_decode", "params": {"num_points": "106", "model_input_size": "192"}}
+          ]
         }
       ],
       "config":
         {
           "num_threads": "2",
           "runtime": "dsp",
+          "use_buffer": "true",
           "performance_profile": "high_performance"
         }
     },
@@ -106,23 +121,27 @@
         {
           "name": "input.1",
           "shape": [1, 112, 112, 3],
-          "dtype": "float32",
           "layout": "NHWC",
-          "disable_pipeline": true,
-          "pipeline": []
+          "pipeline": [
+            {"name": "face::affine_warp_u8", "params": {"output_size": "112", "transform": "from_kps"}}
+          ]
         }
       ],
       "outputs": [
         {
           "name": "516",
           "shape": [1, 512],
-          "dtype": "float32"
+          "dtype": "float32",
+          "pipeline": [
+            {"name": "face::recog_decode", "params": {"dim": "512", "normalize": "true"}}
+          ]
         }
       ],
       "config":
         {
           "num_threads": "2",
           "runtime": "dsp",
+          "use_buffer": "true",
           "performance_profile": "high_performance"
         }
     }

@@ -39,11 +39,11 @@ NC     := \033[0m
 # 构建
 # =============================================================================
 
-## 编译调试 APK（平台签名）
+## 编译 Release APK
 build:
 	@echo "$(GREEN)[BUILD] compiling...$(NC)"
-	JAVA_HOME=/Users/simon/Library/Java/JavaVirtualMachines/corretto-11.0.25/Contents/Home \
-	./gradlew assembleDebug --no-daemon
+	JAVA_HOME=/home/simon/jdks/jdk-11.0.32+9 \
+	./gradlew assembleRelease --no-daemon
 	@echo "$(GREEN)[BUILD] done: $(APK_PATH)$(NC)"
 
 # =============================================================================
@@ -61,24 +61,34 @@ install: build
 
 ## 推送 APK 到 /system/app/（EvsSDK 完整功能需要此方式）
 push-system: build
+	@echo "$(GREEN)[PUSH-SYSTEM] waiting for device...$(NC)"
+	adb wait-for-device
 	@echo "$(GREEN)[PUSH-SYSTEM] remounting...$(NC)"
 	adb root
+	adb wait-for-device
 	adb remount
 	@echo "$(GREEN)[PUSH-SYSTEM] creating directory...$(NC)"
-	adb shell mkdir -p $(SYSTEM_APP_DIR)
+	adb shell mkdir -p $(SYSTEM_APP_DIR)/lib/arm64
 	@echo "$(GREEN)[PUSH-SYSTEM] pushing APK...$(NC)"
 	adb push $(APK_PATH) $(SYSTEM_APP_DIR)/$(APK_NAME)
+	@echo "$(GREEN)[PUSH-SYSTEM] extracting and pushing native libs...$(NC)"
+	cd /tmp && rm -rf apk_libs && mkdir apk_libs && cd apk_libs && \
+	unzip -o $(CURDIR)/$(APK_PATH) "lib/arm64-v8a/*" && \
+	adb push lib/arm64-v8a/*.so $(SYSTEM_APP_DIR)/lib/arm64/
 	@echo "$(GREEN)[PUSH-SYSTEM] setting permissions...$(NC)"
 	adb shell chmod 644 $(SYSTEM_APP_DIR)/$(APK_NAME)
+	adb shell chmod 644 $(SYSTEM_APP_DIR)/lib/arm64/*.so
 	adb shell chown root:root $(SYSTEM_APP_DIR)/$(APK_NAME)
-	@echo "$(GREEN)[PUSH-SYSTEM] clearing old extracted libs and oat cache...$(NC)"
-	adb shell rm -rf $(SYSTEM_APP_DIR)/lib $(SYSTEM_APP_DIR)/oat
+	adb shell chown root:root $(SYSTEM_APP_DIR)/lib/arm64/*.so
+	@echo "$(GREEN)[PUSH-SYSTEM] clearing oat cache...$(NC)"
+	adb shell rm -rf $(SYSTEM_APP_DIR)/oat
 	@echo "$(GREEN)[PUSH-SYSTEM] rebooting...$(NC)"
 	adb reboot
 	@echo "$(GREEN)[PUSH-SYSTEM] waiting for device...$(NC)"
 	adb wait-for-device
 	@echo "$(GREEN)[PUSH-SYSTEM] done$(NC)"
 	@echo "$(YELLOW)  应用已部署到 $(SYSTEM_APP_DIR)/$(APK_NAME)$(NC)"
+	@echo "$(YELLOW)  native libs 已部署到 $(SYSTEM_APP_DIR)/lib/arm64/$(NC)"
 	@echo "$(YELLOW)  运行: make run$(NC)"
 
 ## 卸载应用
@@ -178,7 +188,7 @@ pid:
 ## 运行所有单元测试
 test:
 	@echo "$(GREEN)[TEST] running all unit tests...$(NC)"
-	JAVA_HOME=/Users/simon/Library/Java/JavaVirtualMachines/corretto-11.0.25/Contents/Home \
+	JAVA_HOME=/home/simon/jdks/jdk-11.0.32+9 \
 	./gradlew app:testDebugUnitTest --no-daemon
 	@echo "$(GREEN)[TEST] done$(NC)"
 
@@ -192,7 +202,7 @@ test-class:
 		exit 1; \
 	fi
 	@echo "$(GREEN)[TEST-CLASS] running $(CLASS)...$(NC)"
-	JAVA_HOME=/Users/simon/Library/Java/JavaVirtualMachines/corretto-11.0.25/Contents/Home \
+	JAVA_HOME=/home/simon/jdks/jdk-11.0.32+9 \
 	./gradlew app:testDebugUnitTest --no-daemon --tests "com.skyworth.faceid.pipeline.$(CLASS)" \
 		--tests "com.skyworth.faceid.algorithm.$(CLASS)"
 	@echo "$(GREEN)[TEST-CLASS] done$(NC)"
@@ -200,7 +210,7 @@ test-class:
 ## 运行测试套件
 test-suite:
 	@echo "$(GREEN)[TEST-SUITE] running test suite...$(NC)"
-	JAVA_HOME=/Users/simon/Library/Java/JavaVirtualMachines/corretto-11.0.25/Contents/Home \
+	JAVA_HOME=/home/simon/jdks/jdk-11.0.32+9 \
 	./gradlew app:testDebugUnitTest --no-daemon --tests "com.skyworth.faceid.FaceIDPreviewTestSuite"
 	@echo "$(GREEN)[TEST-SUITE] done$(NC)"
 
