@@ -89,9 +89,11 @@ class FaceIDAlgorithmImpl : IFaceIDAlgorithm {
             mModelDir = resolveModelDir(context)
             Log.i(TAG, "initialize: model_dir=$mModelDir")
 
-            // 2. 创建 debug dump 目录并传给 AAR（必须在 init 之前调用）
-            val dumpDir = File(context?.filesDir, "debugDump").apply { mkdirs() }
-            FaceSDK.setDebugDumpPath(dumpDir.absolutePath)
+            // 2. Debug 构建：创建 dump 目录并传给 AAR（必须在 init 之前调用）
+            if (android.util.Log.isLoggable(TAG, android.util.Log.DEBUG)) {
+                val dumpDir = File(context?.filesDir, "debugDump").apply { mkdirs() }
+                FaceSDK.setDebugDumpPath(dumpDir.absolutePath)
+            }
 
             // 3. 初始化 AAR FaceSDK
             val t0 = System.currentTimeMillis()
@@ -216,10 +218,8 @@ class FaceIDAlgorithmImpl : IFaceIDAlgorithm {
                     } else null
                 }
 
-                // 头姿：当前 AAR FaceResult 未暴露 headpose 字段，待 SDK 更新后恢复
-                val headposePitch = 0f
-                val headposeYaw = 0f
-                val headposeRoll = 0f
+                Log.i(TAG, "headpose: pitch=%.1f yaw=%.1f roll=%.1f".format(
+                    r.headPitch, r.headYaw, r.headRoll))
 
                 IFaceIDAlgorithm.FaceIDResult(
                     faceId = faceId,
@@ -229,9 +229,9 @@ class FaceIDAlgorithmImpl : IFaceIDAlgorithm {
                     isNewEnrollment = isNewEnroll,
                     keypoints = kpsList,
                     landmarks = lmList,
-                    headposePitch = headposePitch,
-                    headposeYaw = headposeYaw,
-                    headposeRoll = headposeRoll
+                    headposePitch = r.headPitch,
+                    headposeYaw = r.headYaw,
+                    headposeRoll = r.headRoll
                 )
             } else {
                 if (n == 0) Log.i(TAG, "  no face detected")

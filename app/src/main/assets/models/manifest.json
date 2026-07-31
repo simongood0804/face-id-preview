@@ -1,7 +1,7 @@
 {
   "version": "1.0",
   "name": "faceid-pipeline",
-  "description": "Phase 1 — UserBuffer + float32 encoding (DSP recommended path)",
+  "description": "Phase 2 (uint8 Pipeline) + HeadPose (hopenet_mbv2) integration",
   "profile": {
     "enabled": "true",
     "output_path": "/data/logs",
@@ -18,10 +18,9 @@
         {
           "name": "input.1",
           "shape": [1, 640, 640, 3],
-          "dtype": "float32",
           "layout": "NHWC",
           "pipeline": [
-            {"name": "face::nearest_norm", "params": {"height": "640", "width": "640"}}
+            {"name": "face::nearest_norm_u8", "params": {"height": "640", "width": "640"}}
           ]
         }
       ],
@@ -54,10 +53,9 @@
         {
           "name": "input",
           "shape": [1, 128, 128, 3],
-          "dtype": "float32",
           "layout": "NHWC",
           "pipeline": [
-            {"name": "face::nearest_norm", "params": {"height": "128", "width": "128"}}
+            {"name": "face::nearest_norm_u8", "params": {"height": "128", "width": "128"}}
           ]
         }
       ],
@@ -89,10 +87,9 @@
         {
           "name": "data",
           "shape": [1, 192, 192, 3],
-          "dtype": "float32",
           "layout": "NHWC",
           "pipeline": [
-            {"name": "face::affine_warp", "params": {"output_size": "192", "transform": "from_bbox", "normalize": "false", "nchw": "false"}}
+            {"name": "face::affine_warp_u8", "params": {"output_size": "192", "transform": "from_bbox"}}
           ]
         }
       ],
@@ -124,10 +121,9 @@
         {
           "name": "input.1",
           "shape": [1, 112, 112, 3],
-          "dtype": "float32",
           "layout": "NHWC",
           "pipeline": [
-            {"name": "face::affine_warp", "params": {"output_size": "112", "transform": "from_kps", "normalize": "true", "nchw": "false"}}
+            {"name": "face::affine_warp_u8", "params": {"output_size": "112", "transform": "from_kps"}}
           ]
         }
       ],
@@ -138,6 +134,41 @@
           "dtype": "float32",
           "pipeline": [
             {"name": "face::recog_decode", "params": {"dim": "512", "normalize": "true"}}
+          ]
+        }
+      ],
+      "config":
+        {
+          "num_threads": "2",
+          "runtime": "dsp",
+          "use_buffer": "true",
+          "performance_profile": "high_performance"
+        }
+    },
+    {
+      "id": "hopenet_mbv2",
+      "name": "Head Pose Estimation (MobileNetV2 + 6DRepNet)",
+      "backend": "snpe",
+      "model_path": "/vendor/etc/faceid/hopenet_mbv2_int8.dlc",
+      "load_strategy": "lazy",
+      "inputs": [
+        {
+          "name": "data",
+          "shape": [1, 224, 224, 3],
+          "dtype": "float32",
+          "layout": "NHWC",
+          "pipeline": [
+            {"name": "face::affine_warp", "params": {"output_size": "224", "transform": "from_bbox", "normalize": "false", "nchw": "false"}}
+          ]
+        }
+      ],
+      "outputs": [
+        {
+          "name": "pose_6d",
+          "shape": [1, 6],
+          "dtype": "float32",
+          "pipeline": [
+            {"name": "face::headpose_decode"}
           ]
         }
       ],
