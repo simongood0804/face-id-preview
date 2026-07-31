@@ -89,7 +89,11 @@ class FaceIDAlgorithmImpl : IFaceIDAlgorithm {
             mModelDir = resolveModelDir(context)
             Log.i(TAG, "initialize: model_dir=$mModelDir")
 
-            // 2. 初始化 AAR FaceSDK
+            // 2. 创建 debug dump 目录并传给 AAR（必须在 init 之前调用）
+            val dumpDir = File(context?.filesDir, "debugDump").apply { mkdirs() }
+            FaceSDK.setDebugDumpPath(dumpDir.absolutePath)
+
+            // 3. 初始化 AAR FaceSDK
             val t0 = System.currentTimeMillis()
             val sdk = FaceSDK.init("$mModelDir/manifest.json")
             val t1 = System.currentTimeMillis()
@@ -100,7 +104,7 @@ class FaceIDAlgorithmImpl : IFaceIDAlgorithm {
                 return false
             }
 
-            // 3. 配置启用所有模型
+            // 4. 配置启用所有模型
             val t2 = System.currentTimeMillis()
             sdk.configure(FaceFlag.ALL)
             val t3 = System.currentTimeMillis()
@@ -135,7 +139,7 @@ class FaceIDAlgorithmImpl : IFaceIDAlgorithm {
 
         return try {
             // FrameProcessor 已裁剪并转为 RGB888
-            val image = FaceImage(frameData, width, height, width * 3, FaceImage.FACE_FMT_RGB)
+            val image = FaceImage(frameData, width, height, 0, FaceImage.FACE_FMT_RGB)
 
             val n = sdk.infer(image, mAARResults, MAX_FACES)
 
@@ -212,8 +216,10 @@ class FaceIDAlgorithmImpl : IFaceIDAlgorithm {
                     } else null
                 }
 
-                Log.i(TAG, "headpose: pitch=%.1f yaw=%.1f roll=%.1f".format(
-                    r.headpose_pitch, r.headpose_yaw, r.headpose_roll))
+                // 头姿：当前 AAR FaceResult 未暴露 headpose 字段，待 SDK 更新后恢复
+                val headposePitch = 0f
+                val headposeYaw = 0f
+                val headposeRoll = 0f
 
                 IFaceIDAlgorithm.FaceIDResult(
                     faceId = faceId,
@@ -223,9 +229,9 @@ class FaceIDAlgorithmImpl : IFaceIDAlgorithm {
                     isNewEnrollment = isNewEnroll,
                     keypoints = kpsList,
                     landmarks = lmList,
-                    headposePitch = r.headpose_pitch,
-                    headposeYaw = r.headpose_yaw,
-                    headposeRoll = r.headpose_roll
+                    headposePitch = headposePitch,
+                    headposeYaw = headposeYaw,
+                    headposeRoll = headposeRoll
                 )
             } else {
                 if (n == 0) Log.i(TAG, "  no face detected")
