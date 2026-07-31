@@ -45,12 +45,13 @@ class FaceIDAlgorithmImpl : IFaceIDAlgorithm {
     /** 模型文件存储目录。 */
     private var mModelDir: String = ""
 
-    /** 模型文件清单。 */
+    /** 模型文件清单（必须与 manifest.json 中引用的模型一致）。 */
     private val REQUIRED_MODEL_FILES = listOf(
         "det_500m_int8.dlc",
         "face_antispoof_int8.dlc",
         "2d106det_int8.dlc",
         "w600k_mbf_int8.dlc",
+        "hopenet_mbv2_int8.dlc",
         "manifest.json"
     )
 
