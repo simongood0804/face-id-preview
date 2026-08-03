@@ -5,10 +5,13 @@ import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.DashPathEffect
 import android.graphics.Paint
+import android.graphics.Path
 import android.graphics.PointF
 import android.graphics.RectF
 import android.util.AttributeSet
 import android.view.View
+import kotlin.math.cos
+import kotlin.math.sin
 
 /**
  * 人脸框覆盖层。
@@ -60,14 +63,14 @@ class FaceOverlayView @JvmOverloads constructor(
         style = Paint.Style.FILL
     }
 
-    /** 蓝色关键点画笔（5 点）。 */
-    private val mBluePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        color = Color.BLUE
+    /** 紫色关键点画笔（5 点）。 */
+    private val mKeypointPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = Color.argb(255, 160, 32, 240)  // Purple
         style = Paint.Style.FILL
     }
 
     /** 黄色密集地标画笔（106 点）。 */
-    private val mYellowPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+    private val mLandmarkPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         color = Color.YELLOW
         style = Paint.Style.FILL
     }
@@ -78,6 +81,31 @@ class FaceOverlayView @JvmOverloads constructor(
         style = Paint.Style.STROKE
         strokeWidth = 2f
         pathEffect = DashPathEffect(floatArrayOf(10f, 8f), 0f)
+    }
+
+    /** 坐标系 X 轴画笔（红色，脸部朝向）。 */
+    private val mAxisXPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = Color.RED
+        style = Paint.Style.STROKE
+        strokeWidth = 3f
+        strokeCap = Paint.Cap.ROUND
+        strokeJoin = Paint.Join.ROUND
+    }
+
+    /** 坐标系 Y 轴画笔（绿色）。 */
+    private val mAxisYPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = Color.GREEN
+        style = Paint.Style.STROKE
+        strokeWidth = 3f
+        strokeCap = Paint.Cap.ROUND
+    }
+
+    /** 坐标系 Z 轴画笔（蓝色）。 */
+    private val mAxisZPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = Color.BLUE
+        style = Paint.Style.STROKE
+        strokeWidth = 3f
+        strokeCap = Paint.Cap.ROUND
     }
 
     /**
@@ -128,27 +156,13 @@ class FaceOverlayView @JvmOverloads constructor(
         val scaleX = vw / imgW
         val scaleY = vh / imgH
 
-        // 绘制裁剪窗口（黄色描边）
-        mCropRect?.let { crop ->
-            canvas.drawRect(
-                crop.left * scaleX, crop.top * scaleY,
-                crop.right * scaleX, crop.bottom * scaleY,
-                mCropBoxPaint
-            )
-        }
-
         for (face in faces) {
             // 缩放至 View 空间
             val left = face.rect.left * scaleX
             val top = face.rect.top * scaleY
             val right = face.rect.right * scaleX
             val bottom = face.rect.bottom * scaleY
-            val scaled = RectF(left, top, right, bottom)
 
-            val paint = when (face.type) {
-                FaceType.DETECTED -> mGreenPaint
-                FaceType.SPOOF -> mRedPaint
-            }
             val label = buildString {
                 append(face.label ?: when (face.type) {
                     FaceType.DETECTED -> "detected"
@@ -156,8 +170,6 @@ class FaceOverlayView @JvmOverloads constructor(
                 })
                 append(" ${(face.confidence * 100).toInt()}%")
             }
-
-            canvas.drawRect(scaled, paint)
 
             // 标签背景 + 文字（名称 + 置信度）
             val labelWidth = mLabelPaint.measureText(label)
@@ -172,16 +184,107 @@ class FaceOverlayView @JvmOverloads constructor(
             canvas.drawRect(left, bottom + 2, left + poseWidth + 8, bottom + poseHeight + 6, mBgPaint)
             canvas.drawText(poseText, left + 4, bottom + poseHeight + 1, mPosePaint)
 
-            // 绘制 106 密集地标（黄色）
+            // 绘制 106 密集地标（黄色小点）
             face.denseLandmarks?.forEach { pt ->
-                canvas.drawCircle(pt.x * scaleX, pt.y * scaleY, 2f, mYellowPaint)
+                canvas.drawCircle(pt.x * scaleX, pt.y * scaleY, 1f, mLandmarkPaint)
             }
 
-            // 绘制 5 关键点（蓝色）
+            // 绘制 5 关键点（紫色）
             face.keypoints?.forEach { pt ->
-                canvas.drawCircle(pt.x * scaleX, pt.y * scaleY, 4f, mBluePaint)
+                canvas.drawCircle(pt.x * scaleX, pt.y * scaleY, 3f, mKeypointPaint)
+            }
+
+            // 绘制头姿朝向箭头 + 坐标系（仅 DETECTED）
+            if (face.type == FaceType.DETECTED) {
+                drawHeadPoseArrow(canvas, face, scaleX, scaleY)
             }
         }
+    }
+
+    // ============================================================
+    // 头姿朝向箭头 + 坐标系
+    // ============================================================
+
+    /**
+     * 绘制头姿坐标系：X=红色(脸部朝向)，Y=绿色，Z=蓝色。
+     *
+     * 原点为两眼中间点（从 5 关键点中取左眼/右眼），
+     * fallback 到人脸框中心。X 轴方向由 yaw/pitch 决定。
+     * 所有坐标在原图空间，需乘以 scaleX/scaleY 缩放至 View 空间。
+     */
+    private fun drawHeadPoseArrow(canvas: Canvas, face: FaceBox, scaleX: Float, scaleY: Float) {
+        // 起点：两眼中间点（keypoints[0]=左眼, keypoints[1]=右眼）
+        val startX: Float
+        val startY: Float
+        val kps = face.keypoints
+        if (kps != null && kps.size >= 2) {
+            startX = (kps[0].x + kps[1].x) / 2f
+            startY = (kps[0].y + kps[1].y) / 2f
+        } else {
+            startX = (face.rect.left + face.rect.right) / 2f
+            startY = (face.rect.top + face.rect.bottom) / 2f
+        }
+
+        val faceW = face.rect.right - face.rect.left
+        val axisLen = faceW * 1.2f
+
+        val yawRad = Math.toRadians((-face.yaw).toDouble()).toFloat()
+        val pitchRad = Math.toRadians(face.pitch.toDouble()).toFloat()
+        val rollRad = Math.toRadians(face.roll.toDouble()).toFloat()
+
+        // 缩放至 View 空间
+        val sx = startX * scaleX
+        val sy = startY * scaleY
+
+        // 绘制原点圆点（白色）
+        val originPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = Color.WHITE; style = Paint.Style.FILL
+        }
+        canvas.drawCircle(sx, sy, 5f, originPaint)
+
+        // --- X 轴（红色）：脸部朝向，由 yaw/pitch 决定 ---
+        val dx = sin(yawRad) * axisLen
+        val dy = sin(-pitchRad) * axisLen
+        val xEx = sx + dx * scaleX
+        val xEy = sy + dy * scaleY
+        canvas.drawLine(sx, sy, xEx, xEy, mAxisXPaint)
+        drawArrowHead(canvas, xEx, xEy, sx, sy, mAxisXPaint)
+
+        // --- Y 轴（绿色）：始终指向上方（鼻梁方向），仅 roll 控制旋转 ---
+        val yBaseAngle = Math.toRadians(-90.0).toFloat()  // 默认垂直向上
+        val yEx = sx + cos(yBaseAngle + rollRad) * axisLen * scaleX
+        val yEy = sy + sin(yBaseAngle + rollRad) * axisLen * scaleY
+        canvas.drawLine(sx, sy, yEx, yEy, mAxisYPaint)
+        drawArrowHead(canvas, yEx, yEy, sx, sy, mAxisYPaint)
+
+        // --- Z 轴（蓝色）：垂直于面部平面（人脸正前方），仅 roll 控制 ---
+        val zBaseAngle = Math.toRadians(180.0).toFloat()  // 默认水平向左（正前方投影）
+        val zAxisLen = axisLen * 0.7f
+        val zEx = sx + cos(zBaseAngle + rollRad) * zAxisLen
+        val zEy = sy + sin(zBaseAngle + rollRad) * zAxisLen
+        canvas.drawLine(sx, sy, zEx, zEy, mAxisZPaint)
+        drawArrowHead(canvas, zEx, zEy, sx, sy, mAxisZPaint)
+    }
+
+    /**
+     * 在线段末端绘制三角箭头。
+     */
+    private fun drawArrowHead(canvas: Canvas, ex: Float, ey: Float, sx: Float, sy: Float,
+                              paint: Paint) {
+        val arrowSize = 10f
+        val angle = Math.atan2((ey - sy).toDouble(), (ex - sx).toDouble()).toFloat()
+        val path = Path()
+        path.moveTo(ex, ey)
+        path.lineTo(
+            ex - arrowSize * cos(angle - Math.toRadians(25.0).toFloat()),
+            ey - arrowSize * sin(angle - Math.toRadians(25.0).toFloat())
+        )
+        path.moveTo(ex, ey)
+        path.lineTo(
+            ex - arrowSize * cos(angle + Math.toRadians(25.0).toFloat()),
+            ey - arrowSize * sin(angle + Math.toRadians(25.0).toFloat())
+        )
+        canvas.drawPath(path, paint)
     }
 
     /** 单个人脸框数据。 */
