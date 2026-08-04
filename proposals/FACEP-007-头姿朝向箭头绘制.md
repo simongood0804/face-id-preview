@@ -32,9 +32,16 @@
 | Y | 绿色 | 面部上方（鼻梁方向） | Roll（翻滚） |
 | Z | 蓝色 | 面部正前方（垂直于面部平面） | Roll（翻滚） |
 
-- **X 轴**：由 yaw/pitch 决定方向，前置摄像头 yaw 取反以匹配镜像画面
-- **Y 轴**：默认垂直向上（-90°），仅 roll 控制旋转
-- **Z 轴**：默认水平向左（180°），仅 roll 控制旋转，长度为 X/Y 的 0.7 倍
+### 方向计算（三角函数方案，最终采用）
+
+- **X 轴（红）**：`dx = sin(yaw) × axisLen`, `dy = sin(-pitch) × axisLen`。前置摄像头 yaw 取反以匹配镜像画面。
+- **Y 轴（绿）**：基准角 -90°（垂直向上），叠加 `roll` 旋转：`angle = -90° + roll`，`ex = cos(angle)`, `ey = sin(angle)`。
+- **Z 轴（蓝）**：基准角 180°（水平向左），叠加 `roll` 旋转，长度 = X/Y 的 0.7 倍。
+
+### 性能优化
+
+- 预计算 `DEG2RAD` 常量，避免每帧重复调用 `Math.toRadians`
+- `Y_BASE_RAD` 和 `Z_BASE_RAD` 在类加载时计算一次
 
 ### 绘制样式
 
@@ -55,7 +62,7 @@
 
 | 文件 | 改动 |
 |------|------|
-| `FaceOverlayView.kt` | 新增坐标轴画笔（mAxisX/Y/ZPaint）+ `drawHeadPoseArrow()` + `drawArrowHead()` 方法；调整关键点颜色/大小；移除人脸框和裁剪框绘制 |
+| `FaceOverlayView.kt` | 新增坐标轴画笔（mAxisX/Y/ZPaint）+ `drawHeadPoseArrow()` + `drawArrowHead()` 方法；调整关键点颜色/大小；移除人脸框和裁剪框绘制；预计算弧度常量 |
 | 其他文件 | 无需修改 |
 
 ## 数据流
@@ -73,3 +80,27 @@ FaceResult.headYaw/headPitch/headRoll
 2. 仅当人脸被检测到（`FaceType.DETECTED`）时绘制坐标系
 3. 所有坐标基于原图空间，绘制时缩放至 View 空间
 4. Y/Z 轴仅由 roll 控制，不受 yaw/pitch 影响，保持稳定
+
+## 方案调研
+
+### 方案对比
+
+| 方案 | 技术栈 | 优点 | 缺点 |
+|------|--------|------|------|
+| **Canvas 2D 三角函数（最终采用）** | Android Canvas API + sin/cos | 零依赖、方向稳定不抖动、性能最优 | Z 轴方向为折中近似 |
+| 旋转矩阵 + 3D 投影 | 手动 3×3 矩阵乘法 | 三轴严格正交 | 正脸时数值不稳定、轴线乱飘 |
+| Forward/Up/Right 正交向量 | 解析几何 | 三轴正交 | 正脸时 Forward 在 2D 上不可见 |
+| OpenGL ES 3D 渲染 | GLSurfaceView + 矩阵变换 | 真实 3D 透视 | 与 EVS GL 渲染器冲突、学习曲线高 |
+| Google Filament | Filament 引擎 | PBR 物理渲染 | 包体积 +5-10MB、过度设计 |
+| OpenCV solvePnP | cv::solvePnP + projectPoints | 工业标准、精度最高 | 需 3D 平均脸模型数据、需 OpenCV 依赖或手写 PnP |
+| MediaPipe Face Mesh | ML Kit | 468 个 3D 关键点 | 额外 10MB+ 模型、与现有算法库重复 |
+
+### 结论
+
+**Canvas 2D 三角函数方案**最适合当前场景：
+1. 零额外依赖，不增加 APK 体积
+2. 不与 EVS GL 渲染器冲突
+3. 方向稳定不抖动，正脸时表现良好
+4. 每帧仅 3 次 sin/cos + 3 次 Float 乘法，性能开销可忽略
+
+已尝试过旋转矩阵和 Forward/Up/Right 正交向量两种方案，均因正脸时数值不稳定或 2D 不可见而放弃。

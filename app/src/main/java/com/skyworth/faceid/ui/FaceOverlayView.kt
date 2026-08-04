@@ -108,6 +108,11 @@ class FaceOverlayView @JvmOverloads constructor(
         strokeCap = Paint.Cap.ROUND
     }
 
+    // 预计算弧度常量，避免每帧重复 Math.toRadians
+    private val DEG2RAD = (Math.PI / 180.0).toFloat()
+    private val Y_BASE_RAD = (-90f * DEG2RAD)  // Y 轴默认垂直向上
+    private val Z_BASE_RAD = (180f * DEG2RAD)   // Z 轴默认水平向左
+
     /**
      * 更新人脸列表并重绘。
      * 坐标 [rect] 应在原图空间，会在绘制时自动缩放至 View 尺寸。
@@ -228,9 +233,9 @@ class FaceOverlayView @JvmOverloads constructor(
         val faceW = face.rect.right - face.rect.left
         val axisLen = faceW * 1.2f
 
-        val yawRad = Math.toRadians((-face.yaw).toDouble()).toFloat()
-        val pitchRad = Math.toRadians(face.pitch.toDouble()).toFloat()
-        val rollRad = Math.toRadians(face.roll.toDouble()).toFloat()
+        val yawRad = (-face.yaw) * DEG2RAD
+        val pitchRad = face.pitch * DEG2RAD
+        val rollRad = face.roll * DEG2RAD
 
         // 缩放至 View 空间
         val sx = startX * scaleX
@@ -251,17 +256,17 @@ class FaceOverlayView @JvmOverloads constructor(
         drawArrowHead(canvas, xEx, xEy, sx, sy, mAxisXPaint)
 
         // --- Y 轴（绿色）：始终指向上方（鼻梁方向），仅 roll 控制旋转 ---
-        val yBaseAngle = Math.toRadians(-90.0).toFloat()  // 默认垂直向上
-        val yEx = sx + cos(yBaseAngle + rollRad) * axisLen * scaleX
-        val yEy = sy + sin(yBaseAngle + rollRad) * axisLen * scaleY
+        val yAngle = Y_BASE_RAD + rollRad
+        val yEx = sx + cos(yAngle) * axisLen * scaleX
+        val yEy = sy + sin(yAngle) * axisLen * scaleY
         canvas.drawLine(sx, sy, yEx, yEy, mAxisYPaint)
         drawArrowHead(canvas, yEx, yEy, sx, sy, mAxisYPaint)
 
         // --- Z 轴（蓝色）：垂直于面部平面（人脸正前方），仅 roll 控制 ---
-        val zBaseAngle = Math.toRadians(180.0).toFloat()  // 默认水平向左（正前方投影）
+        val zAngle = Z_BASE_RAD + rollRad
         val zAxisLen = axisLen * 0.7f
-        val zEx = sx + cos(zBaseAngle + rollRad) * zAxisLen
-        val zEy = sy + sin(zBaseAngle + rollRad) * zAxisLen
+        val zEx = sx + cos(zAngle) * zAxisLen
+        val zEy = sy + sin(zAngle) * zAxisLen
         canvas.drawLine(sx, sy, zEx, zEy, mAxisZPaint)
         drawArrowHead(canvas, zEx, zEy, sx, sy, mAxisZPaint)
     }
