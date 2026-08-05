@@ -6,6 +6,10 @@
     <string name="btn_algo_on">Algo: ON</string>
     <string name="btn_algo_off">Algo: OFF</string>
 
+    <!-- 手动 dump -->
+    <string name="btn_dump">Dump</string>
+    <string name="btn_dump_origin">dump原图</string>
+
     <!-- 状态 -->
     <string name="status_idle">Idle</string>
     <string name="status_initializing">Initializing…</string>

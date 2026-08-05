@@ -44,6 +44,7 @@ class PreviewActivity : AppCompatActivity() {
     private lateinit var mPreviewSurface: GLSurfaceView
     private lateinit var mFaceOverlay: FaceOverlayView
     private lateinit var mToggleButton: Button
+    private lateinit var mDumpButton: Button
     private lateinit var mStatusText: TextView
     private lateinit var mFaceIdText: TextView
     private lateinit var mFrameRateText: TextView
@@ -94,6 +95,7 @@ class PreviewActivity : AppCompatActivity() {
         mPreviewSurface = findViewById(R.id.preview_surface)
         mFaceOverlay = findViewById(R.id.face_overlay)
         mToggleButton = findViewById(R.id.btn_toggle)
+        mDumpButton = findViewById(R.id.btn_dump)
         mStatusText = findViewById(R.id.tv_status)
         mFaceIdText = findViewById(R.id.tv_face_id)
         mFrameRateText = findViewById(R.id.tv_frame_rate)
@@ -103,6 +105,7 @@ class PreviewActivity : AppCompatActivity() {
         mToggleButton.setText(
             if (mAlgorithmEnabled) R.string.btn_algo_on else R.string.btn_algo_off
         )
+        mDumpButton.setOnClickListener { onDumpClick() }
     }
 
     /**
@@ -182,6 +185,27 @@ class PreviewActivity : AppCompatActivity() {
         )
         saveAlgorithmState()
         Log.i(TAG, "algorithm ${if (mAlgorithmEnabled) "enabled" else "disabled"}")
+    }
+
+    /**
+     * 手动触发 dump：后台保存最近一帧原始图像，完成后 Toast 提示。
+     * 若系统属性未启用 dump，弹框提示设置系统属性。
+     */
+    private fun onDumpClick() {
+        val algo = mAlgorithm
+        if (algo == null) {
+            Toast.makeText(this, "dump: algorithm not initialized", Toast.LENGTH_SHORT).show()
+            return
+        }
+        if (!algo.isDumpAvailable()) {
+            Toast.makeText(this, "dump: system property disabled, set algorithm_face_dump_enable first", Toast.LENGTH_LONG).show()
+            return
+        }
+        algo.triggerManualDump { ok ->
+            val msg = if (ok) "dump: saved" else "dump: failed"
+            Toast.makeText(this, msg, Toast.LENGTH_SHORT).show()
+        }
+        Log.i(TAG, "onDumpClick: manual dump triggered")
     }
 
     // ============================================================

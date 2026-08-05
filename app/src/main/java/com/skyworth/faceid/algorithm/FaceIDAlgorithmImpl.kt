@@ -5,6 +5,7 @@
 package com.skyworth.faceid.algorithm
 
 import android.content.Context
+import android.graphics.Bitmap
 import android.graphics.PointF
 import android.graphics.RectF
 import android.util.Log
@@ -12,7 +13,11 @@ import atlas.face.sdk.FaceFlag
 import atlas.face.sdk.FaceImage
 import atlas.face.sdk.FaceResult
 import atlas.face.sdk.FaceSDK
+import android.os.Handler
+import android.os.Looper
 import java.io.File
+import java.util.concurrent.ExecutorService
+import java.util.concurrent.Executors
 
 /**
  * Face ID 算法实现 —— 基于 [face-sdk-v1.1.4.aar]（AAR 集成）。
@@ -44,6 +49,26 @@ class FaceIDAlgorithmImpl : IFaceIDAlgorithm {
 
     /** 模型文件存储目录。 */
     private var mModelDir: String = ""
+
+    // ============ 帧 dump（调试用，手动触发） ============
+    /** 应用 Context（属性变化时重新应用 dump 状态用）。 */
+    private var mAppContext: Context? = null
+    /** dump 目录（与传给算法的路径一致）。 */
+    private var mDumpDir: String? = null
+    /** 已 dump 的帧计数（用于生成文件名 index）。 */
+    private var mDumpFrameCount = 0
+    /** 最近一帧原始 UYVY 数据缓存（手动触发时保存此帧）。 */
+    private var mLatestFrame: ByteArray? = null
+    private var mLatestW = 0
+    private var mLatestH = 0
+    /** dump 后台执行线程。 */
+    private val mDumpExecutor: ExecutorService = Executors.newSingleThreadExecutor()
+    /** 主线程 Handler，用于完成回调。 */
+    private val mMainHandler = Handler(Looper.getMainLooper())
+    /** 上一次读取到的属性值，用于检测变化。 */
+    @Volatile private var mLastDumpPropValue: String? = null
+    /** 属性名。 */
+    private val PROP_DUMP_ENABLE = "algorithm_face_dump_enable"
 
     /** 模型文件清单（必须与 manifest.json 中引用的模型一致）。 */
     private val REQUIRED_MODEL_FILES = listOf(
@@ -88,13 +113,11 @@ class FaceIDAlgorithmImpl : IFaceIDAlgorithm {
         return try {
             // 1. 确定模型路径：优先 vendor 目录，fallback 到应用自身
             mModelDir = resolveModelDir(context)
+            mAppContext = context
             Log.i(TAG, "initialize: model_dir=$mModelDir")
 
-            // 2. Debug 构建：创建 dump 目录并传给 AAR（必须在 init 之前调用）
-            if (android.util.Log.isLoggable(TAG, android.util.Log.DEBUG)) {
-                val dumpDir = File(context?.filesDir, "debugDump").apply { mkdirs() }
-                FaceSDK.setDebugDumpPath(dumpDir.absolutePath)
-            }
+            // 2. 根据系统属性 algorithm_face_dump_enable 决定是否启用 dump（必须 init 之前调用）
+            applyDumpState(mAppContext)
 
             // 3. 初始化 AAR FaceSDK
             val t0 = System.currentTimeMillis()
@@ -249,6 +272,10 @@ class FaceIDAlgorithmImpl : IFaceIDAlgorithm {
         mFaceSDK?.destroy()
         mFaceSDK = null
         mInitialized = false
+
+        // 关闭 dump 后台线程
+        mDumpExecutor.shutdownNow()
+
         Log.i(TAG, "release: done")
     }
 
@@ -377,5 +404,185 @@ class FaceIDAlgorithmImpl : IFaceIDAlgorithm {
      */
     fun compare(emb1: FloatArray, emb2: FloatArray): Float {
         return FaceSDK.compare(emb1, emb2)
+    }
+
+    /**
+     * 缓存最近一帧原始 UYVY 数据，并以帧驱动方式检测系统属性变化。
+     * 由 FrameProcessor 在收到原始帧时调用：
+     * - 每次缓存当前帧（手动触发 [triggerManualDump] 时保存此帧）
+     * - 顺带检查 algorithm_face_dump_enable 是否变化，变化则重新应用 dump 状态
+     */
+    fun dumpOriginalFrame(uyvyData: ByteArray, width: Int, height: Int) {
+        synchronized(this) {
+            mLatestFrame = uyvyData
+            mLatestW = width
+            mLatestH = height
+        }
+        checkDumpPropChange()
+    }
+
+    /**
+     * dump 是否可用（系统属性 algorithm_face_dump_enable 已启用）。
+     */
+    fun isDumpAvailable(): Boolean = mDumpDir != null
+
+    /**
+     * 手动触发 dump：后台线程保存最近一帧原始图像为 PNG。
+     * 文件名 dumpOrigin{index}.png，index 每次触发递增。
+     * 完成后通过 [onResult] 回调（在主线程执行）。
+     *
+     * @param onResult 完成回调，参数为是否保存成功。
+     */
+    fun triggerManualDump(onResult: ((Boolean) -> Unit)? = null) {
+        val dir = mDumpDir
+        val frame: ByteArray
+        val w: Int; val h: Int
+        if (dir == null) {
+            onResult?.invoke(false)
+            return
+        }
+        synchronized(this) {
+            frame = mLatestFrame ?: run {
+                onResult?.invoke(false)
+                return
+            }
+            w = mLatestW; h = mLatestH
+        }
+
+        // 在后台线程执行转换 + 压缩，避免阻塞 UI 线程
+        mDumpExecutor.execute {
+            val ok = try {
+                val index = mDumpFrameCount++
+                val rgb = uyvyToRgb(frame, w, h)
+                savePng(File(dir, "dumpOrigin$index.png"), rgb, w, h)
+                Log.i(TAG, "triggerManualDump: saved dumpOrigin$index.png (${w}x${h})")
+                true
+            } catch (e: Exception) {
+                Log.e(TAG, "triggerManualDump: failed", e)
+                false
+            }
+            mMainHandler.post { onResult?.invoke(ok) }
+        }
+    }
+
+    /**
+     * UYVY 帧数据 → RGB888（参照 FrameProcessor.cropFrame 的转换公式）。
+     */
+    private fun uyvyToRgb(data: ByteArray, width: Int, height: Int): ByteArray {
+        val rgb = ByteArray(width * height * 3)
+        var dstIdx = 0
+        for (row in 0 until height) {
+            var srcCol = 0
+            for (col in 0 until width step 2) {
+                val srcPos = row * width * 2 + srcCol * 2
+                val u = data[srcPos].toInt() and 0xFF
+                val y0 = data[srcPos + 1].toInt() and 0xFF
+                val v = data[srcPos + 2].toInt() and 0xFF
+                val y1 = data[srcPos + 3].toInt() and 0xFF
+                srcCol += 2
+
+                fun clamp(v: Int): Byte = when { v < 0 -> 0; v > 255 -> 255; else -> v }.toByte()
+                val c0 = y0 - 16; val d = u - 128; val e = v - 128
+                rgb[dstIdx++] = clamp((298 * c0 + 409 * e + 128) shr 8)
+                rgb[dstIdx++] = clamp((298 * c0 - 100 * d - 208 * e + 128) shr 8)
+                rgb[dstIdx++] = clamp((298 * c0 + 516 * d + 128) shr 8)
+
+                val c1 = y1 - 16
+                rgb[dstIdx++] = clamp((298 * c1 + 409 * e + 128) shr 8)
+                rgb[dstIdx++] = clamp((298 * c1 - 100 * d - 208 * e + 128) shr 8)
+                rgb[dstIdx++] = clamp((298 * c1 + 516 * d + 128) shr 8)
+            }
+        }
+        return rgb
+    }
+
+    /**
+     * 将 RGB888 帧数据保存为 PNG。
+     */
+    private fun savePng(file: File, data: ByteArray, width: Int, height: Int) {
+        try {
+            val bmp = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888).apply {
+                // RGB888 → ARGB_8888，逐行拷贝
+                val pixels = IntArray(width * height)
+                var i = 0
+                for (p in 0 until width * height) {
+                    val r = data[i].toInt() and 0xFF
+                    val g = data[i + 1].toInt() and 0xFF
+                    val b = data[i + 2].toInt() and 0xFF
+                    pixels[p] = (0xFF shl 24) or (r shl 16) or (g shl 8) or b
+                    i += 3
+                }
+                setPixels(pixels, 0, width, 0, 0, width, height)
+            }
+            file.parentFile?.mkdirs()
+            // 同名文件存在时覆盖（进程重启后 index 会重新从 0 开始）
+            if (file.exists() && !file.delete()) {
+                Log.w(TAG, "savePng: failed to delete existing ${file.name}")
+            }
+            val os = file.outputStream()
+            try {
+                bmp.compress(Bitmap.CompressFormat.PNG, 100, os)
+            } finally {
+                os.close()
+            }
+            bmp.recycle()
+        } catch (e: Exception) {
+            Log.e(TAG, "savePng: failed", e)
+        }
+    }
+
+    /**
+     * 读取系统属性 algorithm_face_dump_enable 的原始值（线程安全）。
+     */
+    private fun readDumpProp(): String? {
+        return try {
+            val clazz = Class.forName("android.os.SystemProperties")
+            val method = clazz.getMethod("get", String::class.java, String::class.java)
+            method.invoke(null, PROP_DUMP_ENABLE, "disable") as String
+        } catch (_: Exception) {
+            null
+        }
+    }
+
+    /**
+     * 属性值是否为 enable（"1" 或 "true"，忽略大小写）。
+     */
+    private fun isDumpPropEnabled(value: String?): Boolean {
+        return value.equals("1", ignoreCase = true) ||
+            value.equals("true", ignoreCase = true)
+    }
+
+    /**
+     * 根据当前系统属性应用 dump 状态：
+     * - enable：创建 dump 目录，设置 mDumpDir 并传给 FaceSDK
+     * - disable：清空 mDumpDir，并置空 FaceSDK dump 路径
+     */
+    private fun applyDumpState(context: Context?) {
+        val value = readDumpProp()
+        mLastDumpPropValue = value
+        if (isDumpPropEnabled(value)) {
+            val dumpDir = File(context?.filesDir, "debugDump").apply { mkdirs() }
+            mDumpDir = dumpDir.absolutePath
+            FaceSDK.setDebugDumpPath(mDumpDir)
+            Log.i(TAG, "applyDumpState: enabled, dumpDir=$mDumpDir")
+        } else {
+            mDumpDir = null
+            FaceSDK.setDebugDumpPath("")
+            Log.i(TAG, "applyDumpState: disabled")
+        }
+    }
+
+    /**
+     * 帧驱动检测系统属性变化：由 [dumpOriginalFrame] 在收到每帧时调用。
+     * 对比最近值，若 algorithm_face_dump_enable 变化则重新应用 dump 状态
+     * （在 GL/帧线程执行，属性读取开销极小，可忽略）。
+     */
+    private fun checkDumpPropChange() {
+        val current = readDumpProp()
+        val last = mLastDumpPropValue
+        if (current != last) {
+            Log.i(TAG, "prop change detected: '$last' -> '$current'")
+            applyDumpState(mAppContext)
+        }
     }
 }

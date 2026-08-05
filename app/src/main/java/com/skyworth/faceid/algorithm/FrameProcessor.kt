@@ -45,6 +45,9 @@ class FrameProcessor(
     }
 
     fun submitFrame(data: ByteArray, w: Int, h: Int) {
+        // 原图 dump：收到完整 UYVY 帧时，dump 未裁剪的原始画面
+        mAlgorithm.dumpOriginalFrame(data, w, h)
+
         synchronized(this) {
             mPending = PendingFrame(data, w, h)
             if (!mProcessing) {
