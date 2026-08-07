@@ -9,6 +9,8 @@
     <!-- 手动 dump -->
     <string name="btn_dump">Dump</string>
     <string name="btn_dump_origin">dump原图</string>
+    <string name="btn_clear_dump">清除dump</string>
+    <string name="btn_move_dump">导出dump</string>
 
     <!-- 状态 -->
     <string name="status_idle">Idle</string>

@@ -69,6 +69,8 @@ class FaceIDAlgorithmImpl : IFaceIDAlgorithm {
     @Volatile private var mLastDumpPropValue: String? = null
     /** 属性名。 */
     private val PROP_DUMP_ENABLE = "algorithm_face_dump_enable"
+    /** 导出 dump 图像的目标目录（sdcard）。 */
+    private val SDCARD_DUMP_DIR = "/sdcard/debugDmsDump"
 
     /** 模型文件清单（必须与 manifest.json 中引用的模型一致）。 */
     private val REQUIRED_MODEL_FILES = listOf(
@@ -459,6 +461,77 @@ class FaceIDAlgorithmImpl : IFaceIDAlgorithm {
                 true
             } catch (e: Exception) {
                 Log.e(TAG, "triggerManualDump: failed", e)
+                false
+            }
+            mMainHandler.post { onResult?.invoke(ok) }
+        }
+    }
+
+    /**
+     * 解析 dump 源目录（filesDir/debugDump）。
+     * 独立于 mDumpDir（mDumpDir 受属性开关控制），保证 clear/move 在属性关闭时也能操作已存在的 dump 文件。
+     */
+    private fun resolveDumpSourceDir(): File? {
+        val ctx = mAppContext ?: return null
+        return File(ctx.filesDir, "debugDump")
+    }
+
+    /**
+     * 清除 debugDump 文件夹内容，并删除 /sdcard/debugDmsDump 文件夹。
+     * 不受系统属性管控，始终操作固定目录。在后台线程执行，完成后回调（主线程）。
+     */
+    fun clearDumpDirs(onResult: ((Boolean) -> Unit)? = null) {
+        mDumpExecutor.execute {
+            val ok = try {
+                // 1. 清空 debugDump 目录内容
+                resolveDumpSourceDir()?.listFiles()?.forEach { it.delete() }
+                // 2. 删除 /sdcard/debugDmsDump 文件夹（递归）
+                val sdcardDump = File(SDCARD_DUMP_DIR)
+                if (sdcardDump.exists()) {
+                    sdcardDump.deleteRecursively()
+                }
+                mDumpFrameCount = 0
+                Log.i(TAG, "clearDumpDirs: cleared debugDump & removed $SDCARD_DUMP_DIR")
+                true
+            } catch (e: Exception) {
+                Log.e(TAG, "clearDumpDirs: failed", e)
+                false
+            }
+            mMainHandler.post { onResult?.invoke(ok) }
+        }
+    }
+
+    /**
+     * 将 debugDump 中的 png 图像移动到 /sdcard/debugDmsDump 文件夹。
+     * 无该文件夹则创建。不受系统属性管控，始终操作固定目录。
+     * 在后台线程执行，完成后回调（主线程）。
+     */
+    fun moveDumpPngToSdcard(onResult: ((Boolean) -> Unit)? = null) {
+        mDumpExecutor.execute {
+            val ok = try {
+                val srcDir = resolveDumpSourceDir()
+                if (srcDir == null || !srcDir.exists()) {
+                    Log.w(TAG, "moveDumpPngToSdcard: dump dir not found")
+                    false
+                } else {
+                    val dstDir = File(SDCARD_DUMP_DIR)
+                    if (!dstDir.exists()) {
+                        dstDir.mkdirs()
+                    }
+                    var moved = 0
+                    srcDir.listFiles()?.forEach { f ->
+                        if (f.isFile && f.name.endsWith(".png", ignoreCase = true)) {
+                            val dest = File(dstDir, f.name)
+                            // 目标已存在则先删除，再移动（覆盖）
+                            if (dest.exists()) dest.delete()
+                            if (f.renameTo(dest)) moved++
+                        }
+                    }
+                    Log.i(TAG, "moveDumpPngToSdcard: moved $moved png to $SDCARD_DUMP_DIR")
+                    true
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "moveDumpPngToSdcard: failed", e)
                 false
             }
             mMainHandler.post { onResult?.invoke(ok) }

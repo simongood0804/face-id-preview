@@ -6,6 +6,10 @@
     <!-- 摄像头权限 -->
     <uses-permission android:name="android.permission.CAMERA" />
 
+    <!-- 外部存储读写权限（导出 dump 图像到 /sdcard） -->
+    <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" />
+    <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" android:maxSdkVersion="28" />
+
     <!-- 硬件特性声明 -->
     <uses-feature android:name="android.hardware.camera" android:required="false" />
 

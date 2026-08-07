@@ -67,16 +67,42 @@
         app:layout_constraintStart_toStartOf="@id/tv_status" />
 
     <!-- ===== 控制按钮（左下角，上下排布、左对齐） ===== -->
-    <!-- 手动 dump 按钮（在上） -->
+    <!-- 清除 dump 按钮（最上） -->
+    <Button
+        android:id="@+id/btn_clear_dump"
+        android:layout_width="wrap_content"
+        android:minWidth="120dp"
+        android:layout_height="40dp"
+        android:layout_marginStart="12dp"
+        android:layout_marginBottom="12dp"
+        android:text="@string/btn_clear_dump"
+        android:textSize="13sp"
+        app:layout_constraintBottom_toTopOf="@id/btn_move_dump"
+        app:layout_constraintStart_toStartOf="parent" />
+
+    <!-- 移动 dump 到 sdcard 按钮 -->
+    <Button
+        android:id="@+id/btn_move_dump"
+        android:layout_width="wrap_content"
+        android:minWidth="120dp"
+        android:layout_height="40dp"
+        android:layout_marginStart="12dp"
+        android:layout_marginBottom="12dp"
+        android:text="@string/btn_move_dump"
+        android:textSize="13sp"
+        app:layout_constraintBottom_toTopOf="@id/btn_dump"
+        app:layout_constraintStart_toStartOf="parent" />
+
+    <!-- 手动 dump 按钮 -->
     <Button
         android:id="@+id/btn_dump"
         android:layout_width="wrap_content"
         android:minWidth="120dp"
-        android:layout_height="48dp"
+        android:layout_height="40dp"
         android:layout_marginStart="12dp"
         android:layout_marginBottom="12dp"
         android:text="@string/btn_dump_origin"
-        android:textSize="14sp"
+        android:textSize="13sp"
         app:layout_constraintBottom_toTopOf="@id/btn_toggle"
         app:layout_constraintStart_toStartOf="parent" />
 
@@ -85,11 +111,11 @@
         android:id="@+id/btn_toggle"
         android:layout_width="wrap_content"
         android:minWidth="120dp"
-        android:layout_height="48dp"
+        android:layout_height="40dp"
         android:layout_marginStart="12dp"
         android:layout_marginBottom="12dp"
         android:text="@string/btn_algo_on"
-        android:textSize="14sp"
+        android:textSize="13sp"
         app:layout_constraintBottom_toBottomOf="parent"
         app:layout_constraintStart_toStartOf="parent" />
 

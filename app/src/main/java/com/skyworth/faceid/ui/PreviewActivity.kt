@@ -45,6 +45,8 @@ class PreviewActivity : AppCompatActivity() {
     private lateinit var mFaceOverlay: FaceOverlayView
     private lateinit var mToggleButton: Button
     private lateinit var mDumpButton: Button
+    private lateinit var mClearDumpButton: Button
+    private lateinit var mMoveDumpButton: Button
     private lateinit var mStatusText: TextView
     private lateinit var mFaceIdText: TextView
     private lateinit var mFrameRateText: TextView
@@ -96,6 +98,8 @@ class PreviewActivity : AppCompatActivity() {
         mFaceOverlay = findViewById(R.id.face_overlay)
         mToggleButton = findViewById(R.id.btn_toggle)
         mDumpButton = findViewById(R.id.btn_dump)
+        mClearDumpButton = findViewById(R.id.btn_clear_dump)
+        mMoveDumpButton = findViewById(R.id.btn_move_dump)
         mStatusText = findViewById(R.id.tv_status)
         mFaceIdText = findViewById(R.id.tv_face_id)
         mFrameRateText = findViewById(R.id.tv_frame_rate)
@@ -106,6 +110,8 @@ class PreviewActivity : AppCompatActivity() {
             if (mAlgorithmEnabled) R.string.btn_algo_on else R.string.btn_algo_off
         )
         mDumpButton.setOnClickListener { onDumpClick() }
+        mClearDumpButton.setOnClickListener { onClearDumpClick() }
+        mMoveDumpButton.setOnClickListener { onMoveDumpClick() }
     }
 
     /**
@@ -206,6 +212,40 @@ class PreviewActivity : AppCompatActivity() {
             Toast.makeText(this, msg, Toast.LENGTH_SHORT).show()
         }
         Log.i(TAG, "onDumpClick: manual dump triggered")
+    }
+
+    /**
+     * 清除 debugDump 文件夹内容，并删除 /sdcard/debugDmsDump 文件夹。
+     */
+    private fun onClearDumpClick() {
+        val algo = mAlgorithm
+        if (algo == null) {
+            Toast.makeText(this, "clear dump: algorithm not initialized", Toast.LENGTH_SHORT).show()
+            return
+        }
+        Toast.makeText(this, "clear dump: running", Toast.LENGTH_SHORT).show()
+        algo.clearDumpDirs { ok ->
+            val msg = if (ok) "clear dump: done" else "clear dump: failed"
+            Toast.makeText(this, msg, Toast.LENGTH_SHORT).show()
+        }
+        Log.i(TAG, "onClearDumpClick: clear triggered")
+    }
+
+    /**
+     * 将 debugDump 中的 png 图像移动到 /sdcard/debugDmsDump 文件夹。
+     */
+    private fun onMoveDumpClick() {
+        val algo = mAlgorithm
+        if (algo == null) {
+            Toast.makeText(this, "move dump: algorithm not initialized", Toast.LENGTH_SHORT).show()
+            return
+        }
+        Toast.makeText(this, "move dump: running", Toast.LENGTH_SHORT).show()
+        algo.moveDumpPngToSdcard { ok ->
+            val msg = if (ok) "move dump: done" else "move dump: failed"
+            Toast.makeText(this, msg, Toast.LENGTH_SHORT).show()
+        }
+        Log.i(TAG, "onMoveDumpClick: move triggered")
     }
 
     // ============================================================
