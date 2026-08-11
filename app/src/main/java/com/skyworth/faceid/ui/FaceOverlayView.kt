@@ -232,11 +232,64 @@ class FaceOverlayView @JvmOverloads constructor(
                 canvas.drawCircle(pt.x * scaleX, pt.y * scaleY, 3f, mKeypointPaint)
             }
 
-            // 头姿坐标轴暂时隐藏，仅绘制视线（仅 DETECTED）
+            // 头姿坐标轴 + 视线（仅 DETECTED）
             if (face.type == FaceType.DETECTED) {
-                // drawHeadPoseArrow(canvas, face, scaleX, scaleY)
+                drawHeadPoseArrow(canvas, face, scaleX, scaleY)
                 drawGaze(canvas, face, scaleX, scaleY)
             }
+        }
+
+        // 左侧输出当前朝向 zone 信息
+        drawZonePanel(canvas, faces)
+    }
+
+    /**
+     * 在画面左侧输出当前朝向的 DMS zone 信息。
+     * 顶部显示当前 zone 名称 + 坐标值；下方列出全部 zone 并高亮当前命中项。
+     */
+    private fun drawZonePanel(canvas: Canvas, faces: List<FaceBox>) {
+        val face = faces.firstOrNull() ?: return
+        val zoneId = face.zoneId.toInt()
+        val zoneName = if (zoneId in ZONE_NAMES.indices) ZONE_NAMES[zoneId] else "UNKNOWN($zoneId)"
+
+        val panelX = 16f
+        val panelTop = 16f
+        val lineH = 24f
+        val pad = 10f
+        val textSize = 18f
+
+        val highlightPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = Color.YELLOW
+            this.textSize = textSize
+            style = Paint.Style.FILL
+        }
+        val dimPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = Color.argb(160, 255, 255, 255)
+            this.textSize = textSize
+            style = Paint.Style.FILL
+        }
+
+        // 当前 zone 名称（含中文翻译）
+        val zoneCn = if (zoneId in ZONE_NAMES_CN.indices) ZONE_NAMES_CN[zoneId] else ""
+        // 标题行：当前 zone
+        val title = "Zone: $zoneName $zoneCn"
+        val titleH = textSize + 6
+        // 背景
+        val panelW = 300f
+        val totalH = titleH + ZONE_NAMES.size * lineH + pad * 2
+        canvas.drawRect(panelX, panelTop, panelX + panelW, panelTop + totalH, mBgPaint)
+
+        // 当前 zone 标题（高亮）
+        canvas.drawText(title, panelX + pad, panelTop + pad + textSize, highlightPaint)
+
+        // 全部 zone 列表，英文名 + 中文翻译，当前命中的高亮
+        var y = panelTop + pad + titleH + textSize
+        for (i in ZONE_NAMES.indices) {
+            val paint = if (i == zoneId) highlightPaint else dimPaint
+            val marker = if (i == zoneId) ">> " else "   "
+            val cn = if (i in ZONE_NAMES_CN.indices) ZONE_NAMES_CN[i] else ""
+            canvas.drawText("$marker${ZONE_NAMES[i]}  $cn", panelX + pad, y, paint)
+            y += lineH
         }
     }
 
@@ -412,8 +465,50 @@ class FaceOverlayView @JvmOverloads constructor(
         /** 是否已标定（1=已标定）。 */
         val gazeCalibrated: Float = 0f,
         /** 是否分心（1=分心）。 */
-        val gazeDistracted: Float = 0f
+        val gazeDistracted: Float = 0f,
+        /** DMS 分区 ID。 */
+        val zoneId: Float = 0f
     )
 
     enum class FaceType { DETECTED, SPOOF }
+
+    companion object {
+        /** DMS 分区 ID → 名称映射（与 C 侧 InitDefaultZones 对齐）。 */
+        private val ZONE_NAMES = arrayOf(
+            "FORWARD",                    // 0
+            "DRV_LEFT_KNEE",              // 1
+            "DRV_RIGHT_KNEE",             // 2
+            "DRV_BELT",                   // 3
+            "PASS_FOOTWELL",              // 4
+            "PASS_SEAT",                  // 5
+            "GLOVEBOX",                   // 6
+            "DRV_LEFT_VENT",              // 7
+            "DRV_RIGHT_VENT",             // 8
+            "DASHBOARD",                  // 9
+            "STEERING_WHEEL",             // 10
+            "GEAR_SELECTOR",              // 11
+            "HVAC",                       // 12
+            "INFOTAINMENT",               // 13
+            "CENTER_CONSOLE"              // 14
+        )
+
+        /** DMS 分区 ID → 中文名称映射（与 ZONE_NAMES 一一对应）。 */
+        private val ZONE_NAMES_CN = arrayOf(
+            "正视前方",     // 0  FORWARD
+            "驾驶左膝",     // 1  DRV_LEFT_KNEE
+            "驾驶右膝",     // 2  DRV_RIGHT_KNEE
+            "安全带",       // 3  DRV_BELT
+            "副驾脚部",     // 4  PASS_FOOTWELL
+            "副驾驶座",     // 5  PASS_SEAT
+            "手套箱",       // 6  GLOVEBOX
+            "驾驶左出风口", // 7  DRV_LEFT_VENT
+            "驾驶右出风口", // 8  DRV_RIGHT_VENT
+            "仪表台",       // 9  DASHBOARD
+            "方向盘",       // 10 STEERING_WHEEL
+            "挡位选择器",   // 11 GEAR_SELECTOR
+            "空调面板",     // 12 HVAC
+            "信息娱乐屏",   // 13 INFOTAINMENT
+            "中央扶手箱"    // 14 CENTER_CONSOLE
+        )
+    }
 }
