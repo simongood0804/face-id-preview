@@ -108,6 +108,28 @@ class FaceOverlayView @JvmOverloads constructor(
         strokeCap = Paint.Cap.ROUND
     }
 
+    /** 视线方向线画笔（橙色）。 */
+    private val mGazePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = Color.argb(255, 255, 140, 0)  // Orange
+        style = Paint.Style.STROKE
+        strokeWidth = 4f
+        strokeCap = Paint.Cap.ROUND
+    }
+
+    /** 分心提示文字画笔（红色）。 */
+    private val mDistractedPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = Color.RED
+        textSize = 40f
+        style = Paint.Style.FILL
+    }
+
+    /** 视线文字画笔（白色小字）。 */
+    private val mGazeTextPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = Color.argb(220, 255, 255, 255)
+        textSize = 26f
+        style = Paint.Style.FILL
+    }
+
     // 预计算弧度常量，避免每帧重复 Math.toRadians
     private val DEG2RAD = (Math.PI / 180.0).toFloat()
     private val Y_BASE_RAD = (-90f * DEG2RAD)  // Y 轴默认垂直向上
@@ -189,6 +211,17 @@ class FaceOverlayView @JvmOverloads constructor(
             canvas.drawRect(left, bottom + 2, left + poseWidth + 8, bottom + poseHeight + 6, mBgPaint)
             canvas.drawText(poseText, left + 4, bottom + poseHeight + 1, mPosePaint)
 
+            // 视线信息（小字，头姿下方）
+            val gazeText = "G:yaw%.0f pit%.0f v%d c%d d%d".format(
+                face.gazeYaw, face.gazePitch,
+                if (face.gazeValid > 0f) 1 else 0,
+                if (face.gazeCalibrated > 0f) 1 else 0,
+                if (face.gazeDistracted > 0f) 1 else 0)
+            val gazeWidth = mPosePaint.measureText(gazeText)
+            canvas.drawRect(left, bottom + poseHeight + 8, left + gazeWidth + 8,
+                bottom + poseHeight * 2 + 12, mBgPaint)
+            canvas.drawText(gazeText, left + 4, bottom + poseHeight * 2 + 7, mPosePaint)
+
             // 绘制 106 密集地标（黄色小点）
             face.denseLandmarks?.forEach { pt ->
                 canvas.drawCircle(pt.x * scaleX, pt.y * scaleY, 1f, mLandmarkPaint)
@@ -199,11 +232,74 @@ class FaceOverlayView @JvmOverloads constructor(
                 canvas.drawCircle(pt.x * scaleX, pt.y * scaleY, 3f, mKeypointPaint)
             }
 
-            // 绘制头姿朝向箭头 + 坐标系（仅 DETECTED）
+            // 头姿坐标轴暂时隐藏，仅绘制视线（仅 DETECTED）
             if (face.type == FaceType.DETECTED) {
-                drawHeadPoseArrow(canvas, face, scaleX, scaleY)
+                // drawHeadPoseArrow(canvas, face, scaleX, scaleY)
+                drawGaze(canvas, face, scaleX, scaleY)
             }
         }
+    }
+
+    // ============================================================
+    // 视线追踪可视化
+    // ============================================================
+
+    /**
+     * 绘制左右眼两条视线方向线 + 分心状态提示。
+     * 左眼起点 = 106 点地标 index 88（左瞳），右眼起点 = index 89（右瞳），
+     * 各自以同一 gazeYaw/gazePitch 方向延伸（橙色线）。
+     * 分心时显示红色 "DISTRACTED" 提示。
+     */
+    private fun drawGaze(canvas: Canvas, face: FaceBox, scaleX: Float, scaleY: Float) {
+        if (face.gazeValid <= 0f) return
+
+        val faceW = face.rect.right - face.rect.left
+        val gazeLen = faceW * 1.6f  // 视线线比头姿线更长，便于观察
+        val gazeYawRad = face.gazeYaw * DEG2RAD
+        val gazePitchRad = face.gazePitch * DEG2RAD
+        val dx = sin(gazeYawRad) * gazeLen * scaleX
+        val dy = sin(-gazePitchRad) * gazeLen * scaleY
+
+        // 左右眼起点：5 关键点（index 0=左眼, 1=右眼，即瞳孔位置）。
+        // 算法只输出一个视线方向（gazeYaw/gazePitch），因此左右眼共用同一方向，
+        // 但各自从自己的瞳孔点出发画线。
+        val kps = face.keypoints
+        val leftEye = when {
+            kps != null && kps.size >= 1 -> kps[0]
+            else -> PointF(face.rect.left + (face.rect.right - face.rect.left) * 0.4f,
+                           (face.rect.top + face.rect.bottom) / 2f)
+        }
+        val rightEye = when {
+            kps != null && kps.size >= 2 -> kps[1]
+            else -> PointF(face.rect.left + (face.rect.right - face.rect.left) * 0.6f,
+                           (face.rect.top + face.rect.bottom) / 2f)
+        }
+
+        drawSingleGaze(canvas, leftEye, dx, dy, scaleX, scaleY)
+        drawSingleGaze(canvas, rightEye, dx, dy, scaleX, scaleY)
+
+        // 分心提示（显示在人脸框上方）
+        if (face.gazeDistracted > 0f) {
+            canvas.drawText("DISTRACTED",
+                face.rect.left * scaleX, face.rect.top * scaleY - 10f, mDistractedPaint)
+        }
+    }
+
+    /**
+     * 以单只眼睛为起点绘制一条视线线。
+     *
+     * @param eye 眼睛起点（原图坐标）
+     * @param dx  水平方向增量（已缩放）
+     * @param dy  垂直方向增量（已缩放）
+     */
+    private fun drawSingleGaze(canvas: Canvas, eye: PointF, dx: Float, dy: Float,
+                               scaleX: Float, scaleY: Float) {
+        val sx = eye.x * scaleX
+        val sy = eye.y * scaleY
+        val ex = sx + dx
+        val ey = sy + dy
+        canvas.drawLine(sx, sy, ex, ey, mGazePaint)
+        drawArrowHead(canvas, ex, ey, sx, sy, mGazePaint)
     }
 
     // ============================================================
@@ -306,7 +402,17 @@ class FaceOverlayView @JvmOverloads constructor(
         /** 头部姿态角（度）。 */
         val pitch: Float = 0f,
         val yaw: Float = 0f,
-        val roll: Float = 0f
+        val roll: Float = 0f,
+        /** 视线是否有效（1=有效）。 */
+        val gazeValid: Float = 0f,
+        /** 视线偏航角（度）。 */
+        val gazeYaw: Float = 0f,
+        /** 视线俯仰角（度）。 */
+        val gazePitch: Float = 0f,
+        /** 是否已标定（1=已标定）。 */
+        val gazeCalibrated: Float = 0f,
+        /** 是否分心（1=分心）。 */
+        val gazeDistracted: Float = 0f
     )
 
     enum class FaceType { DETECTED, SPOOF }

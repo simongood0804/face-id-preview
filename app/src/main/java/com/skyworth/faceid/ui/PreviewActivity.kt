@@ -443,7 +443,12 @@ class PreviewActivity : AppCompatActivity() {
                         denseLandmarks = result.landmarks,
                         pitch = result.headposePitch,
                         yaw = result.headposeYaw,
-                        roll = result.headposeRoll
+                        roll = result.headposeRoll,
+                        gazeValid = result.gazeValid,
+                        gazeYaw = result.gazeYaw,
+                        gazePitch = result.gazePitch,
+                        gazeCalibrated = result.gazeCalibrated,
+                        gazeDistracted = result.gazeDistracted
                     )),
                     frameW, frameH
                 )

@@ -25,6 +25,9 @@ ACTIVITY_NAME   := .ui.PreviewActivity
 APK_PATH        := app/build/outputs/apk/release/app-release.apk
 SYSTEM_APP_DIR  := /system/app/DmsFace
 APK_NAME        := DmsFace.apk
+# 模型文件（dlc + manifest）源目录与车机 vendor 目标目录
+MODEL_ASSET_DIR   := app/src/main/assets/models
+VENDOR_MODEL_DIR  := /vendor/etc/faceid
 
 # ------ 颜色输出 ------
 RED    := \033[0;31m
@@ -32,19 +35,29 @@ GREEN  := \033[0;32m
 YELLOW := \033[1;33m
 NC     := \033[0m
 
-.PHONY: build install push-system uninstall run log log-crash log-evs \
+.PHONY: build clean-build install push-system uninstall run log log-crash log-evs \
         gpu top dumpsys clean help test test-class test-suite
 
 # =============================================================================
 # 构建
 # =============================================================================
 
-## 编译 Release APK
+## 编译 Release APK（增量，不清缓存）
 build:
 	@echo "$(GREEN)[BUILD] compiling...$(NC)"
 	JAVA_HOME=/home/simon/jdks/jdk-11.0.32+9 \
-	./gradlew assembleRelease --no-daemon
+	./gradlew assembleRelease --no-daemon --no-build-cache
 	@echo "$(GREEN)[BUILD] done: $(APK_PATH)$(NC)"
+
+## 先 clean 再编译 Release APK（清除 Gradle 缓存，确保 native 库等是最新 AAR）
+clean-build:
+	@echo "$(GREEN)[CLEAN-BUILD] cleaning...$(NC)"
+	JAVA_HOME=/home/simon/jdks/jdk-11.0.32+9 \
+	./gradlew clean --no-daemon
+	@echo "$(GREEN)[CLEAN-BUILD] compiling...$(NC)"
+	JAVA_HOME=/home/simon/jdks/jdk-11.0.32+9 \
+	./gradlew assembleRelease --no-daemon --no-build-cache
+	@echo "$(GREEN)[CLEAN-BUILD] done: $(APK_PATH)$(NC)"
 
 # =============================================================================
 # 安装与卸载
@@ -59,8 +72,8 @@ install: build
 	@echo "$(YELLOW)  注意: adb install 方式无法访问 libevsservicejni.so$(NC)"
 	@echo "$(YELLOW)  如需完整功能，使用: make push-system$(NC)"
 
-## 推送 APK 到 /system/app/（EvsSDK 完整功能需要此方式）
-push-system: build
+## 推送 APK 到 /system/app/（EvsSDK 完整功能需要此方式；先 clean 避免 Gradle 缓存旧 native 库）
+push-system: clean-build
 	@echo "$(GREEN)[PUSH-SYSTEM] waiting for device...$(NC)"
 	adb wait-for-device
 	@echo "$(GREEN)[PUSH-SYSTEM] remounting...$(NC)"
@@ -75,6 +88,13 @@ push-system: build
 	cd /tmp && rm -rf apk_libs && mkdir apk_libs && cd apk_libs && \
 	unzip -o $(CURDIR)/$(APK_PATH) "lib/arm64-v8a/*" && \
 	adb push lib/arm64-v8a/*.so $(SYSTEM_APP_DIR)/lib/arm64/
+	@echo "$(GREEN)[PUSH-SYSTEM] pushing models (dlc + manifest + calibration) to vendor...$(NC)"
+	adb shell mkdir -p $(VENDOR_MODEL_DIR)
+	adb push $(MODEL_ASSET_DIR)/*.dlc $(MODEL_ASSET_DIR)/manifest.json $(MODEL_ASSET_DIR)/dms_calibration.json $(VENDOR_MODEL_DIR)/
+	adb shell chmod 644 $(VENDOR_MODEL_DIR)/*.dlc $(VENDOR_MODEL_DIR)/manifest.json $(VENDOR_MODEL_DIR)/dms_calibration.json
+	adb shell chown root:root $(VENDOR_MODEL_DIR)/*.dlc $(VENDOR_MODEL_DIR)/manifest.json $(VENDOR_MODEL_DIR)/dms_calibration.json
+	@echo "$(GREEN)[PUSH-SYSTEM] clearing app cache (force re-extract latest assets)...$(NC)"
+	adb shell rm -rf /data/user/0/$(PACKAGE_NAME)/files/models
 	@echo "$(GREEN)[PUSH-SYSTEM] setting permissions...$(NC)"
 	adb shell chmod 644 $(SYSTEM_APP_DIR)/$(APK_NAME)
 	adb shell chmod 644 $(SYSTEM_APP_DIR)/lib/arm64/*.so
@@ -89,6 +109,8 @@ push-system: build
 	@echo "$(GREEN)[PUSH-SYSTEM] done$(NC)"
 	@echo "$(YELLOW)  应用已部署到 $(SYSTEM_APP_DIR)/$(APK_NAME)$(NC)"
 	@echo "$(YELLOW)  native libs 已部署到 $(SYSTEM_APP_DIR)/lib/arm64/$(NC)"
+	@echo "$(YELLOW)  模型(dlc+manifest)已部署到 $(VENDOR_MODEL_DIR)/$(NC)"
+	@echo "$(YELLOW)  已清空应用模型缓存(files/models)$(NC)"
 	@echo "$(YELLOW)  运行: make run$(NC)"
 
 ## 卸载应用
@@ -241,11 +263,12 @@ help:
 	@echo "用法: make <target>"
 	@echo ""
 	@echo "--- 构建 ---"
-	@echo "  build          编译调试 APK（平台签名）"
+	@echo "  build          增量编译 Release APK（不清 Gradle 缓存）"
+	@echo "  clean-build    先 clean 再编译 Release APK（确保 native 库等为最新 AAR）"
 	@echo ""
 	@echo "--- 部署 ---"
 	@echo "  install        安装到设备（adb install）"
-	@echo "  push-system    推送 APK 到 /system/app/（需 root，含重启）"
+	@echo "  push-system    先 clean-build 再推送 APK 到 /system/app/（需 root，含重启）"
 	@echo "  uninstall      卸载应用"
 	@echo ""
 	@echo "--- 运行 ---"

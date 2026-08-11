@@ -47,7 +47,27 @@ interface IFaceIDAlgorithm {
         /** 头部姿态：偏航角（Yaw），单位度。 */
         val headposeYaw: Float = 0f,
         /** 头部姿态：翻滚角（Roll），单位度。 */
-        val headposeRoll: Float = 0f
+        val headposeRoll: Float = 0f,
+        /** 视线是否有效（1=有效，0=无效）。 */
+        val gazeValid: Float = 0f,
+        /** 视线偏航角（Yaw），单位度。 */
+        val gazeYaw: Float = 0f,
+        /** 视线俯仰角（Pitch），单位度。 */
+        val gazePitch: Float = 0f,
+        /** 是否分心（1=分心，0=专注）。 */
+        val gazeDistracted: Float = 0f,
+        /** 是否已标定（1=已标定，0=未标定）。 */
+        val gazeCalibrated: Float = 0f,
+        /** 分心综合分数（0.0 ~ 1.0）。 */
+        val distractionScore: Float = 0f,
+        /** 分心-头部姿态分数。 */
+        val distractionHpScore: Float = 0f,
+        /** 分心-视线分数。 */
+        val distractionGazeScore: Float = 0f,
+        /** DMS 分区 ID。 */
+        val zoneId: Float = 0f,
+        /** DMS 分区置信度。 */
+        val zoneConfidence: Float = 0f
     ) {
         /** Face ID 唯一标识，不为 null。 */
         val faceId: String = faceId ?: ""

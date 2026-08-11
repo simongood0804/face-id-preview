@@ -1,0 +1,31 @@
+{
+  "camera_intrinsic": {
+    "fx": 1710.7017, "fy": 1708.3478, "cx": 799.5000, "cy": 649.5000,
+    "k1": -0.372136, "k2": 0.146610, "p1": -0.000492, "p2": -0.000371,
+    "width": 1600, "height": 1300
+  },
+  "camera_extrinsic": {
+    "fwd_pitch": -26.745807, "fwd_yaw": 21.697648, "fwd_roll": -8.350234,
+    "t_cw": [-6.454019, -80.373406, 33.423662]
+  },
+  "forward_reference": {
+    "sphere_yaw": -10.34, "sphere_pitch": 35.91
+  },
+  "zones": [
+    { "id": 0, "name": "forward", "center": [0.0, 0.0, 14.8, 16.9], "radius": 18.0, "is_distraction": false },
+    { "id": 1, "name": "addw_drv_left_knee", "center": [-7.3, -17.4, -8.3, -26.3], "radius": 12.0, "is_distraction": true },
+    { "id": 2, "name": "addw_drv_right_knee", "center": [8.0, -16.2, 11.5, -32.6], "radius": 12.0, "is_distraction": true },
+    { "id": 3, "name": "addw_drv_belt", "center": [-1.6, -19.1, -2.2, -32.9], "radius": 12.0, "is_distraction": true },
+    { "id": 4, "name": "addw_pass_footwell", "center": [45.3, -24.4, 49.0, -66.8], "radius": 15.0, "is_distraction": true },
+    { "id": 5, "name": "addw_pass_seat", "center": [15.0, -20.3, 12.8, -56.2], "radius": 18.0, "is_distraction": true },
+    { "id": 6, "name": "addw_glovebox", "center": [51.6, -22.3, 56.6, -69.9], "radius": 18.0, "is_distraction": true },
+    { "id": 7, "name": "addw_drv_left_vent", "center": [-11.4, -9.8, -13.2, -14.6], "radius": 12.0, "is_distraction": true },
+    { "id": 8, "name": "addw_drv_right_vent", "center": [4.1, -12.5, 7.8, -20.9], "radius": 12.0, "is_distraction": true },
+    { "id": 9, "name": "addw_dashboard", "center": [-2.1, -11.9, -0.6, -18.3], "radius": 12.0, "is_distraction": true },
+    { "id": 10, "name": "addw_steering_wheel", "center": [-1.5, -15.7, 0.5, -24.1], "radius": 12.0, "is_distraction": true },
+    { "id": 11, "name": "addw_gear_selector", "center": [28.3, -25.4, 24.9, -61.6], "radius": 14.0, "is_distraction": true },
+    { "id": 12, "name": "addw_hvac", "center": [26.5, -15.5, 33.1, -36.3], "radius": 12.0, "is_distraction": true },
+    { "id": 13, "name": "addw_infotainment", "center": [22.7, -10.0, 30.5, -17.7], "radius": 14.0, "is_distraction": true },
+    { "id": 14, "name": "addw_center_console", "center": [22.2, -19.2, 24.8, -45.6], "radius": 12.0, "is_distraction": true }
+  ]
+}

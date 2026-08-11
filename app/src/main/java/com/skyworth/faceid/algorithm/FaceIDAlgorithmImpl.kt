@@ -79,7 +79,9 @@ class FaceIDAlgorithmImpl : IFaceIDAlgorithm {
         "2d106det_int8.dlc",
         "w600k_mbf_int8.dlc",
         "hopenet_mbv2_int8.dlc",
-        "manifest.json"
+        "pfld_eye_int8.dlc",
+        "manifest.json",
+        "dms_calibration.json"
     )
 
     /** 系统级模型目录（可被外部更新）。 */
@@ -137,6 +139,10 @@ class FaceIDAlgorithmImpl : IFaceIDAlgorithm {
             sdk.configure(FaceFlag.ALL)
             val t3 = System.currentTimeMillis()
             Log.i(TAG, "initialize: configure(ALL) took=${t3 - t2}ms")
+
+            // 5. 加载 DMS 标定配置（loadZoneConfig 从文件路径加载，含内参/外参/正视基准/分区）
+            val calibOk = loadCalibration(sdk, context)
+            Log.i(TAG, "initialize: loadCalibration=$calibOk")
 
             mFaceSDK = sdk
             Log.i(TAG, "initialize: success")
@@ -247,6 +253,14 @@ class FaceIDAlgorithmImpl : IFaceIDAlgorithm {
                 Log.i(TAG, "headpose: pitch=%.1f yaw=%.1f roll=%.1f".format(
                     r.headPitch, r.headYaw, r.headRoll))
 
+                Log.i(TAG,
+                    "gaze: valid=${r.gazeValid} yaw=${r.gazeYaw} pitch=${r.gazePitch} " +
+                    "distracted=${if (r.gazeDistracted > 0f) "Y" else "N"} " +
+                    "calib=${if (r.gazeCalibrated > 0f) "Y" else "N"} " +
+                    "zone=${r.zoneId} " +
+                    "sphereValid=${r.sphereValid} area3=${r.area3Hit} " +
+                    "sphereYaw=${r.sphereYaw} spherePitch=${r.spherePitch}")
+
                 IFaceIDAlgorithm.FaceIDResult(
                     faceId = faceId,
                     confidence = confidence,
@@ -257,7 +271,17 @@ class FaceIDAlgorithmImpl : IFaceIDAlgorithm {
                     landmarks = lmList,
                     headposePitch = r.headPitch,
                     headposeYaw = r.headYaw,
-                    headposeRoll = r.headRoll
+                    headposeRoll = r.headRoll,
+                    gazeValid = r.gazeValid,
+                    gazeYaw = r.gazeYaw,
+                    gazePitch = r.gazePitch,
+                    gazeDistracted = r.gazeDistracted,
+                    gazeCalibrated = r.gazeCalibrated,
+                    distractionScore = r.distractionScore,
+                    distractionHpScore = r.distractionHpScore,
+                    distractionGazeScore = r.distractionGazeScore,
+                    zoneId = r.zoneId,
+                    zoneConfidence = r.zoneConfidence
                 )
             } else {
                 if (n == 0) Log.i(TAG, "  no face detected")
@@ -338,7 +362,9 @@ class FaceIDAlgorithmImpl : IFaceIDAlgorithm {
         val assetManager = context.assets
         try {
             val allAssets = assetManager.list(MODEL_ASSET_PATH) ?: emptyArray()
-            val modelFiles = allAssets.filter { it.endsWith(".dlc") || it == "manifest.json" }
+            val modelFiles = allAssets.filter {
+                it.endsWith(".dlc") || it == "manifest.json" || it == "dms_calibration.json"
+            }
             for (file in modelFiles) {
                 val outFile = File(dir, file)
                 assetManager.open("$MODEL_ASSET_PATH/$file").use { input ->
@@ -474,6 +500,119 @@ class FaceIDAlgorithmImpl : IFaceIDAlgorithm {
     private fun resolveDumpSourceDir(): File? {
         val ctx = mAppContext ?: return null
         return File(ctx.filesDir, "debugDump")
+    }
+
+    /**
+     * 加载 DMS 标定配置，对齐 C 侧 CLI 流程：
+     * 1. loadZoneConfig(path)：加载统一配置（内参+外参+正视基准+ADDW 分区）
+     * 2. setCameraIntrinsic(...)：设置相机内参，启用 sphere gaze（视线球面）
+     * 3. enableCamTransform(pitch,yaw,roll)：启用相机变换
+     * 4. setForwardReference(...)：设置正视基准（可选）
+     */
+    private fun loadCalibration(sdk: FaceSDK, context: Context?): Boolean {
+        return try {
+            val calibPath = resolveCalibrationPath(context)
+            if (calibPath == null || !File(calibPath).exists()) {
+                Log.w(TAG, "loadCalibration: dms_calibration.json not found")
+                false
+            } else {
+                val ok = sdk.loadZoneConfig(calibPath)
+                Log.i(TAG, "loadCalibration: loadZoneConfig($calibPath)=$ok")
+                if (ok) {
+                    applyCameraCalibration(sdk, calibPath)
+                }
+                ok
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "loadCalibration: failed", e)
+            false
+        }
+    }
+
+    /**
+     * 应用相机标定（内参 + 外参 + 正视基准），对齐 C 侧 CLI。
+     * 相机内参是启用 sphere gaze 的前提，必须设置否则视线数据不生效。
+     */
+    private fun applyCameraCalibration(sdk: FaceSDK, calibPath: String) {
+        try {
+            val json = org.json.JSONObject(File(calibPath).readText())
+
+            // 1. 相机内参（enable sphere gaze 的关键）
+            val intrinsic = json.optJSONObject("camera_intrinsic")
+            if (intrinsic != null) {
+                val fx = intrinsic.optDouble("fx", 0.0).toFloat()
+                val fy = intrinsic.optDouble("fy", 0.0).toFloat()
+                val cx = intrinsic.optDouble("cx", 0.0).toFloat()
+                val cy = intrinsic.optDouble("cy", 0.0).toFloat()
+                val k1 = intrinsic.optDouble("k1", 0.0).toFloat()
+                val k2 = intrinsic.optDouble("k2", 0.0).toFloat()
+                val p1 = intrinsic.optDouble("p1", 0.0).toFloat()
+                val p2 = intrinsic.optDouble("p2", 0.0).toFloat()
+                val w = intrinsic.optInt("width", 0)
+                val h = intrinsic.optInt("height", 0)
+                val ok = sdk.setCameraIntrinsic(fx, fy, cx, cy, k1, k2, p1, p2, w, h)
+                Log.i(TAG, "setCameraIntrinsic(fx=$fx fy=$fy cx=$cx cy=$cy k1=$k1 k2=$k2 p1=$p1 p2=$p2 ${w}x${h})=$ok")
+            }
+
+            // 2. 相机外参（fwd_pitch/yaw/roll，可选 t_cw）
+            val extrinsic = json.optJSONObject("camera_extrinsic")
+            if (extrinsic != null) {
+                val fwdPitch = extrinsic.optDouble("fwd_pitch", 0.0).toFloat()
+                val fwdYaw = extrinsic.optDouble("fwd_yaw", 0.0).toFloat()
+                val fwdRoll = extrinsic.optDouble("fwd_roll", 0.0).toFloat()
+                val tArr = extrinsic.optJSONArray("t_cw")
+                if (tArr != null && tArr.length() >= 3) {
+                    val tCw = floatArrayOf(
+                        tArr.getDouble(0).toFloat(),
+                        tArr.getDouble(1).toFloat(),
+                        tArr.getDouble(2).toFloat()
+                    )
+                    val ok = sdk.setCameraExtrinsic(fwdPitch, fwdYaw, fwdRoll, tCw)
+                    Log.i(TAG, "setCameraExtrinsic(pitch=$fwdPitch yaw=$fwdYaw roll=$fwdRoll t=$tCw.contentToString())=$ok")
+                } else {
+                    val ok = sdk.enableCamTransform(fwdPitch, fwdYaw, fwdRoll)
+                    Log.i(TAG, "enableCamTransform(pitch=$fwdPitch yaw=$fwdYaw roll=$fwdRoll)=$ok")
+                }
+            }
+
+            // 3. 正视基准（可选）
+            val fwdRef = json.optJSONObject("forward_reference")
+            if (fwdRef != null) {
+                val sy = fwdRef.optDouble("sphere_yaw", 0.0).toFloat()
+                val sp = fwdRef.optDouble("sphere_pitch", 0.0).toFloat()
+                val ok = sdk.setForwardReference(sy, sp)
+                Log.i(TAG, "setForwardReference(yaw=$sy pitch=$sp)=$ok")
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "applyCameraCalibration: failed", e)
+        }
+    }
+
+    /**
+     * 解析 dms_calibration.json 路径：优先模型目录（vendor/manifest 所在目录），
+     * 若不在模型目录则尝试从应用 assets/models 解压到 filesDir。
+     */
+    private fun resolveCalibrationPath(context: Context?): String? {
+        // 1. 模型目录（vendor 或 fallback 解压目录）
+        val inModelDir = File(mModelDir, "dms_calibration.json")
+        if (inModelDir.exists()) return inModelDir.absolutePath
+
+        // 2. 从 assets/models 解压到 filesDir（兜底）
+        val ctx = context ?: return null
+        val destDir = File(ctx.filesDir, "dms_calibration")
+        val dest = File(destDir, "dms_calibration.json")
+        return try {
+            if (!dest.exists()) {
+                destDir.mkdirs()
+                ctx.assets.open("models/dms_calibration.json").use { input ->
+                    dest.outputStream().use { output -> input.copyTo(output) }
+                }
+            }
+            dest.absolutePath
+        } catch (e: Exception) {
+            Log.e(TAG, "resolveCalibrationPath: assets extract failed", e)
+            null
+        }
     }
 
     /**

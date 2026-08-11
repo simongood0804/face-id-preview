@@ -167,8 +167,41 @@
           "name": "pose_6d",
           "shape": [1, 6],
           "dtype": "float32",
+          "pipeline": []
+        }
+      ],
+      "config":
+        {
+          "num_threads": "2",
+          "runtime": "dsp",
+          "use_buffer": "true",
+          "performance_profile": "high_performance"
+        }
+    },
+    {
+      "id": "pfld_eye",
+      "name": "PFLD Eye Keypoints",
+      "backend": "snpe",
+      "model_path": "/vendor/etc/faceid/pfld_eye_int8.dlc",
+      "load_strategy": "lazy",
+      "inputs": [
+        {
+          "name": "input",
+          "shape": [2, 56, 56, 1],
+          "dtype": "float32",
+          "layout": "NHWC",
           "pipeline": [
-            {"name": "face::headpose_decode"}
+            {"name": "face::eye_warp", "params": {"output_size": "56", "margin_scale": "2.6"}}
+          ]
+        }
+      ],
+      "outputs": [
+        {
+          "name": "landmarks",
+          "shape": [2, 10],
+          "dtype": "float32",
+          "pipeline": [
+            {"name": "face::gaze_decode", "params": {"output_size": "56", "margin_scale": "2.6"}}
           ]
         }
       ],
