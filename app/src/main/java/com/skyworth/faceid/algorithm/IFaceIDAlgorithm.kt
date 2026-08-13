@@ -121,6 +121,28 @@ interface IFaceIDAlgorithm {
     fun processFrame(frameData: ByteArray?, width: Int, height: Int, format: Int): FaceIDResult
 
     /**
+     * 设置裁剪偏移（ROI 左上角在原图坐标中的偏移）。
+     *
+     * 帧处理器在调用 [processFrame] 前设置，算法实现需在返回结果时
+     * 将裁剪空间内的人脸框/关键点/地标坐标修正回原图空间。
+     *
+     * 默认实现为空操作；算法实现若需坐标修正应重写此方法。
+     */
+    fun setCropOffset(x: Int, y: Int) {
+        // 默认无操作，由具体算法实现处理坐标修正
+    }
+
+    /**
+     * 缓存一帧原始 UYVY 数据（供手动 dump 调试用）。
+     *
+     * 帧处理器在收到完整原始帧时调用。默认实现为空操作；
+     * 支持 dump 调试的算法实现应重写此方法缓存最近一帧。
+     */
+    fun dumpOriginalFrame(uyvyData: ByteArray, width: Int, height: Int) {
+        // 默认无操作
+    }
+
+    /**
      * 释放算法资源。
      */
     fun release()

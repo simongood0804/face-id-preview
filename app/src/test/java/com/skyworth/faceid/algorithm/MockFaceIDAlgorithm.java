@@ -70,6 +70,16 @@ public class MockFaceIDAlgorithm implements IFaceIDAlgorithm {
         mInitialized = false;
     }
 
+    @Override
+    public void setCropOffset(int x, int y) {
+        // 测试桩：空实现
+    }
+
+    @Override
+    public void dumpOriginalFrame(byte[] uyvyData, int width, int height) {
+        // 测试桩：空实现
+    }
+
     public boolean isInitialized() { return mInitialized; }
     public void setShouldThrowException(boolean shouldThrow) { mShouldThrowException = shouldThrow; }
     public void setDetectFace(boolean detectFace) { mDetectFace = detectFace; }

@@ -12,7 +12,7 @@ import java.util.concurrent.ExecutorService
  * 裁剪窗口跟随人脸，人脸中心位于窗口上方 2/3 处。
  */
 class FrameProcessor(
-    private val mAlgorithm: FaceIDAlgorithmImpl,
+    private val mAlgorithm: IFaceIDAlgorithm,
     private val mExecutor: ExecutorService,
     private val mCallback: (IFaceIDAlgorithm.FaceIDResult) -> Unit
 ) {
@@ -68,8 +68,7 @@ class FrameProcessor(
 
                 // 裁剪 ROI 并设置偏移（算法内坐标会被修正回原图空间）
                 val cropped = cropFrame(p.data, p.w, p.h)
-                mAlgorithm.mCropOffsetX = cropLeft
-                mAlgorithm.mCropOffsetY = cropTop
+                mAlgorithm.setCropOffset(cropLeft, cropTop)
 
                 val t0 = System.currentTimeMillis()
                 val result = mAlgorithm.processFrame(cropped, CROP_SIZE, CROP_SIZE, 0)

@@ -5,15 +5,12 @@
 package com.skyworth.faceid.ui
 
 import android.content.Context
-import android.content.Intent
-import android.content.ServiceConnection
 import android.content.SharedPreferences
-import android.graphics.Bitmap
 import android.hardware.HardwareBuffer
 import android.opengl.GLSurfaceView
 import android.os.Bundle
-import android.os.IBinder
-import android.os.SystemClock
+import android.os.Handler
+import android.os.HandlerThread
 import android.util.Log
 import android.view.View
 import android.widget.Button
@@ -21,17 +18,22 @@ import android.widget.TextView
 import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
 import androidx.constraintlayout.widget.ConstraintLayout
-import android.car.Car
-import android.car.VehiclePropertyIds
-import android.car.hardware.property.CarPropertyManager
 import com.android.car.evs.EvsGL20CameraRenderer
 import com.skyworth.faceid.R
 import com.skyworth.faceid.algorithm.FaceEnrollmentManager
 import com.skyworth.faceid.algorithm.FaceIDAlgorithmImpl
 import com.skyworth.faceid.algorithm.FrameProcessor
 import com.skyworth.faceid.algorithm.IFaceIDAlgorithm
+import com.skyworth.faceid.bus.BusHub
+import com.skyworth.faceid.bus.BusPublisher
+import com.skyworth.faceid.bus.ServiceRegistry
 import com.skyworth.faceid.camera.CameraManager
 import com.skyworth.faceid.camera.FaceIDCameraController
+import com.skyworth.faceid.frame.FrameDistributor
+import com.skyworth.faceid.render.FaceOverlayView
+import com.skyworth.faceid.signal.DistractionStateMachine
+import com.skyworth.faceid.signal.SignalDispatcher
+import com.skyworth.faceid.signal.VehicleSignalSource
 import java.util.concurrent.Executors
 
 /**
@@ -39,6 +41,11 @@ import java.util.concurrent.Executors
  *
  * 使用 [EvsGL20CameraRenderer] 渲染 EVS 摄像头画面，
  * 通过 [FaceIDCameraController] 管理摄像头取流（含自动重试）。
+ *
+ * 分层重构后职责收窄为：
+ * - 装配各层模块（帧层 [FrameDistributor] / 信号层 [VehicleSignalSource]、[DistractionStateMachine] / 绘制层 [FaceOverlayView]）；
+ * - 负责 UI 展示与交互（按钮、文本、dump 控制）。
+ * 图像采集、帧分发、车速信号、分心判定等逻辑已下沉到对应分层模块。
  */
 class PreviewActivity : AppCompatActivity() {
 
@@ -60,7 +67,7 @@ class PreviewActivity : AppCompatActivity() {
     private lateinit var mSpeedText: TextView
 
     // ============================================================
-    // 核心模块
+    // 核心模块（分层）
     // ============================================================
 
     private var mCameraManager: CameraManager? = null
@@ -69,6 +76,29 @@ class PreviewActivity : AppCompatActivity() {
     private var mFaceIDController: FaceIDCameraController? = null
     private var mRenderer: EvsGL20CameraRenderer? = null
     private var mFrameProcessor: FrameProcessor? = null
+
+    /** 帧层：图像帧分发器。 */
+    private var mFrameDistributor: FrameDistributor? = null
+
+    /** 信号层：车机车速信号源。 */
+    private var mVehicleSignal: VehicleSignalSource? = null
+
+    // ============================================================
+    // 消息总线（bus 层）+ 信号分发
+    // ============================================================
+
+    /** 消息总线枢纽。 */
+    private var mBusHub: BusHub? = null
+
+    /** 消息发布端。 */
+    private var mBusPublisher: BusPublisher? = null
+
+    /** 信号分发器（消费 VEHICLE_SPEED / ALGO_RESULT，驱动分心状态机）。 */
+    private var mSignalDispatcher: SignalDispatcher? = null
+
+    /** 信号分发线程（单线程驱动 poll，保证状态机单线程调用）。 */
+    private var mSignalThread: HandlerThread? = null
+    private var mSignalHandler: Handler? = null
 
     /** 算法处理线程池（单线程，避免 GL 线程阻塞）。 */
     private val mAlgoExecutor = Executors.newSingleThreadExecutor { r ->
@@ -82,26 +112,6 @@ class PreviewActivity : AppCompatActivity() {
     private var mAlgorithmEnabled = true
 
     // ============================================================
-    // 车速信号（Car VHAL）与分心防抖
-    // ============================================================
-
-    /** Car 服务连接。 */
-    private var mCar: Car? = null
-    private var mCarPropertyManager: CarPropertyManager? = null
-
-    /** 当前车速（km/h）。-1 表示无车速数据（此时按高速档判定）。 */
-    @Volatile private var mVehicleSpeedKmh = -1f
-
-    /** 分心是否已确认触发（多帧/时间防抖后的结果，传给 Overlay 显示）。 */
-    @Volatile private var mDistractActive = false
-
-    /** 最近一次分心状态累积起始时间戳（elapsedRealtime）。 */
-    private var mDistractAccumStart = 0L
-
-    /** 当前生效的分心触发阈值（ms），随车速分档更新。 */
-    private var mDistractTriggerMs = DISTRACT_TRIGGER_MS_FAST
-
-    // ============================================================
     // Activity 生命周期
     // ============================================================
 
@@ -111,7 +121,8 @@ class PreviewActivity : AppCompatActivity() {
 
         initViews()
         initCoreModules()
-        connectVehicleSpeed()
+        initSignalLayer()
+        initFrameLayer()
 
         // 自动开始预览
         startPreview()
@@ -177,10 +188,6 @@ class PreviewActivity : AppCompatActivity() {
             controller.onFrameSizeChanged = { width, height ->
                 runOnUiThread { resizePreviewSurface(width, height) }
             }
-            // 帧数据处理回调：传入算法进行人脸检测（GL 线程）
-            controller.onFrameData = { hwBuffer, frameW, frameH ->
-                processWithAlgorithm(hwBuffer, frameW, frameH)
-            }
         }
 
         // 摄像头管理器（传入同一个 controller 实例）
@@ -205,6 +212,70 @@ class PreviewActivity : AppCompatActivity() {
         mCameraManager?.frameRate?.value?.observe(this) { fps ->
             mFrameRateText.text = getString(R.string.frame_rate_label) + " " + getString(R.string.frame_rate_value, fps)
         }
+    }
+
+    /**
+     * 初始化信号层：消息总线 + 信号分发器 + 车机车速信号源。
+     *
+     * 总线接线：
+     * - [VehicleSignalSource] 车速变化 → 发布到 [ServiceRegistry.Topic.VEHICLE_SPEED]；
+     * - 算法结果 → 发布到 [ServiceRegistry.Topic.ALGO_RESULT]（见 [handleAlgorithmResult]）；
+     * - [SignalDispatcher] 在独立信号线程周期性 [SignalDispatcher.poll] 消费这两个 topic，
+     *   驱动分心状态机（保证单线程调用），并把防抖结果通过 [SignalDispatcher.lastDistraction] 输出。
+     */
+    private fun initSignalLayer() {
+        val hub = BusHub()
+        mBusHub = hub
+        val publisher = BusPublisher(hub)
+        mBusPublisher = publisher
+        mSignalDispatcher = SignalDispatcher(hub, publisher)
+
+        mVehicleSignal = VehicleSignalSource(this).also { vs ->
+            vs.onSpeedChanged = { speed ->
+                publisher.publish(ServiceRegistry.Topic.VEHICLE_SPEED, speed)
+            }
+            vs.connect()
+        }
+
+        // 信号分发线程：周期性 poll 总线，驱动分心状态机
+        mSignalThread = HandlerThread("signal-dispatcher").also { it.start() }
+        mSignalHandler = Handler(mSignalThread!!.looper).also { handler ->
+            handler.post(signalPollRunnable)
+        }
+    }
+
+    /** 信号轮询周期（ms）。对应 VEHICLE_SPEED(10Hz)/ALGO_RESULT(20Hz) 的消费节奏。 */
+    private val signalPollRunnable = object : Runnable {
+        override fun run() {
+            val dispatcher = mSignalDispatcher
+            val handler = mSignalHandler
+            if (dispatcher == null || handler == null) return
+            try {
+                dispatcher.poll()
+                val d = dispatcher.lastDistraction
+                runOnUiThread {
+                    mFaceOverlay.setDistracted(d.distracted)
+                    updateSpeedText()
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "signal poll error", e)
+            }
+            handler.postDelayed(this, SIGNAL_POLL_INTERVAL_MS)
+        }
+    }
+
+    /**
+     * 初始化帧层：图像帧分发器，将相机帧路由到算法处理。
+     */
+    private fun initFrameLayer() {
+        val controller = mFaceIDController ?: return
+        val fp = mFrameProcessor ?: return
+        mFrameDistributor = FrameDistributor(
+            frameSource = controller,
+            frameProcessor = fp,
+            readFrame = { hwBuffer, w, h -> readHardwareBuffer(hwBuffer, w, h) },
+            algorithmEnabled = { mAlgorithmEnabled }
+        ).also { it.attach() }
     }
 
     // ============================================================
@@ -383,7 +454,18 @@ class PreviewActivity : AppCompatActivity() {
         super.onDestroy()
         stopPreview()
         mAlgorithm?.release()
-        disconnectVehicleSpeed()
+        mFrameDistributor?.detach()
+        // 释放信号层与总线
+        mSignalHandler?.removeCallbacksAndMessages(null)
+        mSignalThread?.quitSafely()
+        mSignalThread = null
+        mSignalHandler = null
+        mSignalDispatcher?.close()
+        mSignalDispatcher = null
+        mBusHub?.reset()
+        mBusHub = null
+        mBusPublisher = null
+        mVehicleSignal?.disconnect()
         Log.i(TAG, "onDestroy: done")
     }
 
@@ -406,31 +488,15 @@ class PreviewActivity : AppCompatActivity() {
     private val FACE_HIDE_THRESHOLD = 5
 
     /**
-     * GL 线程回调：立即读取 HardwareBuffer 转为 ByteArray，再提交给算法线程（非阻塞）。
-     * 必须在 GL 线程读取 buffer，因为 EVS 帧回调返回后 buffer 可能被回收。
-     */
-    private fun processWithAlgorithm(hwBuffer: HardwareBuffer, frameW: Int, frameH: Int) {
-        if (!mAlgorithmEnabled) return  // 算法关闭，跳过处理
-
-        val fp = mFrameProcessor ?: return
-        mCurrentFrameW = frameW
-        mCurrentFrameH = frameH
-
-        // 在 GL 线程立即读取 buffer 数据（buffer 此时有效）
-        val data = readHardwareBuffer(hwBuffer, frameW, frameH)
-        if (data == null) return
-
-        fp.submitFrame(data, frameW, frameH)
-    }
-
-    /**
      * 算法结果回调（AlgoProcessor 线程 → runOnUiThread）。
      * 仅对隐藏做防抖：连续 N 帧无人脸才清除画框。
      * 显示和位置更新不做防抖，保证即时响应。
      */
     private fun handleAlgorithmResult(result: IFaceIDAlgorithm.FaceIDResult) {
-        val frameW = mCurrentFrameW
-        val frameH = mCurrentFrameH
+        // 从帧层读取最近一帧尺寸（FrameDistributor 在接收帧时更新）
+        val fd = mFrameDistributor
+        val frameW = fd?.frameWidth ?: mCurrentFrameW
+        val frameH = fd?.frameHeight ?: mCurrentFrameH
 
         // 更新裁剪窗口（黄色采样框）
         val fp = mFrameProcessor
@@ -448,8 +514,10 @@ class PreviewActivity : AppCompatActivity() {
             // 有人脸 → 即时显示，无防抖
             mNoFaceCount = 0
 
-            // 分心多帧/时间防抖：根据车速分档判定触发阈值
-            val distractActive = updateDistraction(result)
+            // 发布算法结果到总线，SignalDispatcher 在信号线程驱动分心状态机
+            mBusPublisher?.publish(ServiceRegistry.Topic.ALGO_RESULT, result)
+            // 读取最近的分心判定结果（SignalDispatcher 消费总线后异步更新）
+            val distractActive = mSignalDispatcher?.lastDistraction?.distracted ?: false
             // 分心提示：固定位置绘制（不随人脸移动）
             mFaceOverlay.setDistracted(distractActive)
 
@@ -494,8 +562,9 @@ class PreviewActivity : AppCompatActivity() {
         } else {
             // 无人脸 → 防抖隐藏
             mNoFaceCount++
-            // 无人脸时重置分心状态并清除分心提示
-            resetDistraction()
+            // 发布无人脸结果到总线（SignalDispatcher 会 reset 分心状态）
+            mBusPublisher?.publish(ServiceRegistry.Topic.ALGO_RESULT, result)
+            // 清除分心提示（固定位置显示）
             mFaceOverlay.setDistracted(false)
             if (mNoFaceCount >= FACE_HIDE_THRESHOLD) {
                 mFaceOverlay.clearFaces()
@@ -506,134 +575,35 @@ class PreviewActivity : AppCompatActivity() {
     }
 
     // ============================================================
-    // 分心防抖 + 车速信号
+    // 分心防抖 + 车速信号（委托给信号层模块）
     // ============================================================
 
     /**
      * 分心多帧/时间防抖状态机。
      *
-     * 算法输出的 gazeDistracted 为单帧结果，存在误检抖动。这里按"持续时间"
-     * 累计判定（而非帧数，因单槽替换+跳帧导致帧率不稳定）：
+     * 委托给信号层的 [DistractionStateMachine]，逻辑与原内联实现保持一致：
      *  - 连续分心达到当前车速对应的触发阈值 → 触发分心；
      *  - 已触发后，连续非分心达到解除阈值 → 解除分心。
      *
      * @return 防抖后是否判定为分心（用于 UI 显示）。
      */
-    private fun updateDistraction(result: IFaceIDAlgorithm.FaceIDResult): Boolean {
-        val now = SystemClock.elapsedRealtime()
-        val distracted = result.gazeDistracted > 0f
-
-        // 根据车速分档选择触发阈值：无车速数据(<0)或高速(≥50)用快速档，低速用慢速档
-        mDistractTriggerMs = if (mVehicleSpeedKmh >= 0f && mVehicleSpeedKmh < SPEED_FAST_THRESHOLD_KMH) {
-            DISTRACT_TRIGGER_MS_SLOW
-        } else {
-            DISTRACT_TRIGGER_MS_FAST
-        }
-
-        if (mDistractActive) {
-            // 已触发：连续非分心达到解除阈值才解除
-            if (!distracted) {
-                if (mDistractAccumStart == 0L) {
-                    mDistractAccumStart = now
-                } else if (now - mDistractAccumStart >= DISTRACT_CLEAR_MS) {
-                    mDistractActive = false
-                    mDistractAccumStart = 0L
-                }
-            } else {
-                mDistractAccumStart = 0L  // 仍分心，重置解除计时
-            }
-        } else {
-            // 未触发：连续分心达到触发阈值才触发
-            if (distracted) {
-                if (mDistractAccumStart == 0L) {
-                    mDistractAccumStart = now
-                } else if (now - mDistractAccumStart >= mDistractTriggerMs) {
-                    mDistractActive = true
-                    mDistractAccumStart = 0L
-                    Log.i(TAG, "DISTRACT triggered, speed=${mVehicleSpeedKmh}km/h threshold=${mDistractTriggerMs}ms")
-                }
-            } else {
-                mDistractAccumStart = 0L  // 非分心，重置触发计时
-            }
-        }
-        return mDistractActive
-    }
-
-    /** 重置分心防抖状态（无人脸时调用）。 */
-    private fun resetDistraction() {
-        mDistractActive = false
-        mDistractAccumStart = 0L
+    /**
+     * 当前车速（km/h），来自信号层。负数表示无数据。
+     */
+    private fun currentSpeedKmh(): Float {
+        return mVehicleSignal?.speedKmh ?: -1f
     }
 
     /**
-     * 连接 Car 服务并监听车速（PERF_VEHICLE_SPEED）。
-     * 通过 VHAL 获取，系统应用有权限。读取失败或未连接时车速保持 -1，
-     * 分心判定按高速档（快速触发）处理。
+     * 更新车速/分心阈值档显示（供测试验证分档逻辑）。
+     * 分心档位与阈值来自信号分发器 [SignalDispatcher.lastDistraction]（signal 线程异步更新）。
      */
-    private fun connectVehicleSpeed() {
-        if (mCar != null) return
-        try {
-            mCar = Car.createCar(this, mCarServiceConnection)
-        } catch (e: Exception) {
-            Log.w(TAG, "connectVehicleSpeed: createCar failed, will use fast threshold", e)
-        }
-    }
-
-    /** 释放 Car 服务连接。 */
-    private fun disconnectVehicleSpeed() {
-        mCarPropertyManager?.unregisterCallback(mVehicleSpeedCallback)
-        mCarPropertyManager = null
-        try {
-            mCar?.disconnect()
-        } catch (_: Exception) { }
-        mCar = null
-    }
-
-    /** Car 服务连接回调。 */
-    private val mCarServiceConnection = object : ServiceConnection {
-        override fun onServiceConnected(name: android.content.ComponentName?, binder: IBinder?) {
-            try {
-                val car = mCar ?: return
-                if (!car.isConnected) return
-                val pm = car.getCarManager(Car.PROPERTY_SERVICE) as? CarPropertyManager ?: return
-                mCarPropertyManager = pm
-                // 订阅车速变化（m/s），SENSOR_RATE_NORMAL = 1Hz
-                pm.registerCallback(mVehicleSpeedCallback,
-                    VehiclePropertyIds.PERF_VEHICLE_SPEED, CarPropertyManager.SENSOR_RATE_NORMAL)
-                Log.i(TAG, "connectVehicleSpeed: subscribed PERF_VEHICLE_SPEED")
-            } catch (e: Exception) {
-                Log.w(TAG, "connectVehicleSpeed: onServiceConnected error, use fast threshold", e)
-            }
-        }
-
-        override fun onServiceDisconnected(name: android.content.ComponentName?) {
-            Log.w(TAG, "connectVehicleSpeed: car service disconnected, use fast threshold")
-            mCarPropertyManager = null
-            mVehicleSpeedKmh = -1f
-        }
-    }
-
-    /** 车速变化回调：PERF_VEHICLE_SPEED 为 Float，单位 m/s，转成 km/h。 */
-    private val mVehicleSpeedCallback = object : CarPropertyManager.CarPropertyEventCallback {
-        override fun onChangeEvent(value: android.car.hardware.CarPropertyValue<*>) {
-            val speedMs = value.value as? Float ?: return
-            mVehicleSpeedKmh = speedMs * 3.6f  // m/s -> km/h
-            // 更新显示（测试用：显示车速与当前阈值档）
-            runOnUiThread { updateSpeedText() }
-        }
-
-        override fun onErrorEvent(propertyId: Int, zoneId: Int) {
-            Log.w(TAG, "connectVehicleSpeed: property error prop=$propertyId zone=$zoneId")
-            mVehicleSpeedKmh = -1f
-        }
-    }
-
-    /** 更新车速/分心阈值档显示（供测试验证分档逻辑）。 */
     private fun updateSpeedText() {
-        val speed = mVehicleSpeedKmh
-        val threshMs = mDistractTriggerMs
+        val speed = currentSpeedKmh()
+        val d = mSignalDispatcher?.lastDistraction
+        val threshMs = d?.activeThresholdMs ?: DistractionStateMachine.TRIGGER_MS_FAST
+        val band = d?.speedBand ?: "fast"
         val speedStr = if (speed < 0f) "N/A" else String.format("%.1f", speed)
-        val band = if (threshMs >= DISTRACT_TRIGGER_MS_SLOW) "slow" else "fast"
         mSpeedText.text = getString(R.string.speed_label) +
                 " $speedStr km/h | 分心档: ${band}(${threshMs}ms)"
     }
@@ -658,17 +628,8 @@ class PreviewActivity : AppCompatActivity() {
         private const val PREFS_NAME = "faceid_prefs"
         private const val KEY_ALGO_ENABLED = "algorithm_enabled"
 
-        /** 分心触发-快速档（≥50km/h 或无车速数据）：1.5s，合规且快速响应。 */
-        private const val DISTRACT_TRIGGER_MS_FAST = 1500L
-
-        /** 分心触发-慢速档（<50km/h）：3.0s。 */
-        private const val DISTRACT_TRIGGER_MS_SLOW = 3000L
-
-        /** 分心解除阈值：0.5s，驾驶员回看后快速解除。 */
-        private const val DISTRACT_CLEAR_MS = 500L
-
-        /** 分档车速阈值（km/h）。 */
-        private const val SPEED_FAST_THRESHOLD_KMH = 50f
+        /** 信号分发轮询周期（ms）：对应 VEHICLE_SPEED(10Hz)/ALGO_RESULT(20Hz) 消费节奏。 */
+        private const val SIGNAL_POLL_INTERVAL_MS = 50L
 
         init {
             try {

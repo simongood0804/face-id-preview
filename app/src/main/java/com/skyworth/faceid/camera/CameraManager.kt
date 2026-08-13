@@ -28,8 +28,7 @@ open class CameraManager(
 
     /** 摄像头是否已启动。 */
     @Volatile
-    var isActive: Boolean = false
-        private set
+    open var isActive: Boolean = false
 
     /**
      * 打开并启动摄像头。

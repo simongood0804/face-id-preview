@@ -1,4 +1,4 @@
-package com.skyworth.faceid.ui
+package com.skyworth.faceid.render
 
 import android.content.Context
 import android.graphics.Canvas

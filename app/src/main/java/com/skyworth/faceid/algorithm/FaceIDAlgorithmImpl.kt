@@ -43,9 +43,15 @@ class FaceIDAlgorithmImpl : IFaceIDAlgorithm {
     /** AAR FaceResult 缓存数组（避免每帧 new 对象）。 */
     private val mAARResults = arrayOfNulls<FaceResult>(MAX_FACES)
 
-    /** 裁剪偏移（FrameProcessor 在 processFrame 前设置）。 */
+    /** 裁剪偏移（FrameProcessor 在 processFrame 前通过 [setCropOffset] 设置）。 */
     @Volatile var mCropOffsetX: Int = 0
     @Volatile var mCropOffsetY: Int = 0
+
+    /** 设置裁剪偏移（ROI 左上角在原图坐标中的偏移）。 */
+    override fun setCropOffset(x: Int, y: Int) {
+        mCropOffsetX = x
+        mCropOffsetY = y
+    }
 
     /** 模型文件存储目录。 */
     private var mModelDir: String = ""
@@ -440,7 +446,7 @@ class FaceIDAlgorithmImpl : IFaceIDAlgorithm {
      * - 每次缓存当前帧（手动触发 [triggerManualDump] 时保存此帧）
      * - 顺带检查 algorithm_face_dump_enable 是否变化，变化则重新应用 dump 状态
      */
-    fun dumpOriginalFrame(uyvyData: ByteArray, width: Int, height: Int) {
+    override fun dumpOriginalFrame(uyvyData: ByteArray, width: Int, height: Int) {
         synchronized(this) {
             mLatestFrame = uyvyData
             mLatestW = width
