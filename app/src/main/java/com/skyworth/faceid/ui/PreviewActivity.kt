@@ -5,11 +5,15 @@
 package com.skyworth.faceid.ui
 
 import android.content.Context
+import android.content.Intent
+import android.content.ServiceConnection
 import android.content.SharedPreferences
 import android.graphics.Bitmap
 import android.hardware.HardwareBuffer
 import android.opengl.GLSurfaceView
 import android.os.Bundle
+import android.os.IBinder
+import android.os.SystemClock
 import android.util.Log
 import android.view.View
 import android.widget.Button
@@ -17,6 +21,9 @@ import android.widget.TextView
 import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
 import androidx.constraintlayout.widget.ConstraintLayout
+import android.car.Car
+import android.car.VehiclePropertyIds
+import android.car.hardware.property.CarPropertyManager
 import com.android.car.evs.EvsGL20CameraRenderer
 import com.skyworth.faceid.R
 import com.skyworth.faceid.algorithm.FaceEnrollmentManager
@@ -50,6 +57,7 @@ class PreviewActivity : AppCompatActivity() {
     private lateinit var mStatusText: TextView
     private lateinit var mFaceIdText: TextView
     private lateinit var mFrameRateText: TextView
+    private lateinit var mSpeedText: TextView
 
     // ============================================================
     // 核心模块
@@ -74,6 +82,26 @@ class PreviewActivity : AppCompatActivity() {
     private var mAlgorithmEnabled = true
 
     // ============================================================
+    // 车速信号（Car VHAL）与分心防抖
+    // ============================================================
+
+    /** Car 服务连接。 */
+    private var mCar: Car? = null
+    private var mCarPropertyManager: CarPropertyManager? = null
+
+    /** 当前车速（km/h）。-1 表示无车速数据（此时按高速档判定）。 */
+    @Volatile private var mVehicleSpeedKmh = -1f
+
+    /** 分心是否已确认触发（多帧/时间防抖后的结果，传给 Overlay 显示）。 */
+    @Volatile private var mDistractActive = false
+
+    /** 最近一次分心状态累积起始时间戳（elapsedRealtime）。 */
+    private var mDistractAccumStart = 0L
+
+    /** 当前生效的分心触发阈值（ms），随车速分档更新。 */
+    private var mDistractTriggerMs = DISTRACT_TRIGGER_MS_FAST
+
+    // ============================================================
     // Activity 生命周期
     // ============================================================
 
@@ -83,6 +111,7 @@ class PreviewActivity : AppCompatActivity() {
 
         initViews()
         initCoreModules()
+        connectVehicleSpeed()
 
         // 自动开始预览
         startPreview()
@@ -103,6 +132,7 @@ class PreviewActivity : AppCompatActivity() {
         mStatusText = findViewById(R.id.tv_status)
         mFaceIdText = findViewById(R.id.tv_face_id)
         mFrameRateText = findViewById(R.id.tv_frame_rate)
+        mSpeedText = findViewById(R.id.tv_speed)
 
         loadAlgorithmState()
         mToggleButton.setOnClickListener { toggleAlgorithm() }
@@ -353,6 +383,7 @@ class PreviewActivity : AppCompatActivity() {
         super.onDestroy()
         stopPreview()
         mAlgorithm?.release()
+        disconnectVehicleSpeed()
         Log.i(TAG, "onDestroy: done")
     }
 
@@ -417,6 +448,11 @@ class PreviewActivity : AppCompatActivity() {
             // 有人脸 → 即时显示，无防抖
             mNoFaceCount = 0
 
+            // 分心多帧/时间防抖：根据车速分档判定触发阈值
+            val distractActive = updateDistraction(result)
+            // 分心提示：固定位置绘制（不随人脸移动）
+            mFaceOverlay.setDistracted(distractActive)
+
             val faceId = result.faceId
             val enrolledTotal = mEnrollmentManager?.getCount() ?: 0
             val displayText = getString(R.string.face_id_label) + " " + faceId +
@@ -448,7 +484,7 @@ class PreviewActivity : AppCompatActivity() {
                         gazeYaw = result.gazeYaw,
                         gazePitch = result.gazePitch,
                         gazeCalibrated = result.gazeCalibrated,
-                        gazeDistracted = result.gazeDistracted,
+                        gazeDistracted = if (distractActive) 1f else 0f,
                         zoneId = result.zoneId
                     )),
                     frameW, frameH
@@ -458,12 +494,148 @@ class PreviewActivity : AppCompatActivity() {
         } else {
             // 无人脸 → 防抖隐藏
             mNoFaceCount++
+            // 无人脸时重置分心状态并清除分心提示
+            resetDistraction()
+            mFaceOverlay.setDistracted(false)
             if (mNoFaceCount >= FACE_HIDE_THRESHOLD) {
                 mFaceOverlay.clearFaces()
                 mFaceIdText.text = getString(R.string.face_id_label) + " " +
                         getString(R.string.face_id_none)
             }
         }
+    }
+
+    // ============================================================
+    // 分心防抖 + 车速信号
+    // ============================================================
+
+    /**
+     * 分心多帧/时间防抖状态机。
+     *
+     * 算法输出的 gazeDistracted 为单帧结果，存在误检抖动。这里按"持续时间"
+     * 累计判定（而非帧数，因单槽替换+跳帧导致帧率不稳定）：
+     *  - 连续分心达到当前车速对应的触发阈值 → 触发分心；
+     *  - 已触发后，连续非分心达到解除阈值 → 解除分心。
+     *
+     * @return 防抖后是否判定为分心（用于 UI 显示）。
+     */
+    private fun updateDistraction(result: IFaceIDAlgorithm.FaceIDResult): Boolean {
+        val now = SystemClock.elapsedRealtime()
+        val distracted = result.gazeDistracted > 0f
+
+        // 根据车速分档选择触发阈值：无车速数据(<0)或高速(≥50)用快速档，低速用慢速档
+        mDistractTriggerMs = if (mVehicleSpeedKmh >= 0f && mVehicleSpeedKmh < SPEED_FAST_THRESHOLD_KMH) {
+            DISTRACT_TRIGGER_MS_SLOW
+        } else {
+            DISTRACT_TRIGGER_MS_FAST
+        }
+
+        if (mDistractActive) {
+            // 已触发：连续非分心达到解除阈值才解除
+            if (!distracted) {
+                if (mDistractAccumStart == 0L) {
+                    mDistractAccumStart = now
+                } else if (now - mDistractAccumStart >= DISTRACT_CLEAR_MS) {
+                    mDistractActive = false
+                    mDistractAccumStart = 0L
+                }
+            } else {
+                mDistractAccumStart = 0L  // 仍分心，重置解除计时
+            }
+        } else {
+            // 未触发：连续分心达到触发阈值才触发
+            if (distracted) {
+                if (mDistractAccumStart == 0L) {
+                    mDistractAccumStart = now
+                } else if (now - mDistractAccumStart >= mDistractTriggerMs) {
+                    mDistractActive = true
+                    mDistractAccumStart = 0L
+                    Log.i(TAG, "DISTRACT triggered, speed=${mVehicleSpeedKmh}km/h threshold=${mDistractTriggerMs}ms")
+                }
+            } else {
+                mDistractAccumStart = 0L  // 非分心，重置触发计时
+            }
+        }
+        return mDistractActive
+    }
+
+    /** 重置分心防抖状态（无人脸时调用）。 */
+    private fun resetDistraction() {
+        mDistractActive = false
+        mDistractAccumStart = 0L
+    }
+
+    /**
+     * 连接 Car 服务并监听车速（PERF_VEHICLE_SPEED）。
+     * 通过 VHAL 获取，系统应用有权限。读取失败或未连接时车速保持 -1，
+     * 分心判定按高速档（快速触发）处理。
+     */
+    private fun connectVehicleSpeed() {
+        if (mCar != null) return
+        try {
+            mCar = Car.createCar(this, mCarServiceConnection)
+        } catch (e: Exception) {
+            Log.w(TAG, "connectVehicleSpeed: createCar failed, will use fast threshold", e)
+        }
+    }
+
+    /** 释放 Car 服务连接。 */
+    private fun disconnectVehicleSpeed() {
+        mCarPropertyManager?.unregisterCallback(mVehicleSpeedCallback)
+        mCarPropertyManager = null
+        try {
+            mCar?.disconnect()
+        } catch (_: Exception) { }
+        mCar = null
+    }
+
+    /** Car 服务连接回调。 */
+    private val mCarServiceConnection = object : ServiceConnection {
+        override fun onServiceConnected(name: android.content.ComponentName?, binder: IBinder?) {
+            try {
+                val car = mCar ?: return
+                if (!car.isConnected) return
+                val pm = car.getCarManager(Car.PROPERTY_SERVICE) as? CarPropertyManager ?: return
+                mCarPropertyManager = pm
+                // 订阅车速变化（m/s），SENSOR_RATE_NORMAL = 1Hz
+                pm.registerCallback(mVehicleSpeedCallback,
+                    VehiclePropertyIds.PERF_VEHICLE_SPEED, CarPropertyManager.SENSOR_RATE_NORMAL)
+                Log.i(TAG, "connectVehicleSpeed: subscribed PERF_VEHICLE_SPEED")
+            } catch (e: Exception) {
+                Log.w(TAG, "connectVehicleSpeed: onServiceConnected error, use fast threshold", e)
+            }
+        }
+
+        override fun onServiceDisconnected(name: android.content.ComponentName?) {
+            Log.w(TAG, "connectVehicleSpeed: car service disconnected, use fast threshold")
+            mCarPropertyManager = null
+            mVehicleSpeedKmh = -1f
+        }
+    }
+
+    /** 车速变化回调：PERF_VEHICLE_SPEED 为 Float，单位 m/s，转成 km/h。 */
+    private val mVehicleSpeedCallback = object : CarPropertyManager.CarPropertyEventCallback {
+        override fun onChangeEvent(value: android.car.hardware.CarPropertyValue<*>) {
+            val speedMs = value.value as? Float ?: return
+            mVehicleSpeedKmh = speedMs * 3.6f  // m/s -> km/h
+            // 更新显示（测试用：显示车速与当前阈值档）
+            runOnUiThread { updateSpeedText() }
+        }
+
+        override fun onErrorEvent(propertyId: Int, zoneId: Int) {
+            Log.w(TAG, "connectVehicleSpeed: property error prop=$propertyId zone=$zoneId")
+            mVehicleSpeedKmh = -1f
+        }
+    }
+
+    /** 更新车速/分心阈值档显示（供测试验证分档逻辑）。 */
+    private fun updateSpeedText() {
+        val speed = mVehicleSpeedKmh
+        val threshMs = mDistractTriggerMs
+        val speedStr = if (speed < 0f) "N/A" else String.format("%.1f", speed)
+        val band = if (threshMs >= DISTRACT_TRIGGER_MS_SLOW) "slow" else "fast"
+        mSpeedText.text = getString(R.string.speed_label) +
+                " $speedStr km/h | 分心档: ${band}(${threshMs}ms)"
     }
 
     // ============================================================
@@ -485,6 +657,18 @@ class PreviewActivity : AppCompatActivity() {
     companion object {
         private const val PREFS_NAME = "faceid_prefs"
         private const val KEY_ALGO_ENABLED = "algorithm_enabled"
+
+        /** 分心触发-快速档（≥50km/h 或无车速数据）：1.5s，合规且快速响应。 */
+        private const val DISTRACT_TRIGGER_MS_FAST = 1500L
+
+        /** 分心触发-慢速档（<50km/h）：3.0s。 */
+        private const val DISTRACT_TRIGGER_MS_SLOW = 3000L
+
+        /** 分心解除阈值：0.5s，驾驶员回看后快速解除。 */
+        private const val DISTRACT_CLEAR_MS = 500L
+
+        /** 分档车速阈值（km/h）。 */
+        private const val SPEED_FAST_THRESHOLD_KMH = 50f
 
         init {
             try {

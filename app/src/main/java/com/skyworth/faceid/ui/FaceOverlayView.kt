@@ -29,6 +29,9 @@ class FaceOverlayView @JvmOverloads constructor(
     /** 当前裁剪窗口（原图坐标，null 表示不绘制）。 */
     @Volatile private var mCropRect: RectF? = null
 
+    /** 分心提示是否显示（固定屏幕位置，不随人脸移动）。 */
+    @Volatile private var mDistractShown = false
+
     /** 绿色画框画笔（detected）。 */
     private val mGreenPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         color = Color.GREEN
@@ -164,6 +167,18 @@ class FaceOverlayView @JvmOverloads constructor(
         postInvalidate()
     }
 
+    /**
+     * 设置分心提示是否显示。
+     * 分心提示绘制在固定屏幕位置（右侧中部），不随人脸框移动，
+     * 避免遮挡视线/头姿等有效区域。
+     *
+     * @param shown true=显示 "DISTRACTED"，false=隐藏
+     */
+    fun setDistracted(shown: Boolean) {
+        mDistractShown = shown
+        postInvalidate()
+    }
+
     override fun onDraw(canvas: Canvas) {
         super.onDraw(canvas)
         val faces = mFaces
@@ -241,6 +256,26 @@ class FaceOverlayView @JvmOverloads constructor(
 
         // 左侧输出当前朝向 zone 信息
         drawZonePanel(canvas, faces)
+
+        // 固定位置的分心提示（右侧中部，不随人脸移动，避开视线/头姿区）
+        drawDistracted(canvas)
+    }
+
+    /**
+     * 在固定屏幕位置（右侧中部）绘制分心提示。
+     * 由 [setDistracted] 控制显隐；不依赖人脸框位置，避免遮挡视线/头姿等有效区域。
+     */
+    private fun drawDistracted(canvas: Canvas) {
+        if (!mDistractShown) return
+        val text = "DISTRACTED"
+        // 固定位置：画面右侧中部
+        val x = width * 0.70f
+        val y = height * 0.45f
+        val w = mDistractedPaint.measureText(text)
+        // 背景 + 文字
+        canvas.drawRect(x - 8f, y - mDistractedPaint.textSize - 8f,
+            x + w + 8f, y + 8f, mBgPaint)
+        canvas.drawText(text, x, y, mDistractedPaint)
     }
 
     /**
@@ -330,12 +365,6 @@ class FaceOverlayView @JvmOverloads constructor(
 
         drawSingleGaze(canvas, leftEye, dx, dy, scaleX, scaleY)
         drawSingleGaze(canvas, rightEye, dx, dy, scaleX, scaleY)
-
-        // 分心提示（显示在人脸框上方）
-        if (face.gazeDistracted > 0f) {
-            canvas.drawText("DISTRACTED",
-                face.rect.left * scaleX, face.rect.top * scaleY - 10f, mDistractedPaint)
-        }
     }
 
     /**

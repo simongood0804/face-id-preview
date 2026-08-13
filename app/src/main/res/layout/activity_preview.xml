@@ -66,6 +66,18 @@
         app:layout_constraintTop_toBottomOf="@id/tv_frame_rate"
         app:layout_constraintStart_toStartOf="@id/tv_status" />
 
+    <!-- 车速与分心档位信息 -->
+    <TextView
+        android:id="@+id/tv_speed"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="8dp"
+        android:text="@string/speed_label"
+        android:textColor="#00CCFF"
+        android:textSize="14sp"
+        app:layout_constraintTop_toBottomOf="@id/tv_face_id"
+        app:layout_constraintStart_toStartOf="@id/tv_status" />
+
     <!-- ===== 控制按钮（左下角，上下排布、左对齐） ===== -->
     <!-- 清除 dump 按钮（最上） -->
     <Button
