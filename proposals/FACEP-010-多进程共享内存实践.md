@@ -220,32 +220,63 @@ val buffer = shm.mapReadWrite()
 
 ## 4. 实施步骤（分阶段）
 
-### 阶段 A：`ShmQueue` 核心实现（单进程内先验证）
+### 阶段 A：`ShmQueue` 核心实现（单进程内先验证）✅ 已实现
 1. 新增 `bus/ShmQueue.kt`，基于 `SharedMemory` + 自实现无锁队列头（写指针/读指针/reader 有效位）。
-2. 提供与 `BusQueue` 一致的 API：`registerReader/readNext/hasNext/publish/reset`。
-3. 单进程内用**两个线程**验证读写正确性与环形回绕。
+2. 提供与 `BusQueue` 一致的 API：`registerReader/readNext/hasNext/publish`。
+3. 单进程内用**多线程**验证读写正确性与环形回绕。
+4. `ShmQueueTest`（7 例）**全部通过**。
 
-### 阶段 B：跨进程 PoC（`:shmtest` 进程）
-1. `AndroidManifest` 新增 `:shmtest` 进程的 `Service`（或独立 Activity），模拟"算法进程"。
-2. 一个进程（模拟 `:algo`）创建 `ShmQueue` 并通过 Binder `ParcelFileDescriptor` 分发句柄。
-3. 另一进程（模拟主进程）订阅读取，验证：跨进程写入可见、序号正确、慢读者失效、健康检查。
-4. 打印跨进程延迟/吞吐数据（对比单进程）。
+### 阶段 B：跨进程 PoC（`:shmtest` 进程）✅ 已实现（真机验证待做）
+1. `AndroidManifest` 新增 `:shmtest` 进程的 `ShmBridgeService`（模拟算法进程）。
+2. `ShmBridge` Binder 接口经 Parcel 分发 `SharedMemory`。
+3. `ShmTestActivity` 主进程 attach 订阅读取，验证跨进程可见性。
+4. 跨进程延迟/吞吐数据需真机实测。
 
-### 阶段 C：封装与上层替换
-1. 提供 `ShmQueue` 与 `BusQueue` 的统一抽象（如 `MessageQueue` 接口），上层 `BusHub` 按需选择进程内/跨进程实现。
-2. 单元测试：单进程读写、回绕、多 reader、慢读者失效。
+### 阶段 C：封装与上层替换 ✅ 已实现
+1. 新增 `MessageQueue` 统一抽象；`BusQueue`（进程内）/ `ShmMessageQueue`（跨进程适配）实现。
+2. `BusHub` 支持 `queueFactory` 注入，单/跨进程可切换；`Topic` 增加显式 `id`。
+3. `MessageQueueTest`（4 例）+ `ShmQueueTest`（7 例）**全部通过**。
 
-### 阶段 D：EVS 相机多进程取帧（已确认支持）
+### 阶段 D：EVS 相机多进程取帧（已确认支持）✅ 代码就绪（真机验证待做）
 > 已由产品侧确认：EVS 相机支持多进程/多 client 从同一相机流取帧。
 
-1. 在 `:algo` 进程内复用 `FrameSource` 独立打开相机取帧（帧数据源与主进程一致）。
-2. 确认算法进程 + 主进程各自独立取帧（不互相阻塞、帧时序一致）。
-3. 记录两进程取帧的帧率/延迟，确认互不影响。
+1. `:algo` 进程的 `AlgoEngineService` 内置独立 `FaceIDCameraController` + `CameraManager` 取帧。
+2. 主进程保留预览取帧，两进程各自取帧（数据源一致）。
+3. 两进程取帧帧率/时序需真机实测确认互不阻塞。
 
-### 阶段 E：真实进程拆分与评估
-1. 按 §3.6 结构把 `algorithm/signal/frame(推理)` 拆分到 `:algo` 进程，主进程只留 `ui/render/frame(预览)/bus(消费)`。
-2. 验证：算法进程自包含独立运行、主进程只消费结果 + 绘制、崩溃隔离、性能（延迟/吞吐）。
-3. 以验证结论为准，不强制追求极致隔离。
+### 阶段 E：真实进程拆分与评估 ✅ 方案 A 代码就绪（真机验证待做）
+1. `AlgoEngineService`（`:algo` 进程）自包含：取帧 + 推理 + 车速 + 分心整合 + 发布 `AlgorithmResult`。
+2. 主进程**方案 A 渐进**：新增多进程模式（偏好 `KEY_MULTIPROCESS` 控制），单进程默认保留、可回退。
+3. 多进程模式：主进程只预览取帧 + 渲染，绑定 `:algo` 引擎消费结果绘制。
+4. 崩溃隔离、性能延迟需真机实测评估。
+
+---
+
+## 5. 实施进展（代码层面已完成，真机调试待进行）
+
+> 各阶段代码已在 `dev_mult_process` 分支实现并通过编译/单测，跨进程真机验证需在设备上执行。
+
+| 阶段 | 代码状态 | 单测/编译 | 真机待验证项 |
+|------|---------|-----------|-------------|
+| A `ShmQueue` | ✅ `bus/ShmQueue.kt` + `ShmMessageSerializer` | 7 例通过 | - |
+| B 跨进程 PoC | ✅ `ShmBridge` + `ShmBridgeService`(:shmtest) + `ShmTestActivity` | 编译通过 | 跨进程可见性、延迟 |
+| C `MessageQueue` 抽象 | ✅ `MessageQueue` + `ShmMessageQueue` + `BusHub` 注入 | 11 例通过 | - |
+| D EVS 多进程取帧 | ✅ `:algo` 内置独立相机 | 编译通过 | 两进程取帧帧率/时序 |
+| E 进程拆分 | ✅ `AlgoEngineService`(:algo) + 主进程多进程模式(方案A) | 编译通过 | 跨进程消费、崩溃隔离、性能 |
+
+**待真机调试事项**：
+1. `:algo` 进程独立取帧 + 推理是否正常（EVS 多 client、算法 so 加载）；
+2. `SharedMemory` 跨进程可见性（ashmem 屏障假设）；
+3. 主进程消费 `AlgorithmResult` 绘制是否正确；
+4. 双进程模式下预览画面 + 人脸框/分心提示对齐；
+5. 崩溃隔离验证（杀掉 `:algo` 后主进程不受影响）。
+
+**已实现文件**：
+- `bus/ShmQueue.kt`、`bus/ShmMessageQueue.kt`、`bus/MessageQueue.kt`、`bus/ServiceRegistry.kt`(Topic.id)、`bus/BusHub.kt`(queueFactory)
+- `shmtest/ShmBridge.kt`、`shmtest/ShmBridgeService.kt`、`shmtest/ShmTestActivity.kt`
+- `shmtest/AlgoEngineBridge.kt`、`shmtest/AlgoEngineService.kt`、`shmtest/AlgorithmResult.kt`
+- `ui/PreviewActivity.kt`(多进程模式)
+- `activity_shm_test.xml`、`AndroidManifest.xml`(:shmtest/:algo 进程)
 
 ---
 
