@@ -4,13 +4,17 @@
 
 package com.skyworth.faceid.ui
 
+import android.content.ComponentName
 import android.content.Context
+import android.content.Intent
+import android.content.ServiceConnection
 import android.content.SharedPreferences
 import android.hardware.HardwareBuffer
 import android.opengl.GLSurfaceView
 import android.os.Bundle
 import android.os.Handler
 import android.os.HandlerThread
+import android.os.IBinder
 import android.util.Log
 import android.view.View
 import android.widget.Button
@@ -27,6 +31,7 @@ import com.skyworth.faceid.algorithm.IFaceIDAlgorithm
 import com.skyworth.faceid.bus.BusHub
 import com.skyworth.faceid.bus.BusPublisher
 import com.skyworth.faceid.bus.ServiceRegistry
+import com.skyworth.faceid.bus.ShmQueue
 import com.skyworth.faceid.camera.CameraManager
 import com.skyworth.faceid.camera.FaceIDCameraController
 import com.skyworth.faceid.frame.FrameDistributor
@@ -34,6 +39,9 @@ import com.skyworth.faceid.render.FaceOverlayView
 import com.skyworth.faceid.signal.DistractionStateMachine
 import com.skyworth.faceid.signal.SignalDispatcher
 import com.skyworth.faceid.signal.VehicleSignalSource
+import com.skyworth.faceid.shmtest.AlgoEngineBridge
+import com.skyworth.faceid.shmtest.AlgorithmResult
+import com.skyworth.faceid.shmtest.AlgoEngineService
 import java.util.concurrent.Executors
 
 /**
@@ -116,6 +124,27 @@ class PreviewActivity : AppCompatActivity() {
     private var mCropEnabled = true
 
     // ============================================================
+    // 多进程模式（FACEP-010 阶段 E，方案 A 渐进）
+    // ============================================================
+
+    /**
+     * 是否运行在多进程模式：绑定 `:algo` 进程引擎消费结果（而非本进程内跑算法）。
+     * 默认 false（单进程）；通过 [toggleMultiProcess] 或偏好切换，可回退。
+     */
+    private var mMultiProcessMode = false
+
+    /** 多进程：`:algo` 引擎桥接。 */
+    private var mAlgoBridge: AlgoEngineBridge? = null
+
+    /** 多进程：算法结果共享队列（消费端）。 */
+    private var mAlgoResultQueue: ShmQueue? = null
+    private var mAlgoReaderId = -1
+
+    /** 多进程：结果消费线程。 */
+    private var mResultThread: Thread? = null
+    private var mResultRunning = false
+
+    // ============================================================
     // Activity 生命周期
     // ============================================================
 
@@ -124,14 +153,21 @@ class PreviewActivity : AppCompatActivity() {
         setContentView(R.layout.activity_preview)
 
         initViews()
-        initCoreModules()
-        initSignalLayer()
-        initFrameLayer()
+
+        if (mMultiProcessMode) {
+            // 多进程模式：主进程只保留预览取帧 + 渲染 + 消费 :algo 结果
+            initMultiProcessModules()
+        } else {
+            // 单进程模式：本进程内跑算法 + 信号
+            initCoreModules()
+            initSignalLayer()
+            initFrameLayer()
+        }
 
         // 自动开始预览
         startPreview()
 
-        Log.i(TAG, "onCreate: done")
+        Log.i(TAG, "onCreate: done, mode=${if (mMultiProcessMode) "multi-process" else "single-process"}")
     }
 
     /**
@@ -163,6 +199,158 @@ class PreviewActivity : AppCompatActivity() {
         mDumpButton.setOnClickListener { onDumpClick() }
         mClearDumpButton.setOnClickListener { onClearDumpClick() }
         mMoveDumpButton.setOnClickListener { onMoveDumpClick() }
+    }
+
+    /**
+     * 多进程模式初始化（方案 A）：主进程只做预览取帧 + 渲染，算法在 `:algo` 进程。
+     *
+     * - 创建预览相机（[FaceIDCameraController] + [CameraManager]）与 GL 渲染器；
+     * - 绑定 `:algo` 进程的 [AlgoEngineService]，获取算法结果共享内存并订阅消费。
+     */
+    private fun initMultiProcessModules() {
+        // 自定义控制器（与单进程一致：帧尺寸回调调整 GLSurfaceView）
+        mFaceIDController = FaceIDCameraController().also { controller ->
+            controller.onFrameSizeChanged = { width, height ->
+                runOnUiThread { resizePreviewSurface(width, height) }
+            }
+        }
+        mCameraManager = CameraManager(mFaceIDController!!)
+
+        // GL 渲染器（预览画面）
+        mRenderer = EvsGL20CameraRenderer().apply {
+            setProvider(mFaceIDController!!)
+        }
+        mPreviewSurface.setEGLContextClientVersion(2)
+        mPreviewSurface.setRenderer(mRenderer!!)
+        mPreviewSurface.renderMode = GLSurfaceView.RENDERMODE_CONTINUOUSLY
+
+        // 观察帧率
+        mCameraManager?.frameRate?.value?.observe(this) { fps ->
+            mFrameRateText.text = getString(R.string.frame_rate_label) + " " +
+                    getString(R.string.frame_rate_value, fps)
+        }
+
+        mStatusText.setText(R.string.status_idle)
+        mFaceIdText.text = getString(R.string.face_id_label) + " " + getString(R.string.face_id_none)
+        mFrameRateText.text = getString(R.string.frame_rate_label) + " " + getString(R.string.frame_rate_value, 0)
+
+        // 绑定 :algo 进程引擎，消费算法结果
+        bindMultiProcessEngine()
+    }
+
+    /** 绑定 `:algo` 进程引擎并订阅算法结果共享队列。 */
+    private fun bindMultiProcessEngine() {
+        val intent = Intent(this, AlgoEngineService::class.java)
+        val ok = bindService(intent, mAlgoEngineConn, Context.BIND_AUTO_CREATE)
+        Log.i(TAG, "bindMultiProcessEngine: bind=$ok")
+        if (!ok) {
+            mStatusText.setText("多进程绑定失败，请检查 :algo 进程")
+        }
+    }
+
+    private val mAlgoEngineConn = object : ServiceConnection {
+        override fun onServiceConnected(name: ComponentName?, binder: IBinder?) {
+            mAlgoBridge = AlgoEngineBridge.Stub.asInterface(binder)
+            mAlgoBridge?.let { bridge ->
+                try {
+                    val shm = bridge.getSharedMemory()
+                    mAlgoResultQueue = ShmQueue.attach(shm).also { q ->
+                        mAlgoReaderId = q.registerReader()
+                    }
+                    mStatusText.setText("已连接 :algo 引擎")
+                    startResultConsumer()
+                    Log.i(TAG, "multi-process engine connected, pid=${android.os.Process.myPid()}")
+                } catch (e: Exception) {
+                    Log.e(TAG, "multi-process attach failed", e)
+                    mStatusText.setText("多进程 attach 失败: ${e.message}")
+                }
+            }
+        }
+
+        override fun onServiceDisconnected(name: ComponentName?) {
+            mStatusText.setText(":algo 引擎断开")
+            mAlgoBridge = null
+        }
+    }
+
+    /** 消费线程：周期性读取 `:algo` 引擎发布的 [AlgorithmResult] 并绘制。 */
+    private fun startResultConsumer() {
+        mResultRunning = true
+        mResultThread = Thread {
+            while (mResultRunning) {
+                try {
+                    val q = mAlgoResultQueue ?: break
+                    val rid = mAlgoReaderId
+                    if (rid >= 0) {
+                        while (q.hasNext(rid)) {
+                            val m = q.readNext(rid) ?: break
+                            val algoResult = AlgorithmResult.decode(m.payload)
+                            runOnUiThread { handleMultiProcessResult(algoResult) }
+                        }
+                    }
+                    Thread.sleep(RESULT_POLL_INTERVAL_MS)
+                } catch (e: InterruptedException) {
+                    break
+                } catch (e: Exception) {
+                    Log.e(TAG, "result consumer error", e)
+                }
+            }
+        }.apply { isDaemon = true }.also { it.start() }
+    }
+
+    /**
+     * 多进程模式：消费 [AlgorithmResult] 并喂给 [FaceOverlayView]。
+     * 由于 [AlgorithmResult] 为跨进程精简结构，仅绘制人脸框 + 分心 + 置信度，
+     * 头姿/视线/关键点等高级绘制留待后续扩展。
+     */
+    private fun handleMultiProcessResult(r: AlgorithmResult) {
+        val frameW = if (r.frameW > 0) r.frameW else 1600
+        val frameH = if (r.frameH > 0) r.frameH else 1300
+
+        // 分心提示（固定位置）
+        mFaceOverlay.setDistracted(r.distracted)
+        // 车速/档位显示
+        updateSpeedTextMulti(r)
+
+        if (r.hasFace && r.faceRight > r.faceLeft && r.faceBottom > r.faceTop) {
+            mNoFaceCount = 0
+            val rect = android.graphics.RectF(r.faceLeft, r.faceTop, r.faceRight, r.faceBottom)
+            mFaceOverlay.setFaces(
+                listOf(FaceOverlayView.FaceBox(
+                    rect = rect,
+                    type = FaceOverlayView.FaceType.DETECTED,
+                    confidence = r.faceConfidence,
+                    label = null,
+                    keypoints = null,
+                    denseLandmarks = null,
+                    pitch = 0f, yaw = 0f, roll = 0f,
+                    gazeValid = 0f,
+                    gazeYaw = 0f, gazePitch = 0f,
+                    gazeCalibrated = 0f,
+                    gazeDistracted = if (r.distracted) 1f else 0f,
+                    zoneId = 0f
+                )),
+                frameW, frameH
+            )
+            mFaceOverlay.visibility = View.VISIBLE
+        } else {
+            mNoFaceCount++
+            if (mNoFaceCount >= FACE_HIDE_THRESHOLD) {
+                mFaceOverlay.clearFaces()
+                mFaceIdText.text = getString(R.string.face_id_label) + " " +
+                        getString(R.string.face_id_none)
+            }
+        }
+    }
+
+    /** 多进程模式的车速/分心档位显示。 */
+    private fun updateSpeedTextMulti(r: AlgorithmResult) {
+        val speed = r.speedKmh
+        val threshMs = r.distractionThresholdMs
+        val band = r.distractionBand
+        val speedStr = if (speed < 0f) "N/A" else String.format("%.1f", speed)
+        mSpeedText.text = getString(R.string.speed_label) +
+                " $speedStr km/h | 分心档: ${band}(${threshMs}ms)"
     }
 
     /**
@@ -316,6 +504,24 @@ class PreviewActivity : AppCompatActivity() {
             if (mCropEnabled) R.string.btn_crop_on else R.string.btn_crop_off
         )
         Log.i(TAG, "ROI crop ${if (mCropEnabled) "enabled" else "disabled"}")
+    }
+
+    /**
+     * 切换单进程 / 多进程模式（FACEP-010 阶段 E 方案 A 调试入口）。
+     * 保存偏好并重建 Activity 使模式生效。
+     */
+    private fun toggleMultiProcess() {
+        mMultiProcessMode = !mMultiProcessMode
+        getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            .edit()
+            .putBoolean(KEY_MULTIPROCESS, mMultiProcessMode)
+            .apply()
+        Toast.makeText(
+            this,
+            if (mMultiProcessMode) "已切换多进程模式" else "已切换单进程模式",
+            Toast.LENGTH_SHORT
+        ).show()
+        recreate()
     }
 
     /**
@@ -477,19 +683,31 @@ class PreviewActivity : AppCompatActivity() {
     override fun onDestroy() {
         super.onDestroy()
         stopPreview()
-        mAlgorithm?.release()
-        mFrameDistributor?.detach()
-        // 释放信号层与总线
-        mSignalHandler?.removeCallbacksAndMessages(null)
-        mSignalThread?.quitSafely()
-        mSignalThread = null
-        mSignalHandler = null
-        mSignalDispatcher?.close()
-        mSignalDispatcher = null
-        mBusHub?.reset()
-        mBusHub = null
-        mBusPublisher = null
-        mVehicleSignal?.disconnect()
+        if (mMultiProcessMode) {
+            // 多进程：释放 :algo 绑定 + 结果消费
+            mResultRunning = false
+            mResultThread?.interrupt()
+            mAlgoResultQueue?.let { q ->
+                if (mAlgoReaderId >= 0) q.unregisterReader(mAlgoReaderId)
+                q.close()
+            }
+            mAlgoResultQueue = null
+            try { unbindService(mAlgoEngineConn) } catch (_: Exception) { }
+        } else {
+            // 单进程：释放算法 + 信号层 + 总线
+            mAlgorithm?.release()
+            mFrameDistributor?.detach()
+            mSignalHandler?.removeCallbacksAndMessages(null)
+            mSignalThread?.quitSafely()
+            mSignalThread = null
+            mSignalHandler = null
+            mSignalDispatcher?.close()
+            mSignalDispatcher = null
+            mBusHub?.reset()
+            mBusHub = null
+            mBusPublisher = null
+            mVehicleSignal?.disconnect()
+        }
         Log.i(TAG, "onDestroy: done")
     }
 
@@ -639,6 +857,7 @@ class PreviewActivity : AppCompatActivity() {
     private fun loadAlgorithmState() {
         val prefs = getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
         mAlgorithmEnabled = prefs.getBoolean(KEY_ALGO_ENABLED, true)
+        mMultiProcessMode = prefs.getBoolean(KEY_MULTIPROCESS, false)
     }
 
     private fun saveAlgorithmState() {
@@ -651,9 +870,13 @@ class PreviewActivity : AppCompatActivity() {
     companion object {
         private const val PREFS_NAME = "faceid_prefs"
         private const val KEY_ALGO_ENABLED = "algorithm_enabled"
+        private const val KEY_MULTIPROCESS = "multi_process_mode"
 
         /** 信号分发轮询周期（ms）：对应 VEHICLE_SPEED(10Hz)/ALGO_RESULT(20Hz) 消费节奏。 */
         private const val SIGNAL_POLL_INTERVAL_MS = 50L
+
+        /** 多进程模式：结果消费轮询周期（ms）。 */
+        private const val RESULT_POLL_INTERVAL_MS = 50L
 
         init {
             try {
