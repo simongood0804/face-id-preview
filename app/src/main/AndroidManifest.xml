@@ -41,6 +41,12 @@
             android:exported="false"
             android:process=":shmtest" />
 
+        <!-- 阶段 E：算法引擎服务（运行在 :algo 独立进程，自包含取帧+推理+信号） -->
+        <service
+            android:name=".shmtest.AlgoEngineService"
+            android:exported="false"
+            android:process=":algo" />
+
     </application>
 
 </manifest>
