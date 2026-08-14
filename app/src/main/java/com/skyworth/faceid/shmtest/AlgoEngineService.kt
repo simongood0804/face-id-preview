@@ -34,12 +34,12 @@ class AlgoEngineService : Service() {
     private val TAG = "AlgoEngine"
 
     // 相机（独立取帧）
-    private lateinit var mCamera: FaceIDCameraController
-    private lateinit var mCameraManager: CameraManager
+    private var mCamera: FaceIDCameraController? = null
+    private var mCameraManager: CameraManager? = null
 
     // 算法
-    private lateinit var mAlgorithm: FaceIDAlgorithmImpl
-    private lateinit var mFrameProcessor: FrameProcessor
+    private var mAlgorithm: FaceIDAlgorithmImpl? = null
+    private var mFrameProcessor: FrameProcessor? = null
     private val mExecutor = Executors.newSingleThreadExecutor()
 
     // 信号
@@ -74,23 +74,41 @@ class AlgoEngineService : Service() {
         Log.i(TAG, "onCreate: pid=${android.os.Process.myPid()}")
     }
 
-    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        // 自动启动引擎
+    // 生命周期由绑定驱动（避免 START_STICKY 导致空跑/双重推理）：
+    // - 第一个客户端 bind 时启动引擎；
+    // - 全部客户端 unbind 时停止引擎。
+    private var bindCount = 0
+
+    override fun onBind(intent: Intent?): IBinder? {
+        bindCount++
+        Log.i(TAG, "onBind: bindCount=$bindCount")
         startEngine()
-        return START_STICKY
+        return bridge
     }
 
-    override fun onBind(intent: Intent?): IBinder? = bridge
+    override fun onUnbind(intent: Intent?): Boolean {
+        bindCount--
+        Log.i(TAG, "onUnbind: bindCount=$bindCount")
+        if (bindCount <= 0) {
+            stopEngine()
+        }
+        return false
+    }
 
     /**
      * 启动引擎：初始化算法 + 输出队列 + 相机取帧。
      */
     private fun startEngine() {
         if (running) return
+        var ok = false
         try {
-            // 1. 算法
-            mAlgorithm = FaceIDAlgorithmImpl()
-            mAlgorithm.initialize(this, HashMap())
+            // 1. 算法（检查初始化结果）
+            val algorithm = FaceIDAlgorithmImpl()
+            if (!algorithm.initialize(this, HashMap())) {
+                Log.e(TAG, "algorithm initialize failed")
+                return
+            }
+            mAlgorithm = algorithm
             // 2. 输出队列（跨进程）
             val q = ShmQueue.create("algo_result", capacity = 16, maxReaders = 4)
             mOutQueue = q
@@ -98,19 +116,27 @@ class AlgoEngineService : Service() {
             // 3. 车速信号
             mVehicleSignal = VehicleSignalSource(this).also { it.connect() }
             // 4. 相机独立取帧
-            mCamera = FaceIDCameraController().also { cam ->
-                cam.onFrameData = { hw, w, h -> onCameraFrame(hw, w, h) }
+            val cam = FaceIDCameraController().also { c ->
+                c.onFrameData = { hw, w, h -> onCameraFrame(hw, w, h) }
             }
-            mCameraManager = CameraManager(mCamera)
-            mCameraManager.openCamera()
+            mCamera = cam
+            val camMgr = CameraManager(cam)
+            mCameraManager = camMgr
+            camMgr.openCamera()
             // 5. 帧处理器
-            mFrameProcessor = FrameProcessor(mAlgorithm, mExecutor) { result ->
+            mFrameProcessor = FrameProcessor(algorithm, mExecutor) { result ->
                 onAlgorithmResult(result)
             }
+            ok = true
             running = true
             Log.i(TAG, "engine started")
         } catch (e: Exception) {
             Log.e(TAG, "engine start failed", e)
+        } finally {
+            // 任一初始化步骤失败：释放已初始化的资源，避免泄漏
+            if (!ok) {
+                cleanupPartialInit()
+            }
         }
     }
 
@@ -122,7 +148,7 @@ class AlgoEngineService : Service() {
         if (!running) return
         try {
             val bytes = readUyvy(hw, w, h) ?: return
-            mFrameProcessor.submitFrame(bytes, w, h)
+            mFrameProcessor?.submitFrame(bytes, w, h)
         } catch (e: Exception) {
             Log.e(TAG, "onCameraFrame error", e)
         }
@@ -152,9 +178,10 @@ class AlgoEngineService : Service() {
             mStateMachine.reset()
             false
         }
+        val cam = mCamera
         val algoResult = AlgorithmResult(
-            frameW = mCamera.frameWidth,
-            frameH = mCamera.frameHeight,
+            frameW = cam?.frameWidth ?: 0,
+            frameH = cam?.frameHeight ?: 0,
             hasFace = hasFace,
             faceLeft = result.faceRect?.left ?: 0f,
             faceTop = result.faceRect?.top ?: 0f,
@@ -175,15 +202,33 @@ class AlgoEngineService : Service() {
     }
 
     private fun stopEngine() {
-        if (!running) return
         running = false
-        try { mCameraManager.stopCamera() } catch (_: Exception) { }
-        mAlgorithm.release()
+        try { mCameraManager?.stopCamera() } catch (_: Exception) { }
+        try { mAlgorithm?.release() } catch (_: Exception) { }
         mVehicleSignal?.disconnect()
         mExecutor.shutdown()
         mOutQueue?.close()
         try { mShm?.close() } catch (_: Exception) { }
+        mFrameProcessor = null
         Log.i(TAG, "engine stopped")
+    }
+
+    /**
+     * 初始化失败时，释放已初始化但不完整的资源（避免泄漏）。
+     * 仅在 [startEngine] 中途异常时调用。
+     */
+    private fun cleanupPartialInit() {
+        try { mCameraManager?.stopCamera() } catch (_: Exception) { }
+        try { mAlgorithm?.release() } catch (_: Exception) { }
+        mVehicleSignal?.disconnect()
+        mOutQueue?.close()
+        try { mShm?.close() } catch (_: Exception) { }
+        // 复位引用，避免重复释放
+        mOutQueue = null
+        mShm = null
+        mVehicleSignal = null
+        mFrameProcessor = null
+        Log.w(TAG, "engine partial init cleaned")
     }
 
     override fun onDestroy() {
