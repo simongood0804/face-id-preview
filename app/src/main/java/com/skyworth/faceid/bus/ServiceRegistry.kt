@@ -17,32 +17,33 @@ object ServiceRegistry {
      * @property isCritical 是否关键 topic（健康检查超时后派发故障事件）
      */
     enum class Topic(
+        val id: Int,
         val freqHz: Int,
         val isCritical: Boolean = true
     ) {
         /** 车机车速信号。 */
-        VEHICLE_SPEED(10),
+        VEHICLE_SPEED(1, 10),
 
         /** 算法结果（人脸/分心/头姿/识别）。 */
-        ALGO_RESULT(20),
+        ALGO_RESULT(2, 20),
 
         /** 算法健康状态。 */
-        ALGO_STATE(1),
+        ALGO_STATE(3, 1),
 
         /** 帧已就绪（元数据 + 共享内存句柄）。 */
-        FRAME_READY(30),
+        FRAME_READY(4, 30),
 
         /** 绘制层可消费的 overlay 数据。 */
-        FRAME_OVERLAY(20),
+        FRAME_OVERLAY(5, 20),
 
         /** 信号层故障上报。 */
-        SIGNAL_ERROR(1),
+        SIGNAL_ERROR(6, 1),
 
         /** 帧层故障上报。 */
-        FRAME_ERROR(1),
+        FRAME_ERROR(7, 1),
 
         /** 总线心跳（watchdog 基准）。 */
-        BUS_HEARTBEAT(1)
+        BUS_HEARTBEAT(8, 1)
     }
 
     /**

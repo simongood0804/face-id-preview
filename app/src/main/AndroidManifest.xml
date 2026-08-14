@@ -28,6 +28,19 @@
             </intent-filter>
         </activity>
 
+        <!-- 阶段 B PoC：跨进程共享内存验证（主进程运行） -->
+        <activity
+            android:name=".shmtest.ShmTestActivity"
+            android:exported="true"
+            android:screenOrientation="portrait"
+            android:theme="@style/Theme.FaceIDPreview" />
+
+        <!-- 阶段 B PoC：共享内存发布服务（运行在 :shmtest 独立进程） -->
+        <service
+            android:name=".shmtest.ShmBridgeService"
+            android:exported="false"
+            android:process=":shmtest" />
+
     </application>
 
 </manifest>

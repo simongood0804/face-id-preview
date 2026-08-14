@@ -16,6 +16,12 @@
     <string name="btn_crop_on">裁剪: ON</string>
     <string name="btn_crop_off">裁剪: OFF</string>
 
+    <!-- Shm 跨进程验证（阶段 B PoC） -->
+    <string name="shm_test_idle">未连接</string>
+    <string name="shm_test_connect">连接并开始验证</string>
+    <string name="shm_test_stop">停止</string>
+    <string name="shm_test_label">Shm测试</string>
+
     <!-- 状态 -->
     <string name="status_idle">Idle</string>
     <string name="status_initializing">Initializing…</string>

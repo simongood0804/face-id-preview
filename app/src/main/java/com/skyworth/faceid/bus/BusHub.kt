@@ -14,10 +14,16 @@ import java.util.concurrent.ConcurrentHashMap
  * - **进程内承载**：阶段一为纯 JVM 内存实现，后续可替换为共享内存载体。
  *
  * 线程安全：队列操作基于原子变量；集合使用 ConcurrentHashMap。
+ *
+ * 阶段 C：队列抽象为 [MessageQueue]，默认进程内 [BusQueue]；
+ * 可通过 [queueFactory] 注入跨进程 [ShmMessageQueue]（基于 [ShmQueue]），
+ * 实现同 API、进程内/跨进程可切换。
  */
-class BusHub {
+class BusHub(
+    private val queueFactory: () -> MessageQueue = { BusQueue() }
+) {
 
-    private val queues = ConcurrentHashMap<ServiceRegistry.Topic, BusQueue>()
+    private val queues = ConcurrentHashMap<ServiceRegistry.Topic, MessageQueue>()
 
     /**
      * 注册一个订阅者 reader 到指定 topic，返回 reader id；失败返回 -1。
@@ -55,8 +61,8 @@ class BusHub {
     }
 
     /** 获取（或创建）某 topic 对应的队列。 */
-    private fun queueFor(topic: ServiceRegistry.Topic): BusQueue =
-        queues.computeIfAbsent(topic) { BusQueue() }
+    private fun queueFor(topic: ServiceRegistry.Topic): MessageQueue =
+        queues.computeIfAbsent(topic) { queueFactory() }
 
     /** 当前已创建队列的 topic 数（调试用）。 */
     fun topicCount(): Int = queues.size

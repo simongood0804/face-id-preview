@@ -23,7 +23,7 @@ import java.util.concurrent.atomic.AtomicLongArray
 class BusQueue(
     val capacity: Int = DEFAULT_CAPACITY,
     private val maxReaders: Int = DEFAULT_MAX_READERS
-) {
+) : MessageQueue {
     private val size: Int
     private val mask: Int
 
@@ -60,7 +60,7 @@ class BusQueue(
      * 注册一个订阅者 reader，返回 reader id。
      * 通过原子 CAS 递增 [readerCount] 抢占槽位；超过 [maxReaders] 返回 -1。
      */
-    fun registerReader(): Int {
+    override fun registerReader(): Int {
         while (true) {
             val current = readerCount.get()
             if (current >= maxReaders) return -1
@@ -73,7 +73,7 @@ class BusQueue(
     }
 
     /** 注销订阅者 reader，释放槽位（置回 false，允许后续再注册）。 */
-    fun unregisterReader(readerId: Int) {
+    override fun unregisterReader(readerId: Int) {
         if (readerId < 0 || readerId >= maxReaders) return
         readerValid[readerId] = false
         readerCount.set(Math.max(0, readerCount.get() - 1))
@@ -88,7 +88,7 @@ class BusQueue(
      *
      * @return 写入的序号
      */
-    fun publish(msg: BusMessage): Long {
+    override fun publish(msg: BusMessage): Long {
         val seq = writeSeq.get()
         val slot = (seq and mask.toLong()).toInt()
         // 将该槽位上落后读者的读指针前移（标记慢读者失效），避免覆盖未读数据语义混乱
@@ -105,7 +105,7 @@ class BusQueue(
      * @param readerId 订阅者 id（来自 [registerReader]）
      * @return 新的消息；无新消息或 reader 无效时返回 null
      */
-    fun readNext(readerId: Int): BusMessage? {
+    override fun readNext(readerId: Int): BusMessage? {
         if (readerId < 0 || readerId >= maxReaders || !readerValid[readerId]) return null
         val readPos = readerPositions[readerId]
         val writePos = writeSeq.get()
@@ -120,7 +120,7 @@ class BusQueue(
     /**
      * 判断指定 reader 是否仍有未读消息。
      */
-    fun hasNext(readerId: Int): Boolean {
+    override fun hasNext(readerId: Int): Boolean {
         if (readerId < 0 || readerId >= maxReaders || !readerValid[readerId]) return false
         return readerPositions[readerId] < writeSeq.get()
     }
@@ -133,7 +133,7 @@ class BusQueue(
         if (readerId in 0 until maxReaders) readerPositions[readerId] else -1L
 
     /** 清空队列：重置写指针与所有读指针。 */
-    fun reset() {
+    override fun reset() {
         writeSeq.set(0L)
         for (i in 0 until maxReaders) {
             readerPositions[i] = 0L
