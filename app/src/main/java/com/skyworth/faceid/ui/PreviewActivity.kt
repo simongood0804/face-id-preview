@@ -58,6 +58,7 @@ class PreviewActivity : AppCompatActivity() {
     private lateinit var mPreviewSurface: GLSurfaceView
     private lateinit var mFaceOverlay: FaceOverlayView
     private lateinit var mToggleButton: Button
+    private lateinit var mCropButton: Button
     private lateinit var mDumpButton: Button
     private lateinit var mClearDumpButton: Button
     private lateinit var mMoveDumpButton: Button
@@ -111,6 +112,9 @@ class PreviewActivity : AppCompatActivity() {
     /** 算法是否开启。 */
     private var mAlgorithmEnabled = true
 
+    /** 是否启用 ROI 裁剪（控制算法是否做裁剪，关闭时全图推理）。 */
+    private var mCropEnabled = true
+
     // ============================================================
     // Activity 生命周期
     // ============================================================
@@ -137,6 +141,7 @@ class PreviewActivity : AppCompatActivity() {
         mPreviewSurface = findViewById(R.id.preview_surface)
         mFaceOverlay = findViewById(R.id.face_overlay)
         mToggleButton = findViewById(R.id.btn_toggle)
+        mCropButton = findViewById(R.id.btn_crop)
         mDumpButton = findViewById(R.id.btn_dump)
         mClearDumpButton = findViewById(R.id.btn_clear_dump)
         mMoveDumpButton = findViewById(R.id.btn_move_dump)
@@ -149,6 +154,11 @@ class PreviewActivity : AppCompatActivity() {
         mToggleButton.setOnClickListener { toggleAlgorithm() }
         mToggleButton.setText(
             if (mAlgorithmEnabled) R.string.btn_algo_on else R.string.btn_algo_off
+        )
+        // 裁剪开关：控制算法是否做 ROI 裁剪
+        mCropButton.setOnClickListener { toggleCrop() }
+        mCropButton.setText(
+            if (mCropEnabled) R.string.btn_crop_on else R.string.btn_crop_off
         )
         mDumpButton.setOnClickListener { onDumpClick() }
         mClearDumpButton.setOnClickListener { onClearDumpClick() }
@@ -292,6 +302,20 @@ class PreviewActivity : AppCompatActivity() {
         )
         saveAlgorithmState()
         Log.i(TAG, "algorithm ${if (mAlgorithmEnabled) "enabled" else "disabled"}")
+    }
+
+    /**
+     * 切换 ROI 裁剪开关：控制算法是否做 900×900 裁剪。
+     * 开启时裁剪 ROI 送算法；关闭时整帧全图送算法（坐标不修正）。
+     * 按钮文本实时显示当前开关状态。
+     */
+    private fun toggleCrop() {
+        mCropEnabled = !mCropEnabled
+        mFrameProcessor?.enableCrop = mCropEnabled
+        mCropButton.setText(
+            if (mCropEnabled) R.string.btn_crop_on else R.string.btn_crop_off
+        )
+        Log.i(TAG, "ROI crop ${if (mCropEnabled) "enabled" else "disabled"}")
     }
 
     /**
