@@ -14,6 +14,7 @@ import com.skyworth.faceid.camera.FaceIDCameraController
 import com.skyworth.faceid.bus.ShmQueue
 import com.skyworth.faceid.signal.DistractionStateMachine
 import com.skyworth.faceid.signal.VehicleSignalSource
+import com.skyworth.faceid.util.HardwareBufferReader
 import java.util.concurrent.Executors
 
 /**
@@ -49,6 +50,9 @@ class AlgoEngineService : Service() {
     // 跨进程发布
     private var mOutQueue: ShmQueue? = null
     private var mShm: SharedMemory? = null
+
+    /** 相机 buffer 回收线程（周期调用 getNewFrame 让 EVS buffer 循环）。 */
+    private var mBufferThread: Thread? = null
 
     private var running = false
 
@@ -127,6 +131,12 @@ class AlgoEngineService : Service() {
             mFrameProcessor = FrameProcessor(algorithm, mExecutor) { result ->
                 onAlgorithmResult(result)
             }
+            // 6. 相机 buffer 回收线程（方案 1）
+            //    本引擎无 GL 渲染器调用 getNewFrame，若不手动 dequeue，EVS buffer
+            //    会停留在 QUEUED，onFrameEvent 找不到 NONE buffer → drop frame，
+            //    onFrameData 无法持续触发。此线程周期调用 getNewFrame()（内部
+            //    descriptor 链自动回收），使 buffer 循环，保证帧持续送入算法。
+            startBufferRecycler(cam)
             ok = true
             running = true
             Log.i(TAG, "engine started")
@@ -138,6 +148,29 @@ class AlgoEngineService : Service() {
                 cleanupPartialInit()
             }
         }
+    }
+
+    /**
+     * 启动相机 buffer 回收线程。
+     *
+     * 周期调用 [FaceIDCameraController.getNewFrame] 让 EVS buffer 状态循环
+     * （QUEUED → DEQUEUED → RECYCLE → NONE），否则 buffer 停留在 QUEUED，
+     * onFrameEvent 找不到 NONE buffer 而 drop frame。
+     * 返回值由 getNewFrame 内部 descriptor 链管理，此处不手动 recycle，避免双回收。
+     */
+    private fun startBufferRecycler(cam: FaceIDCameraController) {
+        mBufferThread = Thread {
+            while (running) {
+                try {
+                    cam.getNewFrame()
+                    Thread.sleep(BUFFER_RECYCLE_INTERVAL_MS)
+                } catch (e: InterruptedException) {
+                    break
+                } catch (e: Exception) {
+                    Log.e(TAG, "buffer recycler error", e)
+                }
+            }
+        }.apply { isDaemon = true }.also { it.start() }
     }
 
     /**
@@ -154,14 +187,10 @@ class AlgoEngineService : Service() {
         }
     }
 
-    /** 读取 HardwareBuffer 中的 UYVY 字节（复用 JNI hardware_buffer_reader，与主进程一致）。 */
+    /** 读取 HardwareBuffer 中的 UYVY 字节（共享 JNI 类，与主进程一致）。 */
     private fun readUyvy(hw: HardwareBuffer, w: Int, h: Int): ByteArray? {
-        return nativeReadHardwareBuffer(hw, w, h)
+        return HardwareBufferReader.read(hw, w, h)
     }
-
-    private external fun nativeReadHardwareBuffer(
-        hwBuffer: HardwareBuffer, width: Int, height: Int
-    ): ByteArray?
 
     /**
      * 算法推理完成：整合车速 + 分心判定，发布 [AlgorithmResult] 到共享队列。
@@ -188,6 +217,13 @@ class AlgoEngineService : Service() {
             faceRight = result.faceRect?.right ?: 0f,
             faceBottom = result.faceRect?.bottom ?: 0f,
             faceConfidence = result.confidence,
+            headposePitch = result.headposePitch,
+            headposeYaw = result.headposeYaw,
+            headposeRoll = result.headposeRoll,
+            gazeValid = result.gazeValid,
+            gazeYaw = result.gazeYaw,
+            gazePitch = result.gazePitch,
+            zoneId = result.zoneId,
             distracted = distracted,
             distractionBand = mStateMachine.currentSpeedBand(),
             distractionThresholdMs = mStateMachine.currentTriggerMs(),
@@ -203,6 +239,8 @@ class AlgoEngineService : Service() {
 
     private fun stopEngine() {
         running = false
+        mBufferThread?.interrupt()
+        mBufferThread = null
         try { mCameraManager?.stopCamera() } catch (_: Exception) { }
         try { mAlgorithm?.release() } catch (_: Exception) { }
         mVehicleSignal?.disconnect()
@@ -239,10 +277,7 @@ class AlgoEngineService : Service() {
     companion object {
         private const val ALGO_RESULT_TOPIC = 200
 
-        init {
-            try {
-                System.loadLibrary("hardware_buffer_reader")
-            } catch (_: UnsatisfiedLinkError) { }
-        }
+        /** 相机 buffer 回收线程周期（ms）：需 ≤ 相机帧间隔，保证 buffer 循环跟上。 */
+        private const val BUFFER_RECYCLE_INTERVAL_MS = 15L
     }
 }

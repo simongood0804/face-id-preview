@@ -109,6 +109,20 @@ class ShmQueueTest {
     }
 
     @Test
+    fun `re-register same reader slot becomes valid again`() {
+        val q = newQueue(capacity = 4, maxReaders = 2)
+        val r0 = q.registerReader()
+        q.unregisterReader(r0)
+        // 注销后重注册同一槽位（id 应为 0），readerValid 需复位，否则无法读
+        val r0b = q.registerReader()
+        assertEquals(0, r0b)
+        q.publish(1, byteArrayOf(42))
+        val m = q.readNext(r0b)
+        assertNotNull(m)
+        assert(m!!.payload.contentEquals(byteArrayOf(42)))
+    }
+
+    @Test
     fun `serializer round trip`() {
         val payload = byteArrayOf(1, 2, 3, 4, 5)
         val encoded = ShmMessageSerializer.encode(0x12, payload)

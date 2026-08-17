@@ -133,7 +133,8 @@ class ShmQueue(
          * @param shm 提供方分发的共享内存（同名同 FD）
          */
         fun attach(shm: SharedMemory): ShmQueue {
-            val buf = shm.mapReadOnly().order(ByteOrder.nativeOrder())
+            // 消费进程也需要写共享内存（更新自己的 reader 读指针），故用读写映射
+            val buf = shm.mapReadWrite().order(ByteOrder.nativeOrder())
             val capacity = buf.getInt(4)
             val maxReaders = buf.getInt(8)
             val q = ShmQueue(buf, capacity, maxReaders)
@@ -193,13 +194,16 @@ class ShmQueue(
 
     /**
      * 注册一个订阅者 reader，返回 reader id；超过 [maxReaders] 返回 -1。
+     *
+     * 注册时把 `readerValid[current]` 复位为 1，确保读者注销后重注册同一
+     * 槽位也能正常使用（否则 unregister 置 0 后不会重新置 1，新 reader 立即失效）。
      */
     fun registerReader(): Int {
         val current = readerCount()
         if (current >= maxReaders) return -1
+        buffer.put(readerValidOffset + current, 1) // 复位有效位
         setReaderCount(current + 1)
         setReaderPos(current, writeSeq())
-        // readerValid[current] 默认有效（初始化时置 1）
         return current
     }
 

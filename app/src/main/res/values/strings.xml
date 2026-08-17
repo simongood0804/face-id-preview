@@ -16,6 +16,10 @@
     <string name="btn_crop_on">裁剪: ON</string>
     <string name="btn_crop_off">裁剪: OFF</string>
 
+    <!-- 多进程模式开关 -->
+    <string name="btn_multiproc_on">多进程: ON</string>
+    <string name="btn_multiproc_off">多进程: OFF</string>
+
     <!-- Shm 跨进程验证（阶段 B PoC） -->
     <string name="shm_test_idle">未连接</string>
     <string name="shm_test_connect">连接并开始验证</string>

@@ -42,6 +42,7 @@ import com.skyworth.faceid.signal.VehicleSignalSource
 import com.skyworth.faceid.shmtest.AlgoEngineBridge
 import com.skyworth.faceid.shmtest.AlgorithmResult
 import com.skyworth.faceid.shmtest.AlgoEngineService
+import com.skyworth.faceid.util.HardwareBufferReader
 import java.util.concurrent.Executors
 
 /**
@@ -67,6 +68,7 @@ class PreviewActivity : AppCompatActivity() {
     private lateinit var mFaceOverlay: FaceOverlayView
     private lateinit var mToggleButton: Button
     private lateinit var mCropButton: Button
+    private lateinit var mMultiProcButton: Button
     private lateinit var mDumpButton: Button
     private lateinit var mClearDumpButton: Button
     private lateinit var mMoveDumpButton: Button
@@ -178,6 +180,7 @@ class PreviewActivity : AppCompatActivity() {
         mFaceOverlay = findViewById(R.id.face_overlay)
         mToggleButton = findViewById(R.id.btn_toggle)
         mCropButton = findViewById(R.id.btn_crop)
+        mMultiProcButton = findViewById(R.id.btn_multiproc)
         mDumpButton = findViewById(R.id.btn_dump)
         mClearDumpButton = findViewById(R.id.btn_clear_dump)
         mMoveDumpButton = findViewById(R.id.btn_move_dump)
@@ -195,6 +198,11 @@ class PreviewActivity : AppCompatActivity() {
         mCropButton.setOnClickListener { toggleCrop() }
         mCropButton.setText(
             if (mCropEnabled) R.string.btn_crop_on else R.string.btn_crop_off
+        )
+        // 多进程模式开关：单/多进程切换
+        mMultiProcButton.setOnClickListener { toggleMultiProcess() }
+        mMultiProcButton.setText(
+            if (mMultiProcessMode) R.string.btn_multiproc_on else R.string.btn_multiproc_off
         )
         mDumpButton.setOnClickListener { onDumpClick() }
         mClearDumpButton.setOnClickListener { onClearDumpClick() }
@@ -270,6 +278,18 @@ class PreviewActivity : AppCompatActivity() {
         override fun onServiceDisconnected(name: ComponentName?) {
             mStatusText.setText(":algo 引擎断开")
             mAlgoBridge = null
+            // 停止结果消费，清理队列与 reader（避免 :algo 重启重连后 reader 泄漏）
+            mResultRunning = false
+            mResultThread?.interrupt()
+            mResultThread = null
+            mAlgoResultQueue?.let { q ->
+                if (mAlgoReaderId >= 0) {
+                    try { q.unregisterReader(mAlgoReaderId) } catch (_: Exception) { }
+                }
+                q.close()
+            }
+            mAlgoResultQueue = null
+            mAlgoReaderId = -1
         }
     }
 
@@ -282,9 +302,14 @@ class PreviewActivity : AppCompatActivity() {
                     val q = mAlgoResultQueue ?: break
                     val rid = mAlgoReaderId
                     if (rid >= 0) {
-                        while (q.hasNext(rid)) {
+                        // 每轮最多消费 MAX_RESULTS_PER_POLL 条，避免积压时向 UI 线程
+                        // 一次性 post 过多 runOnUiThread 任务导致卡顿；未消费的留到下一轮。
+                        var n = 0
+                        while (q.hasNext(rid) && n < MAX_RESULTS_PER_POLL) {
                             val m = q.readNext(rid) ?: break
-                            val algoResult = AlgorithmResult.decode(m.payload)
+                            n++
+                            // 版本/长度校验失败（格式不兼容）则丢弃，不阻塞
+                            val algoResult = AlgorithmResult.decode(m.payload) ?: continue
                             runOnUiThread { handleMultiProcessResult(algoResult) }
                         }
                     }
@@ -323,12 +348,12 @@ class PreviewActivity : AppCompatActivity() {
                     label = null,
                     keypoints = null,
                     denseLandmarks = null,
-                    pitch = 0f, yaw = 0f, roll = 0f,
-                    gazeValid = 0f,
-                    gazeYaw = 0f, gazePitch = 0f,
+                    pitch = r.headposePitch, yaw = r.headposeYaw, roll = r.headposeRoll,
+                    gazeValid = r.gazeValid,
+                    gazeYaw = r.gazeYaw, gazePitch = r.gazePitch,
                     gazeCalibrated = 0f,
                     gazeDistracted = if (r.distracted) 1f else 0f,
-                    zoneId = 0f
+                    zoneId = r.zoneId
                 )),
                 frameW, frameH
             )
@@ -878,11 +903,8 @@ class PreviewActivity : AppCompatActivity() {
         /** 多进程模式：结果消费轮询周期（ms）。 */
         private const val RESULT_POLL_INTERVAL_MS = 50L
 
-        init {
-            try {
-                System.loadLibrary("hardware_buffer_reader")
-            } catch (_: UnsatisfiedLinkError) { }
-        }
+        /** 多进程模式：每轮消费的最大结果条数（避免 UI 任务堆积）。 */
+        private const val MAX_RESULTS_PER_POLL = 4
     }
 
     /**
@@ -891,10 +913,6 @@ class PreviewActivity : AppCompatActivity() {
      * 黑帧检测在 JNI 侧完成。
      */
     private fun readHardwareBuffer(hwBuffer: HardwareBuffer, width: Int, height: Int): ByteArray? {
-        return nativeReadHardwareBuffer(hwBuffer, width, height)
+        return HardwareBufferReader.read(hwBuffer, width, height)
     }
-
-    private external fun nativeReadHardwareBuffer(
-        hwBuffer: HardwareBuffer, width: Int, height: Int
-    ): ByteArray?
 }
