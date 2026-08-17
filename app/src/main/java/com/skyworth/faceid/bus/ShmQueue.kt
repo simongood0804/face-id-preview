@@ -291,13 +291,6 @@ class ShmQueue(
         return readerPos(readerId) < writeSeq()
     }
 
-    /** 当前写指针（总发布数）。 */
-    fun publishedCount(): Long = writeSeq()
-
-    /** 某 reader 已读到的位置。 */
-    fun readerPosition(readerId: Int): Long =
-        if (readerId in 0 until maxReaders) readerPos(readerId) else -1L
-
     /** 清理：关闭映射（共享内存生命周期由持有者管理）。 */
     fun close() {
         if (!closed) {

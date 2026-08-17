@@ -14,7 +14,6 @@ import com.android.car.evs.EvsFrameRate
 import com.android.car.evs.EvsHalWrapper
 import com.android.car.evs.EvsHalWrapperImpl
 import com.android.car.evs.OpaqueIdentifier
-import com.skyworth.faceid.frame.FrameSource
 import java.util.Collections
 
 /**
@@ -23,9 +22,9 @@ import java.util.Collections
  * 与 [FiveCameraController] 中的 [MyEvsCameraController] 实现一致，
  * 关键特性：当摄像头打开失败时自动断线重试，确保 DMS 摄像头最终可用。
  *
- * 实现 [FrameSource] 抽象，作为帧层的数据源接入 [com.skyworth.faceid.frame.FrameDistributor]。
+ * 作为帧源：通过 [onFrameData] 输出帧数据，供算法进程取帧/渲染进程 dump。
  */
-class FaceIDCameraController : EvsBufferProvider, FrameSource {
+class FaceIDCameraController : EvsBufferProvider {
 
     private val TAG = "Evs.Camera"
 
@@ -56,14 +55,14 @@ class FaceIDCameraController : EvsBufferProvider, FrameSource {
         private set
 
     /** 帧尺寸变化回调（主线程）。 */
-    override var onFrameSizeChanged: ((width: Int, height: Int) -> Unit)? = null
+    var onFrameSizeChanged: ((width: Int, height: Int) -> Unit)? = null
 
     /**
-     * 帧数据回调（算法处理）。
+     * 帧数据回调（算法处理/渲染层 dump）。
      * 在 [getNewFrame] 中被调用，频率约为每 [FRAME_SKIP] 帧一次。
      * 参数：[HardwareBuffer], 宽, 高。
      */
-    override var onFrameData: ((hwBuffer: HardwareBuffer, width: Int, height: Int) -> Unit)? = null
+    var onFrameData: ((hwBuffer: HardwareBuffer, width: Int, height: Int) -> Unit)? = null
 
     /** 调度执行器（单线程）。 */
     private val dExecutor = EvsExecutorService("DISPATCH", true)
@@ -213,18 +212,6 @@ class FaceIDCameraController : EvsBufferProvider, FrameSource {
     fun stopCamera() {
         mHandler.post { mCamOpen = false }
         dExecutor.submit({ handleStopVideoStream() }, "stop")
-    }
-
-    // ============================================================
-    // FrameSource 接口实现
-    // ============================================================
-
-    override fun start(cameraId: String) {
-        startCamera(cameraId)
-    }
-
-    override fun stop() {
-        stopCamera()
     }
 
     private fun stopCameraInternal(recycle: Boolean) {

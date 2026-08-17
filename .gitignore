@@ -28,3 +28,7 @@ keystore/
 
 # Logs
 *.log
+
+# Dump 输出（运行时产物，不提交）
+debugDmsDump/
+app/debugDump/

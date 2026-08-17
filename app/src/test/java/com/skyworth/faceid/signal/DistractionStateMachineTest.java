@@ -137,25 +137,4 @@ public class DistractionStateMachineTest {
         advance(1500);
         assertTrue(mState.update(true, 1f, -1f));
     }
-
-    // ---- AlgoDistractionInput 重载 ----
-
-    @Test
-    public void testUpdateWithInputObject() {
-        SignalTypes.AlgoDistractionInput input =
-                new SignalTypes.AlgoDistractionInput(true, 1f);
-        mState.update(input, -1f);
-        advance(1500);
-        assertTrue(mState.update(input, -1f));
-    }
-
-    @Test
-    public void testUpdateWithNoFaceInput() {
-        // hasFace=false 时 update 仍会更新分心标志，但无人脸路径由 SignalDispatcher 调 reset
-        SignalTypes.AlgoDistractionInput noFace =
-                new SignalTypes.AlgoDistractionInput(false, 0f);
-        mState.update(noFace, -1f);
-        // 无分心 → 不触发
-        assertFalse(mState.isDistracted());
-    }
 }

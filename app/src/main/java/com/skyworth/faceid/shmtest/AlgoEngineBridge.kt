@@ -19,6 +19,7 @@ import android.os.SharedMemory
  * - 2 = getState
  * - 3 = start
  * - 4 = stop
+ * - 5 = setDumpPath
  */
 interface AlgoEngineBridge : IInterface {
 
@@ -29,6 +30,9 @@ interface AlgoEngineBridge : IInterface {
     fun start(): Boolean
 
     fun stop()
+
+    /** 下发算法处理后数据的 dump 路径（渲染层把路径传给算法进程）。 */
+    fun setDumpPath(path: String)
 
     companion object {
         const val descriptor = "com.skyworth.faceid.shmtest.AlgoEngineBridge"
@@ -66,6 +70,13 @@ interface AlgoEngineBridge : IInterface {
                     reply!!.writeNoException()
                     true
                 }
+                TRANSACTION_SET_DUMP_PATH -> {
+                    data.enforceInterface(descriptor)
+                    val path = data.readString() ?: ""
+                    setDumpPath(path)
+                    reply!!.writeNoException()
+                    true
+                }
                 else -> super.onTransact(code, data, reply, flags)
             }
         }
@@ -75,6 +86,7 @@ interface AlgoEngineBridge : IInterface {
             private const val TRANSACTION_GET_STATE = FIRST_CALL_TRANSACTION + 1
             private const val TRANSACTION_START = FIRST_CALL_TRANSACTION + 2
             private const val TRANSACTION_STOP = FIRST_CALL_TRANSACTION + 3
+            private const val TRANSACTION_SET_DUMP_PATH = FIRST_CALL_TRANSACTION + 4
 
             fun asInterface(obj: IBinder?): AlgoEngineBridge? {
                 if (obj == null) return null
@@ -133,6 +145,20 @@ interface AlgoEngineBridge : IInterface {
                     try {
                         data.writeInterfaceToken(descriptor)
                         remote.transact(TRANSACTION_STOP, data, reply, 0)
+                        reply.readException()
+                    } finally {
+                        data.recycle()
+                        reply.recycle()
+                    }
+                }
+
+                override fun setDumpPath(path: String) {
+                    val data = Parcel.obtain()
+                    val reply = Parcel.obtain()
+                    try {
+                        data.writeInterfaceToken(descriptor)
+                        data.writeString(path)
+                        remote.transact(TRANSACTION_SET_DUMP_PATH, data, reply, 0)
                         reply.readException()
                     } finally {
                         data.recycle()

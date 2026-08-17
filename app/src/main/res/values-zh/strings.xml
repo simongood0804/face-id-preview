@@ -2,10 +2,6 @@
 <resources>
     <string name="app_name">人脸识别预览</string>
 
-    <!-- 算法开关 -->
-    <string name="btn_algo_on">算法: 开</string>
-    <string name="btn_algo_off">算法: 关</string>
-
     <!-- 状态 -->
     <string name="status_idle">待机</string>
     <string name="status_initializing">初始化中…</string>

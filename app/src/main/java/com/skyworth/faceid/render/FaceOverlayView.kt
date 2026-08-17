@@ -26,9 +26,6 @@ class FaceOverlayView @JvmOverloads constructor(
     /** 当前帧的人脸列表。 */
     @Volatile private var mFaces: List<FaceBox> = emptyList()
 
-    /** 当前裁剪窗口（原图坐标，null 表示不绘制）。 */
-    @Volatile private var mCropRect: RectF? = null
-
     /** 分心提示是否显示（固定屏幕位置，不随人脸移动）。 */
     @Volatile private var mDistractShown = false
 
@@ -149,15 +146,6 @@ class FaceOverlayView @JvmOverloads constructor(
     fun setFaces(faces: List<FaceBox>, imgW: Int, imgH: Int) {
         mFaces = faces
         tag = "${imgW}x${imgH}"  // 暂存原图尺寸，用于缩放
-        postInvalidate()
-    }
-
-    /**
-     * 设置裁剪窗口矩形（用于绘制黄色采样框）。
-     * @param rect 原图坐标，null 时不绘制
-     */
-    fun setCropRect(rect: RectF?) {
-        mCropRect = rect
         postInvalidate()
     }
 

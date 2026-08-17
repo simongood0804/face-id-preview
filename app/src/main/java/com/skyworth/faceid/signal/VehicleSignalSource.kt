@@ -31,14 +31,9 @@ class VehicleSignalSource(
     var speedKmh = -1f
         private set
 
-    /** 车速数据是否有效。 */
+    /** 车速变化回调（在 Car 回调线程触发，外部自行处理线程切换）。参数为（km/h，是否有效）。 */
     @Volatile
-    var isValid = false
-        private set
-
-    /** 车速变化回调（在 Car 回调线程触发，外部自行处理线程切换）。 */
-    @Volatile
-    var onSpeedChanged: ((SignalTypes.VehicleSpeed) -> Unit)? = null
+    var onSpeedChanged: ((Float, Boolean) -> Unit)? = null
 
     private var mCar: Car? = null
     private var mCarPropertyManager: CarPropertyManager? = null
@@ -53,7 +48,6 @@ class VehicleSignalSource(
         } catch (e: Exception) {
             Log.w(TAG, "connect: createCar failed, speed invalid", e)
             speedKmh = -1f
-            isValid = false
         }
     }
 
@@ -69,7 +63,6 @@ class VehicleSignalSource(
         }
         mCar = null
         speedKmh = -1f
-        isValid = false
     }
 
     /** Car 服务连接回调。 */
@@ -89,7 +82,6 @@ class VehicleSignalSource(
             } catch (e: Exception) {
                 Log.w(TAG, "onServiceConnected: error, speed invalid", e)
                 speedKmh = -1f
-                isValid = false
             }
         }
 
@@ -97,7 +89,6 @@ class VehicleSignalSource(
             Log.w(TAG, "onServiceDisconnected: car service disconnected, speed invalid")
             mCarPropertyManager = null
             speedKmh = -1f
-            isValid = false
         }
     }
 
@@ -106,15 +97,13 @@ class VehicleSignalSource(
         override fun onChangeEvent(value: CarPropertyValue<*>) {
             val speedMs = value.value as? Float ?: return
             speedKmh = speedMs * 3.6f  // m/s -> km/h
-            isValid = true
-            onSpeedChanged?.invoke(SignalTypes.VehicleSpeed(speedKmh, true))
+            onSpeedChanged?.invoke(speedKmh, true)
         }
 
         override fun onErrorEvent(propertyId: Int, zoneId: Int) {
             Log.w(TAG, "onErrorEvent: property error prop=$propertyId zone=$zoneId")
             speedKmh = -1f
-            isValid = false
-            onSpeedChanged?.invoke(SignalTypes.VehicleSpeed(-1f, false))
+            onSpeedChanged?.invoke(-1f, false)
         }
     }
 }

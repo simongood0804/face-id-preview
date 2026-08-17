@@ -133,16 +133,6 @@ interface IFaceIDAlgorithm {
     }
 
     /**
-     * 缓存一帧原始 UYVY 数据（供手动 dump 调试用）。
-     *
-     * 帧处理器在收到完整原始帧时调用。默认实现为空操作；
-     * 支持 dump 调试的算法实现应重写此方法缓存最近一帧。
-     */
-    fun dumpOriginalFrame(uyvyData: ByteArray, width: Int, height: Int) {
-        // 默认无操作
-    }
-
-    /**
      * 释放算法资源。
      */
     fun release()

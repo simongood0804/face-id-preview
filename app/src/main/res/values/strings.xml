@@ -2,29 +2,11 @@
 <resources>
     <string name="app_name">Face ID Preview</string>
 
-    <!-- 算法开关 -->
-    <string name="btn_algo_on">Algo: ON</string>
-    <string name="btn_algo_off">Algo: OFF</string>
-
     <!-- 手动 dump -->
     <string name="btn_dump">Dump</string>
     <string name="btn_dump_origin">dump原图</string>
     <string name="btn_clear_dump">清除dump</string>
     <string name="btn_move_dump">导出dump</string>
-
-    <!-- 裁剪开关 -->
-    <string name="btn_crop_on">裁剪: ON</string>
-    <string name="btn_crop_off">裁剪: OFF</string>
-
-    <!-- 多进程模式开关 -->
-    <string name="btn_multiproc_on">多进程: ON</string>
-    <string name="btn_multiproc_off">多进程: OFF</string>
-
-    <!-- Shm 跨进程验证（阶段 B PoC） -->
-    <string name="shm_test_idle">未连接</string>
-    <string name="shm_test_connect">连接并开始验证</string>
-    <string name="shm_test_stop">停止</string>
-    <string name="shm_test_label">Shm测试</string>
 
     <!-- 状态 -->
     <string name="status_idle">Idle</string>

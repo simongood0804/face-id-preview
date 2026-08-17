@@ -15,6 +15,7 @@ import com.skyworth.faceid.bus.ShmQueue
 import com.skyworth.faceid.signal.DistractionStateMachine
 import com.skyworth.faceid.signal.VehicleSignalSource
 import com.skyworth.faceid.util.HardwareBufferReader
+import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
 
 /**
@@ -41,7 +42,8 @@ class AlgoEngineService : Service() {
     // 算法
     private var mAlgorithm: FaceIDAlgorithmImpl? = null
     private var mFrameProcessor: FrameProcessor? = null
-    private val mExecutor = Executors.newSingleThreadExecutor()
+    /** 算法线程池：随 startEngine 创建、stopEngine 关闭（支持多次 bind 重建）。 */
+    private var mExecutor: ExecutorService? = null
 
     // 信号
     private val mStateMachine = DistractionStateMachine()
@@ -70,6 +72,11 @@ class AlgoEngineService : Service() {
 
         override fun stop() {
             stopEngine()
+        }
+
+        override fun setDumpPath(path: String) {
+            // 渲染层把算法处理后数据的 dump 路径下发给算法进程
+            mAlgorithm?.setDumpPath(path)
         }
     }
 
@@ -113,13 +120,16 @@ class AlgoEngineService : Service() {
                 return
             }
             mAlgorithm = algorithm
-            // 2. 输出队列（跨进程）
+            // 2. 算法线程池（每次 startEngine 重建，避免复用已 shutdown 的池）
+            val exec = Executors.newSingleThreadExecutor()
+            mExecutor = exec
+            // 3. 输出队列（跨进程）
             val q = ShmQueue.create("algo_result", capacity = 16, maxReaders = 4)
             mOutQueue = q
             mShm = q.ownedShm
-            // 3. 车速信号
+            // 4. 车速信号
             mVehicleSignal = VehicleSignalSource(this).also { it.connect() }
-            // 4. 相机独立取帧
+            // 5. 相机独立取帧
             val cam = FaceIDCameraController().also { c ->
                 c.onFrameData = { hw, w, h -> onCameraFrame(hw, w, h) }
             }
@@ -127,10 +137,11 @@ class AlgoEngineService : Service() {
             val camMgr = CameraManager(cam)
             mCameraManager = camMgr
             camMgr.openCamera()
-            // 5. 帧处理器
-            mFrameProcessor = FrameProcessor(algorithm, mExecutor) { result ->
-                onAlgorithmResult(result)
-            }
+            // 6. 帧处理器（算法进程不需要帧画面 dump，onRawFrame 不传）
+            mFrameProcessor = FrameProcessor(
+                algorithm, exec,
+                mCallback = { result -> onAlgorithmResult(result) }
+            )
             // 6. 相机 buffer 回收线程（方案 1）
             //    本引擎无 GL 渲染器调用 getNewFrame，若不手动 dequeue，EVS buffer
             //    会停留在 QUEUED，onFrameEvent 找不到 NONE buffer → drop frame，
@@ -243,8 +254,10 @@ class AlgoEngineService : Service() {
         mBufferThread = null
         try { mCameraManager?.stopCamera() } catch (_: Exception) { }
         try { mAlgorithm?.release() } catch (_: Exception) { }
+        mAlgorithm = null
         mVehicleSignal?.disconnect()
-        mExecutor.shutdown()
+        mExecutor?.shutdown()
+        mExecutor = null
         mOutQueue?.close()
         try { mShm?.close() } catch (_: Exception) { }
         mFrameProcessor = null

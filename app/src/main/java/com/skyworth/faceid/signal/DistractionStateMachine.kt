@@ -106,15 +106,6 @@ class DistractionStateMachine(
     }
 
     /**
-     * 更新分心状态（以算法输入摘要形式）。
-     *
-     * @param input 算法分心输入
-     * @param vehicleSpeedKmh 当前车速（km/h）；负数表示无数据
-     */
-    fun update(input: SignalTypes.AlgoDistractionInput, vehicleSpeedKmh: Float): Boolean =
-        update(input.hasFace, input.gazeDistracted, vehicleSpeedKmh)
-
-    /**
      * 重置分心状态（无人脸时调用）。
      */
     fun reset() {

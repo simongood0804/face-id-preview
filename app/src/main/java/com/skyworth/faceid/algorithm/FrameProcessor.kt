@@ -14,7 +14,13 @@ import java.util.concurrent.ExecutorService
 class FrameProcessor(
     private val mAlgorithm: IFaceIDAlgorithm,
     private val mExecutor: ExecutorService,
-    private val mCallback: (IFaceIDAlgorithm.FaceIDResult) -> Unit
+    private val mCallback: (IFaceIDAlgorithm.FaceIDResult) -> Unit,
+    /**
+     * 原始帧回调（渲染层 dump 用）：每收到一帧完整原始 UYVY 数据时调用，
+     * 由渲染层 [com.skyworth.faceid.render.DumpManager] 缓存供手动 dump。
+     * 算法进程不需要帧画面 dump 时传 null。
+     */
+    private val onRawFrame: ((ByteArray, Int, Int) -> Unit)? = null
 ) {
     private val TAG = "FrameProcessor"
 
@@ -48,8 +54,8 @@ class FrameProcessor(
     }
 
     fun submitFrame(data: ByteArray, w: Int, h: Int) {
-        // 原图 dump：收到完整 UYVY 帧时，dump 未裁剪的原始画面
-        mAlgorithm.dumpOriginalFrame(data, w, h)
+        // 原图 dump：收到完整 UYVY 帧时，交给渲染层 DumpManager 缓存原始画面
+        onRawFrame?.invoke(data, w, h)
 
         synchronized(this) {
             mPending = PendingFrame(data, w, h)
