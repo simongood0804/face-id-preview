@@ -8,6 +8,7 @@ import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
 import android.content.ServiceConnection
+import android.graphics.PointF
 import android.hardware.HardwareBuffer
 import android.opengl.GLSurfaceView
 import android.os.Bundle
@@ -27,8 +28,13 @@ import com.skyworth.faceid.camera.FaceIDCameraController
 import com.skyworth.faceid.render.DumpManager
 import com.skyworth.faceid.render.FaceOverlayView
 import com.skyworth.faceid.shmtest.AlgoEngineBridge
-import com.skyworth.faceid.shmtest.AlgorithmResult
 import com.skyworth.faceid.shmtest.AlgoEngineService
+import com.skyworth.faceid.shmtest.CapabilityModule
+import com.skyworth.faceid.shmtest.DistractData
+import com.skyworth.faceid.shmtest.FaceBoxData
+import com.skyworth.faceid.shmtest.GazeData
+import com.skyworth.faceid.shmtest.HeadposeData
+import com.skyworth.faceid.shmtest.SpeedData
 import com.skyworth.faceid.util.HardwareBufferReader
 
 /**
@@ -79,12 +85,30 @@ class PreviewActivity : AppCompatActivity() {
     // 算法进程（`:algo`）关联：仅通过共享内存分享结果
     // ============================================================
 
-    /** `:algo` 引擎桥接（Binder，仅用于获取共享内存 + 下发 dump 路径）。 */
+    /** `:algo` 引擎桥接（Binder，用于注册/订阅 + 获取共享内存 + 下发 dump 路径）。 */
     private var mAlgoBridge: AlgoEngineBridge? = null
+
+    /** 注册为算法能力消费者返回的 clientId（FACEP-011）。 */
+    private var mAlgoClientId = -1
+
+    /** 渲染进程存活 token（服务端 linkToDeath 监听本进程死亡自动注销）。 */
+    private val mAlgoToken = android.os.Binder()
 
     /** 算法结果共享队列（消费端）。 */
     private var mAlgoResultQueue: ShmQueue? = null
     private var mAlgoReaderId = -1
+
+    /** 本进程订阅的能力模块（渲染所需：人脸框/头姿/视线/分心/车速）。 */
+    private val mSubscribedModules = intArrayOf(
+        CapabilityModule.FACE_DETECT.topic,
+        CapabilityModule.HEADPOSE.topic,
+        CapabilityModule.GAZE.topic,
+        CapabilityModule.DISTRACTION.topic,
+        CapabilityModule.VEHICLE_SPEED.topic
+    )
+
+    /** 最近收到的各模块数据快照（消费线程组装后原子替换，UI 线程读取，保证跨帧一致）。 */
+    @Volatile private var mModules: ModulesSnapshot? = null
 
     /** 结果消费线程。 */
     private var mResultThread: Thread? = null
@@ -184,11 +208,28 @@ class PreviewActivity : AppCompatActivity() {
             mAlgoBridge = bridge
             bridge?.let {
                 try {
+                    // 1. 注册为算法能力消费者（FACEP-011），携带存活 token 供死亡检测
+                    val clientId = it.register(packageName, mAlgoToken)
+                    if (clientId < 0) {
+                        Log.e(TAG, "register algo client failed code=$clientId")
+                        mStatusText.setText("算法消费者注册失败")
+                        return@let
+                    }
+                    mAlgoClientId = clientId
+
+                    // 2. 初始化算法（幂等）
+                    it.init("")
+
+                    // 3. 订阅渲染所需能力模块（人脸框 + 分心 + 车速）
+                    it.subscribe(clientId, mSubscribedModules)
+
+                    // 4. attach 算法结果共享内存
                     val shm = it.getSharedMemory()
                     mAlgoResultQueue = ShmQueue.attach(shm).also { q ->
                         mAlgoReaderId = q.registerReader()
                     }
-                    // 把 dump 路径下发给算法进程（算法处理后数据 dump 用）
+
+                    // 5. 把 dump 路径下发给算法进程（算法处理后数据 dump 用）
                     mDumpManager?.getDumpDir()?.let { dir ->
                         it.setDumpPath(dir.absolutePath)
                     }
@@ -204,7 +245,12 @@ class PreviewActivity : AppCompatActivity() {
 
         override fun onServiceDisconnected(name: ComponentName?) {
             mStatusText.setText(":algo 引擎断开")
+            // 注销消费者
+            try {
+                mAlgoBridge?.unregister(mAlgoClientId)
+            } catch (_: Exception) { }
             mAlgoBridge = null
+            mAlgoClientId = -1
             // 停止结果消费，清理队列与 reader（避免 :algo 重启重连后 reader 泄漏）
             mResultRunning = false
             mResultThread?.interrupt()
@@ -220,7 +266,7 @@ class PreviewActivity : AppCompatActivity() {
         }
     }
 
-    /** 消费线程：周期性读取 `:algo` 引擎发布的 [AlgorithmResult] 并绘制。 */
+    /** 消费线程：周期性读取 `:algo` 引擎发布的各能力模块数据并绘制（FACEP-011 阶段 B）。 */
     private fun startResultConsumer() {
         mResultRunning = true
         mResultThread = Thread {
@@ -229,15 +275,57 @@ class PreviewActivity : AppCompatActivity() {
                     val q = mAlgoResultQueue ?: break
                     val rid = mAlgoReaderId
                     if (rid >= 0) {
-                        // 每轮最多消费 MAX_RESULTS_PER_POLL 条，避免积压时向 UI 线程
-                        // 一次性 post 过多 runOnUiThread 任务导致卡顿；未消费的留到下一轮。
+                        // 每轮最多消费 MAX_RESULTS_PER_POLL 条，避免积压；未消费的留到下一轮。
+                        // 本轮的模块数据暂存局部变量，轮末组装为不可变快照一次原子替换，
+                        // 避免跨帧错位（人脸框来自帧A、分心来自帧B）。
                         var n = 0
+                        var faceBox: FaceBoxData? = null
+                        var headpose: HeadposeData? = null
+                        var gaze: GazeData? = null
+                        var distract: DistractData? = null
+                        var speed: SpeedData? = null
+                        var updated = false
                         while (q.hasNext(rid) && n < MAX_RESULTS_PER_POLL) {
                             val m = q.readNext(rid) ?: break
                             n++
-                            // 版本/长度校验失败（格式不兼容）则丢弃，不阻塞
-                            val algoResult = AlgorithmResult.decode(m.payload) ?: continue
-                            runOnUiThread { handleAlgoResult(algoResult) }
+                            // 按模块 topic 分模块解析，只处理本进程订阅的模块
+                            val topic = m.topic
+                            val module = CapabilityModule.fromTopic(topic) ?: continue
+                            when (module) {
+                                CapabilityModule.FACE_DETECT -> {
+                                    val d = FaceBoxData.decode(m.payload) ?: continue
+                                    faceBox = d; updated = true
+                                }
+                                CapabilityModule.HEADPOSE -> {
+                                    val d = HeadposeData.decode(m.payload) ?: continue
+                                    headpose = d; updated = true
+                                }
+                                CapabilityModule.GAZE -> {
+                                    val d = GazeData.decode(m.payload) ?: continue
+                                    gaze = d; updated = true
+                                }
+                                CapabilityModule.DISTRACTION -> {
+                                    val d = DistractData.decode(m.payload) ?: continue
+                                    distract = d; updated = true
+                                }
+                                CapabilityModule.VEHICLE_SPEED -> {
+                                    val d = SpeedData.decode(m.payload) ?: continue
+                                    speed = d; updated = true
+                                }
+                            }
+                        }
+                        // 该轮有新数据才组装快照并触发一次绘制（避免无变化时反复刷新文本）
+                        if (updated) {
+                            val prev = mModules
+                            val snap = ModulesSnapshot(
+                                faceBox ?: prev?.faceBox,
+                                headpose ?: prev?.headpose,
+                                gaze ?: prev?.gaze,
+                                distract ?: prev?.distract,
+                                speed ?: prev?.speed
+                            )
+                            mModules = snap
+                            runOnUiThread { handleModules() }
                         }
                     }
                     Thread.sleep(RESULT_POLL_INTERVAL_MS)
@@ -251,35 +339,51 @@ class PreviewActivity : AppCompatActivity() {
     }
 
     /**
-     * 消费 [AlgorithmResult] 并喂给 [FaceOverlayView]。
-     * 由于 [AlgorithmResult] 为跨进程精简结构，仅绘制人脸框 + 分心 + 置信度。
+     * 汇总各能力模块数据快照并喂给 [FaceOverlayView]（FACEP-011 阶段 B）。
+     * 数据来自 [startResultConsumer] 组装并原子替换的 [mModules] 快照，
+     * 在 UI 线程执行，绘制逻辑与重构前一致。
      */
-    private fun handleAlgoResult(r: AlgorithmResult) {
-        val frameW = if (r.frameW > 0) r.frameW else 1600
-        val frameH = if (r.frameH > 0) r.frameH else 1300
+    private fun handleModules() {
+        val box = mModules?.faceBox
+        val headpose = mModules?.headpose
+        val gaze = mModules?.gaze
+        val distract = mModules?.distract
+        val speed = mModules?.speed
 
         // 分心提示（固定位置）
-        mFaceOverlay.setDistracted(r.distracted)
+        mFaceOverlay.setDistracted(distract?.distracted ?: false)
         // 车速/档位显示
-        updateSpeedTextMulti(r)
+        updateSpeedText(speed, distract)
 
-        if (r.hasFace && r.faceRight > r.faceLeft && r.faceBottom > r.faceTop) {
+        if (box != null && box.hasFace &&
+            box.faceRight > box.faceLeft && box.faceBottom > box.faceTop) {
             mNoFaceCount = 0
-            val rect = android.graphics.RectF(r.faceLeft, r.faceTop, r.faceRight, r.faceBottom)
+            val frameW = if (box.frameW > 0) box.frameW else 1600
+            val frameH = if (box.frameH > 0) box.frameH else 1300
+            val rect = android.graphics.RectF(box.faceLeft, box.faceTop, box.faceRight, box.faceBottom)
             mFaceOverlay.setFaces(
                 listOf(FaceOverlayView.FaceBox(
                     rect = rect,
                     type = FaceOverlayView.FaceType.DETECTED,
-                    confidence = r.faceConfidence,
+                    confidence = box.faceConfidence,
                     label = null,
-                    keypoints = null,
+                    // 5 关键点（视线线/头姿箭头起点，来自 FACE_DETECT 模块；FloatArray→PointF）
+                    keypoints = box.keypoints?.let { arr ->
+                        if (arr.size >= 10) {
+                            (0 until 5).map { i -> PointF(arr[i * 2], arr[i * 2 + 1]) }
+                        } else null
+                    },
                     denseLandmarks = null,
-                    pitch = r.headposePitch, yaw = r.headposeYaw, roll = r.headposeRoll,
-                    gazeValid = r.gazeValid,
-                    gazeYaw = r.gazeYaw, gazePitch = r.gazePitch,
-                    gazeCalibrated = 0f,
-                    gazeDistracted = if (r.distracted) 1f else 0f,
-                    zoneId = r.zoneId
+                    // 头姿/视线来自订阅的 HEADPOSE/GAZE 模块（修复：此前硬编码 0 导致绘制异常）
+                    pitch = headpose?.pitch ?: 0f,
+                    yaw = headpose?.yaw ?: 0f,
+                    roll = headpose?.roll ?: 0f,
+                    gazeValid = gaze?.valid ?: 0f,
+                    gazeYaw = gaze?.yaw ?: 0f,
+                    gazePitch = gaze?.pitch ?: 0f,
+                    gazeCalibrated = gaze?.calibrated ?: 0f,
+                    gazeDistracted = if (distract?.distracted == true) 1f else 0f,
+                    zoneId = box.zoneId
                 )),
                 frameW, frameH
             )
@@ -294,12 +398,12 @@ class PreviewActivity : AppCompatActivity() {
         }
     }
 
-    /** 车速/分心档位显示（来自算法进程结果）。 */
-    private fun updateSpeedTextMulti(r: AlgorithmResult) {
-        val speed = r.speedKmh
-        val threshMs = r.distractionThresholdMs
-        val band = r.distractionBand
-        val speedStr = if (speed < 0f) "N/A" else String.format("%.1f", speed)
+    /** 车速/分心档位显示（来自算法进程的能力模块数据）。 */
+    private fun updateSpeedText(speed: SpeedData?, distract: DistractData?) {
+        val speedStr = if (speed != null && speed.speedKmh >= 0f)
+            String.format("%.1f", speed.speedKmh) else "N/A"
+        val band = distract?.band ?: "fast"
+        val threshMs = distract?.thresholdMs ?: 0L
         mSpeedText.text = getString(R.string.speed_label) +
                 " $speedStr km/h | 分心档: ${band}(${threshMs}ms)"
     }
@@ -474,6 +578,12 @@ class PreviewActivity : AppCompatActivity() {
         mResultRunning = false
         mResultThread?.interrupt()
         mResultThread = null
+        // 主动注销消费者（防残留 clientId 占槽；若已有其它绑定或服务已断开，幂等无副作用）
+        try {
+            mAlgoBridge?.unregister(mAlgoClientId)
+        } catch (_: Exception) { }
+        mAlgoBridge = null
+        mAlgoClientId = -1
         mAlgoResultQueue?.let { q ->
             if (mAlgoReaderId >= 0) {
                 try { q.unregisterReader(mAlgoReaderId) } catch (_: Exception) { }
@@ -530,6 +640,19 @@ class PreviewActivity : AppCompatActivity() {
             Log.w(TAG, "cacheFrameForDump: read frame failed", e)
         }
     }
+
+    /**
+     * 渲染所需各能力模块数据的不可变快照。
+     * 消费线程组装后以单一 [mModules] 引用原子替换，UI 线程 [handleModules] 读取，
+     * 保证同一帧内人脸框/头姿/视线/分心/车速来自一致的数据（避免跨帧错位）。
+     */
+    private data class ModulesSnapshot(
+        val faceBox: FaceBoxData?,
+        val headpose: HeadposeData?,
+        val gaze: GazeData?,
+        val distract: DistractData?,
+        val speed: SpeedData?
+    )
 
     companion object {
         /** 多进程模式：结果消费轮询周期（ms）。 */

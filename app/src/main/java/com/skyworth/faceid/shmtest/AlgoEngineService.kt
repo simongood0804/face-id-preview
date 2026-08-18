@@ -50,13 +50,38 @@ class AlgoEngineService : Service() {
     private var mVehicleSignal: VehicleSignalSource? = null
 
     // 跨进程发布
-    private var mOutQueue: ShmQueue? = null
+    @Volatile private var mOutQueue: ShmQueue? = null
     private var mShm: SharedMemory? = null
 
     /** 相机 buffer 回收线程（周期调用 getNewFrame 让 EVS buffer 循环）。 */
     private var mBufferThread: Thread? = null
 
+    /** FACEP-011 阶段 B：按模块发布器（算法线程读、stopEngine 置 null，需可见）。 */
+    @Volatile private var mPublisher: CapabilityPublisher? = null
+
     private var running = false
+
+    // ============================================================
+    // FACEP-011：多消费者注册与订阅管理（阶段 A）
+    // ============================================================
+
+    /** 消费者注册表：clientId → 包名。线程安全（Binder 线程可能并发）。 */
+    private val mClients = mutableMapOf<Int, String>()
+
+    /** 订阅表：clientId → 已订阅能力模块集合（阶段 A 建立结构，阶段 B 用于按模块发布）。 */
+    private val mSubscriptions = mutableMapOf<Int, MutableSet<Int>>()
+
+    /** 下一个可分配 clientId。 */
+    private var mNextClientId = 0
+
+    /** 消费者注册与订阅操作锁。 */
+    private val mClientLock = Any()
+
+    /** 客户端存活 token → clientId 的反向映射（用于死亡清理）。 */
+    private val mTokenToClient = mutableMapOf<IBinder, Int>()
+
+    /** clientId → 已注册的死亡监听（stopEngine/unregister 时释放）。 */
+    private val mDeathRecipients = mutableMapOf<Int, IBinder.DeathRecipient>()
 
     private val bridge = object : AlgoEngineBridge.Stub() {
         override fun getSharedMemory(): SharedMemory =
@@ -77,6 +102,136 @@ class AlgoEngineService : Service() {
         override fun setDumpPath(path: String) {
             // 渲染层把算法处理后数据的 dump 路径下发给算法进程
             mAlgorithm?.setDumpPath(path)
+        }
+
+        // ============ FACEP-011：能力注册/订阅 ============
+
+        override fun register(packageName: String, token: IBinder?): Int {
+            // 安全校验：仅允许同 uid（android.uid.system / 本应用）的调用方注册
+            val callingUid = android.os.Binder.getCallingUid()
+            if (callingUid != android.os.Process.myUid()) {
+                Log.w(TAG, "register: rejected uid=$callingUid (expect ${android.os.Process.myUid()})")
+                return ERR_ACCESS_DENIED
+            }
+
+            synchronized(mClientLock) {
+                if (mClients.size >= MAX_CLIENTS) {
+                    Log.w(TAG, "register: max clients reached ($MAX_CLIENTS)")
+                    return ERR_CLIENT_FULL
+                }
+                // 从 0 递增分配；在 0..MAX_CLIENTS-1 内找第一个空闲 id，避免溢出/重复
+                var id = mNextClientId
+                for (trial in 0 until MAX_CLIENTS) {
+                    val candidate = (id + trial) % MAX_CLIENTS
+                    if (!mClients.containsKey(candidate)) {
+                        mClients[candidate] = packageName
+                        mSubscriptions[candidate] = mutableSetOf()
+                        mNextClientId = (candidate + 1) % MAX_CLIENTS
+
+                        // linkToDeath：客户端进程死亡时自动清理，防僵尸 clientId 占满槽位
+                        if (token != null) {
+                            try {
+                                val death = IBinder.DeathRecipient {
+                                    onClientDied(candidate)
+                                }
+                                token.linkToDeath(death, 0)
+                                mTokenToClient[token] = candidate
+                                mDeathRecipients[candidate] = death
+                            } catch (e: Exception) {
+                                Log.w(TAG, "register: linkToDeath failed for clientId=$candidate", e)
+                            }
+                        }
+                        Log.i(TAG, "register: clientId=$candidate pkg=$packageName total=${mClients.size}")
+                        return candidate
+                    }
+                }
+                return ERR_CLIENT_FULL
+            }
+        }
+
+        override fun unregister(clientId: Int) {
+            synchronized(mClientLock) {
+                cleanupClientLocked(clientId)
+            }
+        }
+
+        /** 客户端进程死亡回调：自动注销其订阅并释放槽位。 */
+        private fun onClientDied(clientId: Int) {
+            Log.w(TAG, "client died, auto unregister clientId=$clientId")
+            unregister(clientId)
+        }
+
+        /** 在锁内释放指定 clientId 的所有资源（注册、订阅、死亡监听）。 */
+        private fun cleanupClientLocked(clientId: Int) {
+            val removed = mClients.remove(clientId)
+            mSubscriptions.remove(clientId)
+            // 释放死亡监听 + token 映射
+            mDeathRecipients.remove(clientId)?.let { death ->
+                val token = mTokenToClient.entries.firstOrNull { it.value == clientId }?.key
+                if (token != null) {
+                    try { token.unlinkToDeath(death, 0) } catch (_: Exception) { }
+                    mTokenToClient.remove(token)
+                }
+            }
+            mDeathRecipients.remove(clientId)
+            if (removed != null) {
+                Log.i(TAG, "unregister: clientId=$clientId total=${mClients.size}")
+            }
+        }
+
+        override fun init(modelDir: String): Int {
+            // 算法已在 onBind → startEngine 时初始化，此处幂等确认
+            return if (mAlgorithm != null) {
+                Log.i(TAG, "init: already initialized (engine running)")
+                ERR_OK
+            } else {
+                Log.w(TAG, "init: algorithm not initialized")
+                ERR_NOT_INITIALIZED
+            }
+        }
+
+        override fun subscribe(clientId: Int, moduleIds: IntArray): Int {
+            // 校验模块合法并解析为枚举（避免使用易受旧 Kotlin 推断问题影响的 lambda 集合 API）
+            val parsed = java.util.ArrayList<CapabilityModule>(moduleIds.size)
+            for (topic in moduleIds) {
+                val module = CapabilityModule.fromTopic(topic)
+                if (module == null) {
+                    Log.w(TAG, "subscribe: invalid module topic=$topic")
+                    return ERR_INVALID_MODULE
+                }
+                parsed.add(module)
+            }
+            synchronized(mClientLock) {
+                if (!mClients.containsKey(clientId)) {
+                    Log.w(TAG, "subscribe: unknown clientId=$clientId")
+                    return ERR_CLIENT_INVALID
+                }
+                val set = mSubscriptions.getOrPut(clientId) { mutableSetOf() }
+                for (module in parsed) {
+                    set.add(module.topic)
+                }
+                val names = StringBuilder()
+                for (m in parsed) {
+                    if (names.isNotEmpty()) names.append(", ")
+                    names.append(m.name)
+                }
+                Log.i(TAG, "subscribe: clientId=$clientId modules=[$names]")
+                return ERR_OK
+            }
+        }
+
+        override fun unsubscribe(clientId: Int, moduleIds: IntArray): Int {
+            synchronized(mClientLock) {
+                if (!mClients.containsKey(clientId)) {
+                    Log.w(TAG, "unsubscribe: unknown clientId=$clientId")
+                    return ERR_CLIENT_INVALID
+                }
+                mSubscriptions[clientId]?.let { set ->
+                    moduleIds.forEach { set.remove(it) }
+                }
+                Log.i(TAG, "unsubscribe: clientId=$clientId")
+                return ERR_OK
+            }
         }
     }
 
@@ -123,10 +278,11 @@ class AlgoEngineService : Service() {
             // 2. 算法线程池（每次 startEngine 重建，避免复用已 shutdown 的池）
             val exec = Executors.newSingleThreadExecutor()
             mExecutor = exec
-            // 3. 输出队列（跨进程）
+            // 3. 输出队列（跨进程）+ 按模块发布器（FACEP-011）
             val q = ShmQueue.create("algo_result", capacity = 16, maxReaders = 4)
             mOutQueue = q
             mShm = q.ownedShm
+            mPublisher = CapabilityPublisher(q) { subscribedTopicsSnapshot() }
             // 4. 车速信号
             mVehicleSignal = VehicleSignalSource(this).also { it.connect() }
             // 5. 相机独立取帧
@@ -208,8 +364,12 @@ class AlgoEngineService : Service() {
      * 在算法线程（FrameProcessor 回调）调用，[DistractionStateMachine] 保持单线程。
      */
     private fun onAlgorithmResult(result: IFaceIDAlgorithm.FaceIDResult) {
-        val q = mOutQueue ?: return
+        if (mOutQueue == null) {
+            Log.w(TAG, "onAlgorithmResult: mOutQueue null")
+            return
+        }
         val speed = mVehicleSignal?.speedKmh ?: -1f
+        Log.d(TAG, "onAlgorithmResult: face=${result.faceId} subs=${subscriptionCount()}")
         // 分心判定（算法线程内单线程调用状态机）
         val hasFace = result.faceId.isNotEmpty()
         val distracted = if (hasFace) {
@@ -235,16 +395,42 @@ class AlgoEngineService : Service() {
             gazeYaw = result.gazeYaw,
             gazePitch = result.gazePitch,
             zoneId = result.zoneId,
+            gazeCalibrated = result.gazeCalibrated,
             distracted = distracted,
             distractionBand = mStateMachine.currentSpeedBand(),
             distractionThresholdMs = mStateMachine.currentTriggerMs(),
-            speedKmh = speed
+            speedKmh = speed,
+            distractionScore = result.distractionScore,
+            distractionHpScore = result.distractionHpScore,
+            distractionGazeScore = result.distractionGazeScore,
+            keypoints = result.keypoints?.let { pts ->
+                FloatArray(10) { i ->
+                    if (i % 2 == 0) pts[i / 2].x else pts[i / 2].y
+                }
+            }
         )
-        // 序列化后发布到共享内存队列
-        try {
-            q.publish(ALGO_RESULT_TOPIC, algoResult.encode())
-        } catch (e: Exception) {
-            Log.e(TAG, "publish result error", e)
+        // 按模块 topic 发布（FACEP-011 阶段 B）：只发布有消费者订阅的模块
+        mPublisher?.publishModules(algoResult)
+    }
+
+    /**
+     * 计算当前至少有一个消费者订阅的能力模块 topic 集合（FACEP-011）。
+     * 供 [CapabilityPublisher] 决定只发布哪些模块。
+     */
+    private fun subscribedTopicsSnapshot(): Set<Int> {
+        synchronized(mClientLock) {
+            val topics = mutableSetOf<Int>()
+            for (set in mSubscriptions.values) {
+                topics.addAll(set)
+            }
+            return topics
+        }
+    }
+
+    /** 当前订阅消费者数（调试用）。 */
+    private fun subscriptionCount(): Int {
+        synchronized(mClientLock) {
+            return mSubscriptions.count { it.value.isNotEmpty() }
         }
     }
 
@@ -260,7 +446,23 @@ class AlgoEngineService : Service() {
         mExecutor = null
         mOutQueue?.close()
         try { mShm?.close() } catch (_: Exception) { }
+        mPublisher = null
         mFrameProcessor = null
+        // 清空消费者注册表/订阅表/死亡监听，避免引擎重启后残留"幽灵"订阅
+        // 导致错误发布（旧 clientId 对应 reader 槽位与重建后的队列错位）。
+        synchronized(mClientLock) {
+            for (entry in mTokenToClient.entries) {
+                val death = mDeathRecipients[entry.value]
+                if (death != null) {
+                    try { entry.key.unlinkToDeath(death, 0) } catch (_: Exception) { }
+                }
+            }
+            mTokenToClient.clear()
+            mDeathRecipients.clear()
+            mClients.clear()
+            mSubscriptions.clear()
+            mNextClientId = 0
+        }
         Log.i(TAG, "engine stopped")
     }
 
@@ -288,9 +490,18 @@ class AlgoEngineService : Service() {
     }
 
     companion object {
-        private const val ALGO_RESULT_TOPIC = 200
-
         /** 相机 buffer 回收线程周期（ms）：需 ≤ 相机帧间隔，保证 buffer 循环跟上。 */
         private const val BUFFER_RECYCLE_INTERVAL_MS = 15L
+
+        // ============ FACEP-011：能力接口错误码 ============
+        const val ERR_OK = 0
+        const val ERR_CLIENT_INVALID = -1
+        const val ERR_CLIENT_FULL = -2
+        const val ERR_INVALID_MODULE = -3
+        const val ERR_NOT_INITIALIZED = -4
+        const val ERR_ACCESS_DENIED = -5
+
+        /** 最大并发消费者数（决定共享内存 reader 槽位上限）。 */
+        const val MAX_CLIENTS = 4
     }
 }

@@ -29,9 +29,11 @@
         </activity>
 
         <!-- 算法引擎服务（运行在 :algo 独立进程，自包含取帧+推理+信号） -->
+        <!-- 算法能力服务（FACEP-011）：exported=true 允许同 sharedUserId(android.uid.system)
+             的其他 App 模块绑定；register 接口内部校验调用方 uid，仅放行同 uid。 -->
         <service
             android:name=".shmtest.AlgoEngineService"
-            android:exported="false"
+            android:exported="true"
             android:process=":algo" />
 
     </application>

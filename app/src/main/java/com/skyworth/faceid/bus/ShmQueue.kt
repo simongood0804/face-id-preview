@@ -42,7 +42,16 @@ class ShmQueue(
     val capacity: Int,
     val maxReaders: Int
 ) {
-    private var closed = false
+    /** 队列关闭标志（publish 与 close 可能跨线程，需可见）。 */
+    @Volatile private var closed = false
+
+    /**
+     * 进程内 reader 槽位分配锁。
+     * 保证同一进程内 registerReader/unregisterReader 的「找空闲槽 + 置位」原子，
+     * 避免并发分配到同一槽。跨进程并发注册仍依赖 SharedMemory 无 CAS 的限制，
+     * 但注册是低频操作（连接时一次），冲突窗口极小。
+     */
+    private val readerLock = Any()
 
     /**
      * 本队列持有的 [SharedMemory]（仅 [create] 提供侧设置，用于经 Binder 分发）。
@@ -161,7 +170,7 @@ class ShmQueue(
         buffer.putInt(readerCountOffset, 0)
         buffer.putLong(writeSeqOffset, 0L)
         for (i in 0 until maxReaders) {
-            buffer.put(readerValidOffset + i, 1) // 有效
+            buffer.put(readerValidOffset + i, 0) // 初始：全部槽位未分配
             buffer.putLong(readerPosOffset + i * 8, 0L)
         }
     }
@@ -193,25 +202,35 @@ class ShmQueue(
     // ------------------------------------------------------------------
 
     /**
-     * 注册一个订阅者 reader，返回 reader id；超过 [maxReaders] 返回 -1。
+     * 注册一个订阅者 reader，返回 reader id；无空闲槽（已达 [maxReaders]）返回 -1。
      *
-     * 注册时把 `readerValid[current]` 复位为 1，确保读者注销后重注册同一
-     * 槽位也能正常使用（否则 unregister 置 0 后不会重新置 1，新 reader 立即失效）。
+     * 槽位分配采用**找第一个空闲槽**（`readerValid == 0`）而非尾部追加，配合
+     * [initializeHeader] 全置 0 的初始状态，可正确**复用注销产生的空洞槽位**，
+     * 避免「注销后重注册落到已占用槽位」导致两个 reader 共享同一槽、读指针互相覆盖。
+     * 进程内用 [readerLock] 保证「找空闲槽 + 置位」原子。
      */
     fun registerReader(): Int {
-        val current = readerCount()
-        if (current >= maxReaders) return -1
-        buffer.put(readerValidOffset + current, 1) // 复位有效位
-        setReaderCount(current + 1)
-        setReaderPos(current, writeSeq())
-        return current
+        synchronized(readerLock) {
+            for (i in 0 until maxReaders) {
+                if (!readerValid(i)) {
+                    buffer.put(readerValidOffset + i, 1) // 标记已分配
+                    setReaderCount(readerCount() + 1)
+                    setReaderPos(i, writeSeq())
+                    return i
+                }
+            }
+            return -1 // 全部槽位已占用
+        }
     }
 
-    /** 注销订阅者 reader。 */
+    /** 注销订阅者 reader，释放槽位（之后可被 [registerReader] 复用）。 */
     fun unregisterReader(readerId: Int) {
-        if (readerId < 0 || readerId >= maxReaders) return
-        buffer.put(readerValidOffset + readerId, 0)
-        setReaderCount(Math.max(0, readerCount() - 1))
+        synchronized(readerLock) {
+            if (readerId < 0 || readerId >= maxReaders) return
+            if (!readerValid(readerId)) return
+            buffer.put(readerValidOffset + readerId, 0)
+            setReaderCount(Math.max(0, readerCount() - 1))
+        }
     }
 
     /**
@@ -225,6 +244,8 @@ class ShmQueue(
      * @return 写入的序号
      */
     fun publish(topic: Int, payload: ByteArray): Long {
+        // 队列已关闭：拒绝写入，避免向已释放的映射写入（并发 stopEngine 场景）
+        if (closed) return -1L
         // 编码 topic + payload（topic 占 4 字节头）
         val encoded = ShmMessageSerializer.encode(topic, payload)
         require(encoded.size <= slotPayloadSize) {

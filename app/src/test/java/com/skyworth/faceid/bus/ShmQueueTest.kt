@@ -137,4 +137,40 @@ class ShmQueueTest {
         assertEquals(1, q.registerReader())
         assertEquals(-1, q.registerReader())
     }
+
+    @Test
+    fun `re-register reuses freed slot without conflicting with live reader`() {
+        // FACEP-011 P2：注销产生的空洞槽位应被复用，而不是落到已占用槽位
+        val q = newQueue(capacity = 4, maxReaders = 3)
+        val r0 = q.registerReader()   // slot0
+        val r1 = q.registerReader()   // slot1
+        assertEquals(0, r0)
+        assertEquals(1, r1)
+
+        // 注销中间的 reader（slot0），产生空洞
+        q.unregisterReader(r0)
+
+        // 新 reader 重注册：应复用空闲的 slot0（而非与存活的 r1 冲突）
+        val r2 = q.registerReader()
+        assertEquals("应复用空闲槽 0", 0, r2)
+        // 存活的 r1 应仍持有 slot1，读指针不被覆盖
+        assertEquals(1, r1)
+
+        // 各自独立读写，互不干扰
+        q.publish(1, byteArrayOf(1))
+        q.publish(2, byteArrayOf(2))
+        assertNotNull(q.readNext(r1))
+        assertNotNull(q.readNext(r2))
+    }
+
+    @Test
+    fun `all slots occupied returns -1 even after mid unregister`() {
+        // maxReaders=2：注册满 2 个后注销中间一个，再注册 1 个填满；第 3 个返回 -1
+        val q = newQueue(capacity = 4, maxReaders = 2)
+        assertEquals(0, q.registerReader())
+        assertEquals(1, q.registerReader())
+        q.unregisterReader(0)   // 释放 slot0
+        assertEquals(0, q.registerReader())  // 复用 slot0
+        assertEquals(-1, q.registerReader()) // 又满了
+    }
 }
