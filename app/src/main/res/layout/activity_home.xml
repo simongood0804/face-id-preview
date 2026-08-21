@@ -1,0 +1,78 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:orientation="vertical"
+    android:gravity="center"
+    android:padding="24dp">
+
+    <!-- 标题 -->
+    <TextView
+        android:id="@+id/home_title"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:text="@string/home_title"
+        android:textSize="28sp"
+        android:textStyle="bold"
+        android:textColor="#FFFFFF" />
+
+    <TextView
+        android:id="@+id/home_subtitle"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="8dp"
+        android:text="@string/home_subtitle"
+        android:textSize="14sp"
+        android:textColor="#AAAAAA" />
+
+    <!-- 三个功能入口（横向排列，适配横屏） -->
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="48dp"
+        android:orientation="horizontal"
+        android:gravity="center">
+
+        <Button
+            android:id="@+id/btn_recognition"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:layout_marginEnd="12dp"
+            android:minHeight="120dp"
+            android:padding="16dp"
+            android:text="@string/home_btn_recognition"
+            android:textSize="18sp" />
+
+        <Button
+            android:id="@+id/btn_fatigue"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:layout_marginEnd="12dp"
+            android:minHeight="120dp"
+            android:padding="16dp"
+            android:text="@string/home_btn_fatigue"
+            android:textSize="18sp" />
+
+        <Button
+            android:id="@+id/btn_distraction"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:minHeight="120dp"
+            android:padding="16dp"
+            android:text="@string/home_btn_distraction"
+            android:textSize="18sp" />
+    </LinearLayout>
+
+    <!-- 版本信息 -->
+    <TextView
+        android:id="@+id/home_version"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="48dp"
+        android:textSize="12sp"
+        android:textColor="#777777" />
+
+</LinearLayout>

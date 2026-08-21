@@ -10,7 +10,7 @@
 extern "C" {
 
 JNIEXPORT jbyteArray JNICALL
-Java_com_skyworth_faceid_ui_PreviewActivity_nativeReadHardwareBuffer(
+Java_com_skyworth_faceid_core_NativeFrameReader_nativeReadHardwareBuffer(
     JNIEnv *env, jclass /*clazz*/,
     jobject hw_buffer, jint width, jint height) {
 

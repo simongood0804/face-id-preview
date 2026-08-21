@@ -21,7 +21,7 @@
 
 # ------ 项目配置 ------
 PACKAGE_NAME    := com.skyworth.faceid
-ACTIVITY_NAME   := .ui.PreviewActivity
+ACTIVITY_NAME   := .ui.HomeActivity
 APK_PATH        := app/build/outputs/apk/release/app-release.apk
 SYSTEM_APP_DIR  := /system/app/DmsFace
 APK_NAME        := DmsFace.apk

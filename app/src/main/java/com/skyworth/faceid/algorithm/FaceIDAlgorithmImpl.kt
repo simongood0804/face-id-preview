@@ -53,8 +53,56 @@ class FaceIDAlgorithmImpl : IFaceIDAlgorithm {
         mCropOffsetY = y
     }
 
+    /**
+     * 动态配置算法流程（FACEP-011 功能划分）。
+     *
+     * 按模块裁剪运行的模型：如人脸识别模块只跑 DETECTION|RECOGNITION|LIVENESS|LANDMARK，
+     * 不跑 HEADPOSE/GAZE（疲劳/分心用）。在 acquire 时调用，控制每帧推理的模型。
+     *
+     * @param flag [atlas.face.sdk.FaceFlag] 按位或组合；null 保留当前。
+     */
+    fun configure(flag: Int) {
+        if (mCurrentFlag == flag) return
+        val sdk = mFaceSDK ?: return
+        try {
+            sdk.configure(flag)
+            mCurrentFlag = flag
+            Log.i(TAG, "configure: flag=$flag")
+        } catch (e: Exception) {
+            Log.e(TAG, "configure: failed flag=$flag", e)
+        }
+    }
+
+    /** 当前启用的 FaceFlag。 */
+    fun currentFlag(): Int = mCurrentFlag
+
+    /**
+     * 切换算法流程并复位眼嘴管线（FACEP-011 功能切换）。
+     *
+     * 模块切换（如人脸识别 → 疲劳监测）时调用：
+     * - [configure] 更新 FaceFlag（控制每帧推理的模型）；
+     * - reset 眼嘴状态机与校准器，清除上一模块残留的闭眼计时/校准基准，
+     *   确保新模块眼嘴判定从干净状态开始。
+     *
+     * @param flag [atlas.face.sdk.FaceFlag] 按位或组合。
+     */
+    fun setFlagAndReset(flag: Int) {
+        configure(flag)
+        // 复位眼嘴判定（防抖状态机 + 动态校准基准）
+        try {
+            mEyeMouthState.reset()
+            mEyeMouthCalibrator.reset()
+            Log.i(TAG, "setFlagAndReset: eye/mouth state reset, flag=$flag")
+        } catch (e: Exception) {
+            Log.w(TAG, "setFlagAndReset: reset error", e)
+        }
+    }
+
     /** 模型文件存储目录。 */
     private var mModelDir: String = ""
+
+    /** 当前启用的 FaceFlag（默认 ALL，模块可裁剪，FACEP-011 功能划分）。 */
+    private var mCurrentFlag: Int = atlas.face.sdk.FaceFlag.ALL
 
     // ============ 帧 dump（调试用，手动触发） ============
     /** 应用 Context（属性变化时重新应用 dump 状态用）。 */
@@ -118,6 +166,12 @@ class FaceIDAlgorithmImpl : IFaceIDAlgorithm {
         mEnrollmentManager = manager
     }
 
+    /**
+     * 已导入人脸数量（识别模块 UI 展示）。
+     * 透传 [FaceEnrollmentManager.getCount]；未注入录入管理器时返回 0。
+     */
+    override fun getEnrolledCount(): Int = mEnrollmentManager?.getCount() ?: 0
+
     // ============================================================
     // IFaceIDAlgorithm
     // ============================================================
@@ -149,11 +203,13 @@ class FaceIDAlgorithmImpl : IFaceIDAlgorithm {
                 return false
             }
 
-            // 4. 配置启用所有模型
+            // 4. 配置启用模型（默认 ALL；可通过 config[KEY_FACE_FLAG] 裁剪，见 FACEP-011 功能划分）
             val t2 = System.currentTimeMillis()
-            sdk.configure(FaceFlag.ALL)
+            val flag = config[KEY_FACE_FLAG] as? Int ?: FaceFlag.ALL
+            sdk.configure(flag)
+            mCurrentFlag = flag
             val t3 = System.currentTimeMillis()
-            Log.i(TAG, "initialize: configure(ALL) took=${t3 - t2}ms")
+            Log.i(TAG, "initialize: configure($flag) took=${t3 - t2}ms")
 
             // 5. 加载 DMS 标定配置（loadZoneConfig 从文件路径加载，含内参/外参/正视基准/分区）
             val calibOk = loadCalibration(sdk, context)
@@ -467,6 +523,9 @@ class FaceIDAlgorithmImpl : IFaceIDAlgorithm {
 
         /** 录入所需的最小人脸像素尺寸（RECOG 需要足够大的对齐人脸）。 */
         private const val MIN_FACE_SIZE = 200
+
+        /** initialize config 中 FaceFlag 的 key（FACEP-011 功能划分）。 */
+        const val KEY_FACE_FLAG = "face_flag"
     }
 
     /**

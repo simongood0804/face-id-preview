@@ -150,4 +150,10 @@ interface IFaceIDAlgorithm {
      * 释放算法资源。
      */
     fun release()
+
+    /**
+     * 已导入（录入）的人脸数量，供识别模块 UI 展示。
+     * 默认返回 0；支持人脸录入管理的实现应重写返回实际数量。
+     */
+    fun getEnrolledCount(): Int = 0
 }

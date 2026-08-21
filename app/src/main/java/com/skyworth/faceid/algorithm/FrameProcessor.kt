@@ -1,15 +1,17 @@
 package com.skyworth.faceid.algorithm
 
-import android.graphics.Rect
 import android.util.Log
 import java.util.concurrent.ExecutorService
 
 /**
- * 帧数据处理管理器（单槽替换 + ROI 裁剪）。
+ * 帧数据处理管理器（单槽替换 + 全图推理）。
  *
- * GL 线程读取 HardwareBuffer → ByteArray 后再传给此处理器，
- * 算法线程接收 ByteArray → 裁剪 ROI（900×900）→ 推理。
- * 裁剪窗口跟随人脸，人脸中心位于窗口上方 2/3 处。
+ * GL 线程读取 HardwareBuffer → ByteArray（UYVY 原图）后传给此处理器，
+ * 算法线程接收原图 → 全图 UYVY→RGB888 → 直接原图推理。
+ *
+ * 取消图像裁切（FACEP-011 迭代）：直接用原图（1600×1300）做算法推演，
+ * 因此算法返回的人脸框/关键点/地标坐标天然为原图空间，**无需再做点位映射转换**
+ * （不再需要裁剪偏移修正）。
  */
 class FrameProcessor(
     private val mAlgorithm: IFaceIDAlgorithm,
@@ -18,17 +20,16 @@ class FrameProcessor(
 ) {
     private val TAG = "FrameProcessor"
 
-    /** 裁剪窗口边长。 */
-    private val CROP_SIZE = 900
+    /**
+     * 裁剪偏移（保留字段兼容旧引用，全图推理下恒为 0，表示无偏移）。
+     * 注意：`FaceOverlayBridge.updateCropRect` / `PreviewActivity` 仍引用此字段，
+     * 取消裁切后不再更新，保持 0 即可（对应方法已不再被模块调用）。
+     */
+    @Volatile
+    var cropLeft: Int = 0
 
-    /** 当前裁剪窗口左上角（原图坐标）。 */
-    @Volatile var cropLeft: Int = (1600 - CROP_SIZE) / 2
-    @Volatile var cropTop: Int = (1300 - CROP_SIZE) / 2
-
-    /** 上次检测到的人脸中心（用于跟踪）。 */
-    private var mLastFaceCX = 0f
-    private var mLastFaceCY = 0f
-    private var mNoFaceCount = 0
+    @Volatile
+    var cropTop: Int = 0
 
     private data class PendingFrame(
         val data: ByteArray,
@@ -38,10 +39,16 @@ class FrameProcessor(
     @Volatile private var mPending: PendingFrame? = null
     @Volatile private var mProcessing = false
 
+    /**
+     * 复用的全图 RGB 缓冲（仅尺寸变化时重新分配）。
+     * 安全前提：算法 executor 为单线程，processLoop 串行执行，且 [IFaceIDAlgorithm.processFrame]
+     * 为同步调用，同一时刻只有一处持有该缓冲。
+     */
+    private var mRgbBuf: ByteArray? = null
+    private var mRgbBufSize = 0
+
     init {
-        cropLeft = (1600 - CROP_SIZE) / 2
-        cropTop = (1300 - CROP_SIZE) / 2
-        Log.i(TAG, "FrameProcessor started, crop=$CROP_SIZE")
+        Log.i(TAG, "FrameProcessor started (full-frame inference, no crop)")
     }
 
     fun submitFrame(data: ByteArray, w: Int, h: Int) {
@@ -66,16 +73,14 @@ class FrameProcessor(
                     mPending = null
                 }
 
-                // 裁剪 ROI 并设置偏移（算法内坐标会被修正回原图空间）
-                val cropped = cropFrame(p.data, p.w, p.h)
-                mAlgorithm.setCropOffset(cropLeft, cropTop)
+                // 取消裁切：全图 UYVY → RGB888，直接原图推理。
+                // 坐标天然为原图空间，无需裁剪偏移修正（offset 置 0）。
+                val rgb = convertFullFrame(p.data, p.w, p.h)
+                mAlgorithm.setCropOffset(0, 0)
 
                 val t0 = System.currentTimeMillis()
-                val result = mAlgorithm.processFrame(cropped, CROP_SIZE, CROP_SIZE, 0)
-                Log.d(TAG, "CROP ${CROP_SIZE}x${CROP_SIZE} → ${System.currentTimeMillis()-t0}ms, face=${result.faceId}")
-
-                // 更新跟踪位置
-                updateTracking(result)
+                val result = mAlgorithm.processFrame(rgb, p.w, p.h, 0)
+                Log.d(TAG, "full ${p.w}x${p.h} → ${System.currentTimeMillis()-t0}ms, face=${result.faceId}")
 
                 try { mCallback(result) } catch (e: Exception) { Log.e(TAG, "cb error", e) }
             } catch (e: Exception) {
@@ -85,25 +90,22 @@ class FrameProcessor(
         }
     }
 
-    // ============================================================
-    // ROI 裁剪
-    // ============================================================
-
-    private fun cropFrame(data: ByteArray, imgW: Int, imgH: Int): ByteArray {
-        val size = CROP_SIZE
-        val left = cropLeft.coerceIn(0, imgW - size)
-        val top = cropTop.coerceIn(0, imgH - size)
-        cropLeft = left
-        cropTop = top
-
-        // 裁剪 UYVY → 同时转换为 RGB888（避免两次循环）
-        val rgb = ByteArray(size * size * 3)
-        var srcRow = top
+    /**
+     * 全图 UYVY → RGB888（无裁剪，转换整个原图）。
+     */
+    private fun convertFullFrame(data: ByteArray, imgW: Int, imgH: Int): ByteArray {
+        // 复用 RGB 缓冲，仅尺寸变化时重新分配，避免每帧 6.24MB 分配引发的 GC 尖峰
+        val need = imgW * imgH * 3
+        val rgb = when {
+            mRgbBuf == null || mRgbBufSize != need ->
+                ByteArray(need).also { mRgbBuf = it; mRgbBufSize = need }
+            else -> mRgbBuf!!
+        }
         var dstIdx = 0
-        for (row in 0 until size) {
-            var srcCol = left
-            for (col in 0 until size step 2) {
-                val srcPos = srcRow * imgW * 2 + srcCol * 2
+        for (row in 0 until imgH) {
+            var srcCol = 0
+            for (col in 0 until imgW step 2) {
+                val srcPos = row * imgW * 2 + srcCol * 2
                 val u = data[srcPos].toInt() and 0xFF
                 val y0 = data[srcPos + 1].toInt() and 0xFF
                 val v = data[srcPos + 2].toInt() and 0xFF
@@ -121,39 +123,7 @@ class FrameProcessor(
                 rgb[dstIdx++] = clamp((298 * c1 - 100 * d - 208 * e + 128) shr 8)
                 rgb[dstIdx++] = clamp((298 * c1 + 516 * d + 128) shr 8)
             }
-            srcRow++
         }
         return rgb
-    }
-
-    // ============================================================
-    // 跟踪: 人脸在窗口上方 2/3 处
-    // ============================================================
-
-    private fun updateTracking(result: IFaceIDAlgorithm.FaceIDResult) {
-        val imgW = 1600
-        val imgH = 1300
-        val size = CROP_SIZE
-
-        if (result.faceRect != null && result.faceId.isNotEmpty()) {
-            mNoFaceCount = 0
-            val cx = (result.faceRect.left + result.faceRect.right) / 2f
-            val cy = (result.faceRect.top + result.faceRect.bottom) / 2f
-            mLastFaceCX = cx
-            mLastFaceCY = cy
-
-            // 目标：人脸中心在窗口黄金分割点 (0.382) → winCenterY = cy + size * 0.118
-            val winCX = cx
-            val winCY = cy + size * 0.118f
-
-            cropLeft = (winCX - size / 2f).toInt().coerceIn(0, imgW - size)
-            cropTop = (winCY - size / 2f).toInt().coerceIn(0, imgH - size)
-        } else {
-            mNoFaceCount++
-            if (mNoFaceCount > 15) { // ~0.5s 无人脸 → 居中
-                cropLeft = (imgW - size) / 2
-                cropTop = (imgH - size) / 2
-            }
-        }
     }
 }

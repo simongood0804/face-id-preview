@@ -28,6 +28,7 @@ import com.skyworth.faceid.bus.BusHub
 import com.skyworth.faceid.bus.BusPublisher
 import com.skyworth.faceid.bus.ServiceRegistry
 import com.skyworth.faceid.camera.CameraManager
+import com.skyworth.faceid.core.NativeFrameReader
 import com.skyworth.faceid.camera.FaceIDCameraController
 import com.skyworth.faceid.frame.FrameDistributor
 import com.skyworth.faceid.render.FaceOverlayView
@@ -634,22 +635,15 @@ class PreviewActivity : AppCompatActivity() {
         private const val SIGNAL_POLL_INTERVAL_MS = 50L
 
         init {
-            try {
-                System.loadLibrary("hardware_buffer_reader")
-            } catch (_: UnsatisfiedLinkError) { }
+            // native 库加载移交 NativeFrameReader（FACEP-011 公共化）
         }
     }
 
     /**
      * JNI 调用读取 HardwareBuffer UYVY 数据到 ByteArray（快速 memcpy）。
-     * UYVY→RGB 转换在 FrameProcessor 算法线程上异步完成。
-     * 黑帧检测在 JNI 侧完成。
+     * 帧读取能力公共化为 NativeFrameReader（FACEP-011）。
      */
     private fun readHardwareBuffer(hwBuffer: HardwareBuffer, width: Int, height: Int): ByteArray? {
-        return nativeReadHardwareBuffer(hwBuffer, width, height)
+        return NativeFrameReader.readHardwareBuffer(hwBuffer, width, height)
     }
-
-    private external fun nativeReadHardwareBuffer(
-        hwBuffer: HardwareBuffer, width: Int, height: Int
-    ): ByteArray?
 }

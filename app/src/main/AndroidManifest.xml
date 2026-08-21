@@ -18,8 +18,9 @@
         android:label="@string/app_name"
         android:theme="@style/Theme.FaceIDPreview">
 
+        <!-- 主页（LAUNCHER，三入口） -->
         <activity
-            android:name=".ui.PreviewActivity"
+            android:name=".ui.HomeActivity"
             android:exported="true"
             android:screenOrientation="landscape">
             <intent-filter>
@@ -27,6 +28,30 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+
+        <!-- 人脸识别模块 -->
+        <activity
+            android:name=".ui.RecognitionActivity"
+            android:exported="true"
+            android:screenOrientation="landscape" />
+
+        <!-- 疲劳监测模块 -->
+        <activity
+            android:name=".ui.FatigueActivity"
+            android:exported="true"
+            android:screenOrientation="landscape" />
+
+        <!-- 分心监测模块 -->
+        <activity
+            android:name=".ui.DistractionActivity"
+            android:exported="true"
+            android:screenOrientation="landscape" />
+
+        <!-- 现有功能页（三模块拆分前的过渡入口） -->
+        <activity
+            android:name=".ui.PreviewActivity"
+            android:exported="true"
+            android:screenOrientation="landscape" />
 
     </application>
 
