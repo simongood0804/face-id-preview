@@ -67,7 +67,11 @@ interface IFaceIDAlgorithm {
         /** DMS 分区 ID。 */
         val zoneId: Float = 0f,
         /** DMS 分区置信度。 */
-        val zoneConfidence: Float = 0f
+        val zoneConfidence: Float = 0f,
+        /** 眼睛是否睁开（true=睁眼，false=闭眼）。基于 106 点 EAR + 时序防抖判定。 */
+        val eyeOpen: Boolean = false,
+        /** 嘴巴是否张开（true=张嘴，false=闭嘴）。基于 106 点 MAR + 时序防抖判定。 */
+        val mouthOpen: Boolean = false
     ) {
         /** Face ID 唯一标识，不为 null。 */
         val faceId: String = faceId ?: ""

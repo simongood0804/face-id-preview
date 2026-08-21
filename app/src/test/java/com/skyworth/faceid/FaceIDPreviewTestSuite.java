@@ -1,6 +1,10 @@
 package com.skyworth.faceid;
 
+import com.skyworth.faceid.algorithm.EyeMouthCalibratorTest;
+import com.skyworth.faceid.algorithm.EyeMouthStateEstimatorTest;
+import com.skyworth.faceid.algorithm.EyeMouthStateMachineTest;
 import com.skyworth.faceid.algorithm.IFaceIDAlgorithmTest;
+import com.skyworth.faceid.algorithm.LandmarkIndexMappingTest;
 import com.skyworth.faceid.bus.BusQueueTest;
 import com.skyworth.faceid.bus.BusSubscriberTest;
 import com.skyworth.faceid.bus.HealthMonitorTest;
@@ -19,6 +23,10 @@ import org.junit.runners.Suite;
 @Suite.SuiteClasses({
         PipelineConfigTest.class,
         IFaceIDAlgorithmTest.class,
+        LandmarkIndexMappingTest.class,
+        EyeMouthStateEstimatorTest.class,
+        EyeMouthStateMachineTest.class,
+        EyeMouthCalibratorTest.class,
         BufferManagerTest.class,
         BusQueueTest.class,
         BusSubscriberTest.class,

@@ -23,6 +23,9 @@ object ServiceRegistry {
         /** 车机车速信号。 */
         VEHICLE_SPEED(10),
 
+        /** 驾驶门开关信号（触发眼/嘴阈值校准复位）。 */
+        DOOR_STATE(1),
+
         /** 算法结果（人脸/分心/头姿/识别）。 */
         ALGO_RESULT(20),
 

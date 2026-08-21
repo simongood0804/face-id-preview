@@ -25,6 +25,25 @@ object SignalTypes {
     }
 
     /**
+     * 驾驶门开关信号（作为眼/嘴阈值校准的复位触发，见 FACEP-010 §3.7.6）。
+     *
+     * 门信号**不参与眼嘴判定本身**，仅用于指示"可能换驾驶员"：门开时校准器
+     * 清空当前基准，进入重校窗口，重新采集新驾驶员的睁/闭眼、张/闭嘴基准。
+     *
+     * @property isOpen 驾驶门是否打开（true=开，提示可能换人）
+     * @property valid 门信号是否有效（false 表示连接失败/属性错误）
+     */
+    data class DoorState(
+        val isOpen: Boolean,
+        val valid: Boolean
+    ) {
+        companion object {
+            /** 无门信号数据时的默认值。 */
+            val INVALID = DoorState(isOpen = false, valid = false)
+        }
+    }
+
+    /**
      * 分心判定所需的算法输入摘要（仅提取状态机需要的最小字段）。
      *
      * 通过 [fromAlgorithmResult] 从算法结果构建，避免信号层直接依赖算法包内部结构。

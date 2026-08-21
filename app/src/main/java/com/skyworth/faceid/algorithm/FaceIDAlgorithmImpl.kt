@@ -96,6 +96,15 @@ class FaceIDAlgorithmImpl : IFaceIDAlgorithm {
     /** 录入管理器（延迟初始化）。 */
     private var mEnrollmentManager: FaceEnrollmentManager? = null
 
+    /** 眼睛/嘴巴单帧几何判定器（EAR/MAR → 连续开合度）。 */
+    private val mEyeMouthEstimator = EyeMouthStateEstimator()
+
+    /** 眼睛/嘴巴基础状态防抖器（多帧时序 → 稳定基础状态）。 */
+    private val mEyeMouthState = EyeMouthStateMachine()
+
+    /** 眼睛/嘴巴阈值动态校准器（维护睁/闭眼、张/闭嘴基准，动态换算滞回阈值）。 */
+    private val mEyeMouthCalibrator = EyeMouthCalibrator()
+
     init {
         for (i in 0 until MAX_FACES) {
             mAARResults[i] = FaceResult()
@@ -169,12 +178,12 @@ class FaceIDAlgorithmImpl : IFaceIDAlgorithm {
         val sdk = mFaceSDK
         if (!mInitialized || sdk == null) {
             Log.w(TAG, "processFrame: not initialized")
-            return IFaceIDAlgorithm.FaceIDResult(processedData = frameData)
+            return IFaceIDAlgorithm.FaceIDResult()
         }
 
         if (frameData == null) {
             Log.w(TAG, "processFrame: frameData is null")
-            return IFaceIDAlgorithm.FaceIDResult(processedData = frameData)
+            return IFaceIDAlgorithm.FaceIDResult()
         }
 
         return try {
@@ -185,7 +194,7 @@ class FaceIDAlgorithmImpl : IFaceIDAlgorithm {
 
             if (n < 0) {
                 Log.e(TAG, "processFrame: infer error=$n")
-                return IFaceIDAlgorithm.FaceIDResult(processedData = frameData)
+                return IFaceIDAlgorithm.FaceIDResult()
             }
 
             // 将检测结果坐标从裁剪空间修正回原图空间
@@ -249,6 +258,7 @@ class FaceIDAlgorithmImpl : IFaceIDAlgorithm {
                         (0 until 5).map { PointF(arr[it][0], arr[it][1]) }
                     } else null
                 }
+
                 // 转换 106 密集地标（float[106][2] → List<PointF>）
                 val lmList = r.landmarks?.let { arr ->
                     if (arr.size >= 106) {
@@ -256,22 +266,33 @@ class FaceIDAlgorithmImpl : IFaceIDAlgorithm {
                     } else null
                 }
 
-                Log.i(TAG, "headpose: pitch=%.1f yaw=%.1f roll=%.1f".format(
-                    r.headPitch, r.headYaw, r.headRoll))
-
-                Log.i(TAG,
-                    "gaze: valid=${r.gazeValid} yaw=${r.gazeYaw} pitch=${r.gazePitch} " +
-                    "distracted=${if (r.gazeDistracted > 0f) "Y" else "N"} " +
-                    "calib=${if (r.gazeCalibrated > 0f) "Y" else "N"} " +
-                    "zone=${r.zoneId} " +
-                    "sphereValid=${r.sphereValid} area3=${r.area3Hit} " +
-                    "sphereYaw=${r.sphereYaw} spherePitch=${r.spherePitch}")
+                // 眼睛睁闭 / 嘴巴开合判定（阶段四接入）：
+                // 106 点（Array<FloatArray>[106][2]）展平为 FloatArray(212) 供 Estimator 使用，
+                // 得到连续开合度后喂给状态防抖器，输出稳定基础状态。
+                val flatLandmarks: FloatArray? = r.landmarks?.let { arr ->
+                    if (arr.size >= 106) {
+                        val flat = FloatArray(106 * 2)
+                        for (p in 0 until 106) {
+                            flat[p * 2] = arr[p][0]
+                            flat[p * 2 + 1] = arr[p][1]
+                        }
+                        flat
+                    } else null
+                }
+                val eyeEst = flatLandmarks?.let { mEyeMouthEstimator.estimate(it) }
+                val eyeOpenRatio = eyeEst?.eyeOpenRatio ?: 1f
+                val mouthOpenRatio = eyeEst?.mouthOpenRatio ?: 0f
+                // 动态校准：更新基准，换算当前滞回阈值，喂给防抖器
+                val calibrated = mEyeMouthCalibrator.update(eyeOpenRatio, mouthOpenRatio)
+                mEyeMouthState.update(true, eyeOpenRatio, mouthOpenRatio, calibrated)
+                val eyeOpen = !mEyeMouthState.isEyeClosed()
+                val mouthOpen = mEyeMouthState.isMouthOpen()
 
                 IFaceIDAlgorithm.FaceIDResult(
                     faceId = faceId,
                     confidence = confidence,
                     faceRect = faceRect,
-                    processedData = frameData,
+                    // processedData 不再携带帧数据（渲染层不消费，避免每帧大数组拷贝）
                     isNewEnrollment = isNewEnroll,
                     keypoints = kpsList,
                     landmarks = lmList,
@@ -287,15 +308,19 @@ class FaceIDAlgorithmImpl : IFaceIDAlgorithm {
                     distractionHpScore = r.distractionHpScore,
                     distractionGazeScore = r.distractionGazeScore,
                     zoneId = r.zoneId,
-                    zoneConfidence = r.zoneConfidence
+                    zoneConfidence = r.zoneConfidence,
+                    eyeOpen = eyeOpen,
+                    mouthOpen = mouthOpen
                 )
             } else {
                 if (n == 0) Log.i(TAG, "  no face detected")
-                IFaceIDAlgorithm.FaceIDResult(processedData = frameData)
+                // 无人脸：重置眼嘴状态防抖器，输出默认（睁眼/闭嘴）
+                mEyeMouthState.update(false, 1f, 0f)
+                IFaceIDAlgorithm.FaceIDResult()
             }
         } catch (e: Exception) {
             Log.e(TAG, "processFrame: failed", e)
-            IFaceIDAlgorithm.FaceIDResult(processedData = frameData)
+            IFaceIDAlgorithm.FaceIDResult()
         }
     }
 
@@ -309,6 +334,18 @@ class FaceIDAlgorithmImpl : IFaceIDAlgorithm {
         mDumpExecutor.shutdownNow()
 
         Log.i(TAG, "release: done")
+    }
+
+    /**
+     * 驾驶门开关信号回调（FACEP-010 §3.7.6）：门开时触发眼/嘴阈值校准复位，
+     * 提示可能换驾驶员，清空当前基准进入重校窗口，重新采集新驾驶员基准。
+     *
+     * 由外部（门信号源 → 总线 → 处理器）在检测到驾驶门打开时调用。
+     */
+    fun onDoorOpened() {
+        Log.i(TAG, "onDoorOpened: door open, reset eye/mouth calibrator")
+        mEyeMouthCalibrator.reset()
+        mEyeMouthState.reset()
     }
 
     // ============================================================
@@ -769,6 +806,7 @@ class FaceIDAlgorithmImpl : IFaceIDAlgorithm {
         return value.equals("1", ignoreCase = true) ||
             value.equals("true", ignoreCase = true)
     }
+
 
     /**
      * 根据当前系统属性应用 dump 状态：

@@ -72,12 +72,6 @@ class FaceOverlayView @JvmOverloads constructor(
         style = Paint.Style.FILL
     }
 
-    /** 黄色密集地标画笔（106 点）。 */
-    private val mLandmarkPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        color = Color.YELLOW
-        style = Paint.Style.FILL
-    }
-
     /** 黄色裁剪框画笔（虚线描边）。 */
     private val mCropBoxPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         color = Color.YELLOW
@@ -237,10 +231,13 @@ class FaceOverlayView @JvmOverloads constructor(
                 bottom + poseHeight * 2 + 12, mBgPaint)
             canvas.drawText(gazeText, left + 4, bottom + poseHeight * 2 + 7, mPosePaint)
 
-            // 绘制 106 密集地标（黄色小点）
-            face.denseLandmarks?.forEach { pt ->
-                canvas.drawCircle(pt.x * scaleX, pt.y * scaleY, 1f, mLandmarkPaint)
-            }
+            // 眼睛/嘴巴状态（小字，视线下方）
+            val emText = "E:${if (face.eyeOpen) "OPEN" else "CLOSED"}  " +
+                    "M:${if (face.mouthOpen) "OPEN" else "CLOSED"}"
+            val emWidth = mPosePaint.measureText(emText)
+            canvas.drawRect(left, bottom + poseHeight * 2 + 18, left + emWidth + 8,
+                bottom + poseHeight * 3 + 22, mBgPaint)
+            canvas.drawText(emText, left + 4, bottom + poseHeight * 3 + 17, mPosePaint)
 
             // 绘制 5 关键点（紫色）
             face.keypoints?.forEach { pt ->
@@ -479,7 +476,7 @@ class FaceOverlayView @JvmOverloads constructor(
         val label: String? = null,
         /** 5 个面部关键点（蓝色）。 */
         val keypoints: List<PointF>? = null,
-        /** 106 个密集地标（黄色）。 */
+        /** 106 个密集地标（当前不绘制，保留字段兼容）。 */
         val denseLandmarks: List<PointF>? = null,
         /** 头部姿态角（度）。 */
         val pitch: Float = 0f,
@@ -496,7 +493,11 @@ class FaceOverlayView @JvmOverloads constructor(
         /** 是否分心（1=分心）。 */
         val gazeDistracted: Float = 0f,
         /** DMS 分区 ID。 */
-        val zoneId: Float = 0f
+        val zoneId: Float = 0f,
+        /** 眼睛是否睁开（true=睁眼，false=闭眼）。 */
+        val eyeOpen: Boolean = true,
+        /** 嘴巴是否张开（true=张嘴，false=闭嘴）。 */
+        val mouthOpen: Boolean = false
     )
 
     enum class FaceType { DETECTED, SPOOF }

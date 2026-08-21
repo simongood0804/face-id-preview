@@ -553,7 +553,9 @@ class PreviewActivity : AppCompatActivity() {
                         gazePitch = result.gazePitch,
                         gazeCalibrated = result.gazeCalibrated,
                         gazeDistracted = if (distractActive) 1f else 0f,
-                        zoneId = result.zoneId
+                        zoneId = result.zoneId,
+                        eyeOpen = result.eyeOpen,
+                        mouthOpen = result.mouthOpen
                     )),
                     frameW, frameH
                 )
