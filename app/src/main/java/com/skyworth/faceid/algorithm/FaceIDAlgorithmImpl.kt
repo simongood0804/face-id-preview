@@ -380,10 +380,21 @@ class FaceIDAlgorithmImpl : IFaceIDAlgorithm {
                     Log.d(TAG, "[EYE-CAL] aperture=%.4f ear=%.4f faceW=%.1f ratio=%.2f mar=%.4f mouthRatio=%.2f"
                         .format(eyeEst.aperture, eyeEst.ear, eyeEst.faceWidth, eyeEst.eyeOpenRatio, eyeEst.mar, eyeEst.mouthOpenRatio))
                 }
-                val eyeOpenRatio = eyeEst?.eyeOpenRatio ?: 1f
-                val mouthOpenRatio = eyeEst?.mouthOpenRatio ?: 0f
-                // 动态校准：更新基准，换算当前滞回阈值，喂给防抖器
-                val calibrated = mEyeMouthCalibrator.update(eyeOpenRatio, mouthOpenRatio)
+                // 有效估计：估计器 valid=true（眼睑区域齐全且几何可算）。缺失/无效帧不更新校准基准，
+                // 避免 0 值（缺失哨兵）污染分位数窗口导致闭眼/张嘴判定失效。
+                val validEst = eyeEst?.takeIf { it.valid }
+                if (validEst != null) {
+                    // 动态校准：只跟踪量纲正确、数据真实的帧——
+                    // - faceWidth>0：aperture 主路径（睑距/脸宽）；外眼角缺失时估计器回退 EAR，
+                    //   量纲不同（≈0.2~0.5 vs aperture 0.02~0.12），混入窗口会拉高高位基准、
+                    //   把完全睁眼归一化压低导致误判闭眼，此类帧跳过眼睛轴；
+                    // - mar>0：嘴巴区域缺失时估计器置 0（缺失哨兵），跳过避免把低位基准拉向 0。
+                    if (validEst.faceWidth > 0f) mEyeMouthCalibrator.updateEye(validEst.aperture)
+                    if (validEst.mar > 0f) mEyeMouthCalibrator.updateMouth(validEst.mar)
+                }
+                val calibrated = mEyeMouthCalibrator.thresholds()
+                val eyeOpenRatio = validEst?.let { mEyeMouthCalibrator.normalizeEye(it.aperture) } ?: 1f
+                val mouthOpenRatio = validEst?.let { mEyeMouthCalibrator.normalizeMouth(it.mar) } ?: 0f
                 mEyeMouthState.update(true, eyeOpenRatio, mouthOpenRatio, calibrated)
                 val eyeOpen = !mEyeMouthState.isEyeClosed()
                 val mouthOpen = mEyeMouthState.isMouthOpen()

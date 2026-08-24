@@ -55,9 +55,9 @@ class EyeMouthStateMachine @JvmOverloads constructor(
         const val DEFAULT_EYE_CLOSE_RATIO = 0.10f
         /** 眼睛睁眼候选默认阈值（退出闭眼的开合度门槛）。 */
         const val DEFAULT_EYE_OPEN_RATIO = 0.30f
-        /** 嘴巴张嘴候选默认阈值（基于手动标定张嘴基准，高于此判张嘴）。 */
+        /** 嘴巴张嘴候选默认阈值（基于手动标定张嘴基准，高于此判张嘴；须与 [EyeMouthCalibrator.MOUTH_OPEN_RATIO] 一致）。 */
         const val DEFAULT_MOUTH_OPEN_RATIO = 0.60f
-        /** 嘴巴闭嘴候选默认阈值（基于手动标定闭嘴基准，低于此判闭嘴）。 */
+        /** 嘴巴闭嘴候选默认阈值（基于手动标定闭嘴基准，低于此判闭嘴；须与 [EyeMouthCalibrator.MOUTH_CLOSE_RATIO] 一致）。 */
         const val DEFAULT_MOUTH_CLOSE_RATIO = 0.35f
         /** 默认眼睛确认时长（ms）。 */
         const val DEFAULT_CONFIRM_MS = 80L
@@ -109,10 +109,13 @@ class EyeMouthStateMachine @JvmOverloads constructor(
         eyeState.update(eyeCloseCandidate, eyeOpenCandidate)
 
         // 嘴巴：开合度大 = 张嘴候选；开合度小 = 闭嘴候选
-        // 嘴巴阈值采用固定值（基于手动标定的闭嘴/张嘴基准），不随动态校准漂移，
-        // 以保证张嘴/闭嘴判定的稳定性与防抖。
-        val mouthOpenCandidate = mouthOpenRatio >= this.mouthOpenRatio
-        val mouthCloseCandidate = mouthOpenRatio <= this.mouthCloseRatio
+        // 嘴巴阈值固定（默认 0.60/0.35，基于手动标定的张嘴/闭嘴基准），不随动态校准漂移，
+        // 以保证张嘴/闭嘴判定的稳定性与防抖；EyeMouthCalibrator 恒输出同值（MOUTH_*_RATIO），
+        // 因此动态阈值字段与固定值等价，取用后行为不变（消除字段"死代码"误导）。
+        val mouthOpenTh = thresholds?.mouthOpenRatio ?: this.mouthOpenRatio
+        val mouthCloseTh = thresholds?.mouthCloseRatio ?: this.mouthCloseRatio
+        val mouthOpenCandidate = mouthOpenRatio >= mouthOpenTh
+        val mouthCloseCandidate = mouthOpenRatio <= mouthCloseTh
         mouthState.update(mouthOpenCandidate, mouthCloseCandidate)
     }
 

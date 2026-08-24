@@ -7,6 +7,8 @@
 > **更新（2026-08-24）**：AAR 算法升级，地标模型由 `2d106det_int8.dlc`（106 点）切换为 `pipnet68_int8.dlc`（**PIPNet 68 点 / 300W 标准**）。`LandmarkIndexMapping` 默认映射已重写为 68 点（见 **§2.5，当前生效**）；原 §2.4 为 v3.2 及以前的 106 点历史定义。其余判定逻辑（语义区域 + 索引映射解耦）不变。
 >
 > **更新（2026-08-24，随设计方案 v3.4 落地）**：眼睛开合度由经典 EAR（分母=单眼角距）改为**脸宽归一化 aperture（睑距/双眼外眼角距离，脸宽代理）**，消除"近处睁眼、远处闭眼"的距离漂移；归一化基准 0.10（睁眼）/ 0.02（闭眼残差）。闭眼判定阈值调整：静态/默认 `CLOSE_RATIO` 演进 `0.18 → 0.12 → 0.10 → 0.08 → **0.10**`（0.08 时实车反馈过难触发，回退放宽）、动态下界因子 0.35 → **0.10**；睁眼候选默认阈值放宽 `0.35 → **0.30**`（退出闭眼更容易）、确认时长、嘴巴阈值不变。**退出方向改为不对称防抖**：状态机闭眼/张嘴确认后，打开候选满足即即时解除（不再要求连续确认）；疲劳告警退出用短清除阈值（500ms，见设计方案 §18.6）。详见 §3.5/§3.7.2/§3.7.6 与设计方案 §18.5/§18.6。
+>
+> **更新（2026-08-24，随设计方案 v3.5 落地，§3.7.6 修订）**：校准器改为跟踪**未归一化 aperture/MAR（真实几何量）**——`update(eyeAperture, mouthMar)` 不再接收 0~1 ratio，阈值在原始量纲计算；新增 `normalizeEye/normalizeMouth`，用该驾驶员**实测高/低基准**（分位数 + EWMA）做归一化端点，完全睁眼恒映射 ≈1.0，取代静态 0.10/0.02 端点错配导致的饱和失真（修复"睁大眼睛仍判闭眼"）；滞回阈值经同一基准归一化后等价于因子位置（上界 0.70 / 下界 0.10），并增加**单态保护**（持续闭眼/闭嘴时保留睁开记忆，避免区间塌缩把残差"正常化"）。同日修复两类隐患：**数据真实性防线**（`valid`/`faceWidth>0`/`mar>0` 分轴喂校准，缺失 0 哨兵与 NaN 一律忽略，防 EAR 回退帧量纲混入）；**阈值语义统一**（眼睛阈值恒为因子位置、校准激活无 0.30→0.70 跳变；嘴巴阈值固定 0.60/0.35 不随动态校准漂移，`CalibratedThresholds` 全部字段诚实生效）。详见设计方案 §18.7。
 
 ---
 
@@ -380,6 +382,8 @@ OPEN_RATIO   = REF_EYE_CLOSED_APERTURE + (REF_EYE_OPEN_APERTURE - REF_EYE_CLOSED
 ```
 即阈值随基准量整体平移/缩放，从而适配不同人、不同时段。
 
+> **v3.5 量纲修订（当前生效）**：上式中的基准量必须是**未归一化 aperture/MAR**（本提案设计初衷即如此；v3.4 实现曾误在已归一化 0~1 开合度上做分位数跟踪，导致阈值被顶到 ~0.65 且受静态基准错配的饱和失真影响，见设计方案 §18.7）。v3.5 起校准器跟踪原始量纲，且输入开合度经 `normalizeEye/normalizeMouth`（同一 low/high 基准）归一化——因此上式阈值经归一化后**等价于因子本身**（下界 0.10 / 上界 0.70），`CalibratedThresholds` **恒输出眼睛因子**（样本不足阶段输入走静态端点归一化、输出同为因子，校准激活无跳变）；**嘴巴阈值固定**（张嘴 0.60 / 闭嘴 0.35，状态机设计为不随动态校准漂移，`mouth*` 字段输出同值并生效）。
+
 #### B. 校准的两条路径
 
 **路径 1：初始化/复位校准（结合驾驶门开关信号）**
@@ -408,14 +412,18 @@ OPEN_RATIO   = REF_EYE_CLOSED_APERTURE + (REF_EYE_OPEN_APERTURE - REF_EYE_CLOSED
 class EyeMouthCalibrator(
     /** 复位/重校触发回调（驾驶门开时调用，清空基准进入重校）。 */
     fun reset()
-    /** 更新一帧，内部做滑动分位数跟踪，返回当前换算好的防抖阈值。 */
-    fun update(eyeOpenRatio: Float, mouthOpenRatio: Float): CalibratedThresholds
+    /** 更新一帧（v3.5 起收**未归一化** aperture/MAR），内部做滑动分位数跟踪，返回当前换算好的防抖阈值。 */
+    fun update(eyeAperture: Float, mouthMar: Float): CalibratedThresholds
+    /** 用当前个人高/低基准把原始 aperture 归一化为 0~1 开合度（v3.5 新增）。 */
+    fun normalizeEye(aperture: Float): Float
+    /** 用当前个人高/低基准把原始 MAR 归一化为 0~1 开合度（v3.5 新增）。 */
+    fun normalizeMouth(mar: Float): Float
 )
 
 /** 动态换算后的防抖阈值（喂给 EyeMouthStateMachine 构造参数）。 */
 data class CalibratedThresholds(
-    val eyeCloseRatio: Float,   // CLOSE_RATIO（滞回下界）
-    val eyeOpenRatio: Float,    // OPEN_RATIO（滞回上界）
+    val eyeCloseRatio: Float,   // CLOSE_RATIO（滞回下界；v3.5 起=下界因子 0.10）
+    val eyeOpenRatio: Float,    // OPEN_RATIO（滞回上界；v3.5 起=上界因子 0.70）
     val mouthCloseRatio: Float,
     val mouthOpenRatio: Float
 )
