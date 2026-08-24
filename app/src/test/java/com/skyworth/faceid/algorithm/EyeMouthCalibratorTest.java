@@ -19,8 +19,10 @@ public class EyeMouthCalibratorTest {
     private static final float EPS = 0.01f;
 
     /** 默认阈值（对应 CalibratedThresholds.DEFAULT）。 */
-    private static final float DEF_CLOSE = 0.18f;
-    private static final float DEF_OPEN = 0.35f;
+    private static final float DEF_EYE_CLOSE = 0.10f;
+    private static final float DEF_MOUTH_CLOSE = 0.18f;
+    private static final float DEF_EYE_OPEN = 0.30f;
+    private static final float DEF_MOUTH_OPEN = 0.35f;
 
     // ---- 样本不足时用默认阈值 ----
 
@@ -32,10 +34,10 @@ public class EyeMouthCalibratorTest {
             cal.update(0.3f, 0.3f);
         }
         EyeMouthCalibrator.CalibratedThresholds t = cal.thresholds();
-        assertEquals(DEF_CLOSE, t.getEyeCloseRatio(), EPS);
-        assertEquals(DEF_OPEN, t.getEyeOpenRatio(), EPS);
-        assertEquals(DEF_CLOSE, t.getMouthCloseRatio(), EPS);
-        assertEquals(DEF_OPEN, t.getMouthOpenRatio(), EPS);
+        assertEquals(DEF_EYE_CLOSE, t.getEyeCloseRatio(), EPS);
+        assertEquals(DEF_EYE_OPEN, t.getEyeOpenRatio(), EPS);
+        assertEquals(DEF_MOUTH_CLOSE, t.getMouthCloseRatio(), EPS);
+        assertEquals(DEF_MOUTH_OPEN, t.getMouthOpenRatio(), EPS);
     }
 
     // ---- 样本足够后建立基准，阈值自适应 ----
@@ -49,10 +51,10 @@ public class EyeMouthCalibratorTest {
         }
         EyeMouthCalibrator.CalibratedThresholds t = cal.thresholds();
         // 高/低基准都应显著低于默认睁眼/闭眼阈值
-        assertTrue("长期闭眼后睁眼阈值应低于默认 0.35",
-                t.getEyeOpenRatio() < DEF_OPEN);
-        assertTrue("长期闭眼后闭眼阈值应低于默认 0.18",
-                t.getEyeCloseRatio() < DEF_CLOSE);
+        assertTrue("长期闭眼后睁眼阈值应低于默认 0.30",
+                t.getEyeOpenRatio() < DEF_EYE_OPEN);
+        assertTrue("长期闭眼后闭眼阈值应低于默认 0.10",
+                t.getEyeCloseRatio() < DEF_EYE_CLOSE);
     }
 
     @Test
@@ -94,13 +96,13 @@ public class EyeMouthCalibratorTest {
             cal.update(0.05f, 0.1f);
         }
         EyeMouthCalibrator.CalibratedThresholds before = cal.thresholds();
-        assertTrue(before.getEyeOpenRatio() < DEF_OPEN);
+        assertTrue(before.getEyeOpenRatio() < DEF_EYE_OPEN);
 
         // 复位后回默认
         cal.reset();
         EyeMouthCalibrator.CalibratedThresholds after = cal.thresholds();
-        assertEquals(DEF_CLOSE, after.getEyeCloseRatio(), EPS);
-        assertEquals(DEF_OPEN, after.getEyeOpenRatio(), EPS);
+        assertEquals(DEF_EYE_CLOSE, after.getEyeCloseRatio(), EPS);
+        assertEquals(DEF_EYE_OPEN, after.getEyeOpenRatio(), EPS);
     }
 
     // ---- reset 后重新校准 ----

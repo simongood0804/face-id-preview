@@ -47,8 +47,8 @@ class EyeMouthCalibrator @JvmOverloads constructor(
         const val DEFAULT_OPEN_QUANTILE = 0.90f
         /** 默认低位分位数。 */
         const val DEFAULT_CLOSE_QUANTILE = 0.10f
-        /** 默认滞回下界比例。 */
-        const val DEFAULT_CLOSE_RATIO_FACTOR = 0.35f
+        /** 默认滞回下界比例（数值越小，闭眼候选阈值越贴近低位基准、判定越严格）。 */
+        const val DEFAULT_CLOSE_RATIO_FACTOR = 0.10f
         /** 默认滞回上界比例。 */
         const val DEFAULT_OPEN_RATIO_FACTOR = 0.70f
         /** 建立基准所需的最少样本数（少于则用默认阈值）。 */
@@ -70,8 +70,8 @@ class EyeMouthCalibrator @JvmOverloads constructor(
             /** 默认阈值（未校准时使用，对应 StateMachine 默认值）。 */
             @JvmField
             val DEFAULT = CalibratedThresholds(
-                eyeCloseRatio = 0.18f,
-                eyeOpenRatio = 0.35f,
+                eyeCloseRatio = 0.10f,
+                eyeOpenRatio = 0.30f,
                 mouthCloseRatio = 0.18f,
                 mouthOpenRatio = 0.35f
             )

@@ -130,7 +130,7 @@ class FaceIDAlgorithmImpl : IFaceIDAlgorithm {
     private val REQUIRED_MODEL_FILES = listOf(
         "det_500m_int8.dlc",
         "face_antispoof_int8.dlc",
-        "2d106det_int8.dlc",
+        "pipnet68_int8.dlc",
         "w600k_mbf_int8.dlc",
         "hopenet_mbv2_int8.dlc",
         "pfld_eye_int8.dlc",
@@ -300,10 +300,10 @@ class FaceIDAlgorithmImpl : IFaceIDAlgorithm {
                             kp[p] = floatArrayOf(kp[p][0] + mCropOffsetX, kp[p][1] + mCropOffsetY)
                         }
                     }
-                    // 106 密集地标
+                    // 68 密集地标
                     if (r.landmarks != null) {
                         val lm = r.landmarks
-                        for (p in 0 until 106) {
+                        for (p in 0 until 68) {
                             lm[p] = floatArrayOf(lm[p][0] + mCropOffsetX, lm[p][1] + mCropOffsetY)
                         }
                     }
@@ -354,20 +354,20 @@ class FaceIDAlgorithmImpl : IFaceIDAlgorithm {
                     } else null
                 }
 
-                // 转换 106 密集地标（float[106][2] → List<PointF>）
+                // 转换 68 密集地标（float[68][2] → List<PointF>）
                 val lmList = r.landmarks?.let { arr ->
-                    if (arr.size >= 106) {
-                        (0 until 106).map { PointF(arr[it][0], arr[it][1]) }
+                    if (arr.size >= 68) {
+                        (0 until 68).map { PointF(arr[it][0], arr[it][1]) }
                     } else null
                 }
 
                 // 眼睛睁闭 / 嘴巴开合判定（阶段四接入）：
-                // 106 点（Array<FloatArray>[106][2]）展平为 FloatArray(212) 供 Estimator 使用，
+                // 68 点（Array<FloatArray>[68][2]）展平为 FloatArray(136) 供 Estimator 使用，
                 // 得到连续开合度后喂给状态防抖器，输出稳定基础状态。
                 val flatLandmarks: FloatArray? = r.landmarks?.let { arr ->
-                    if (arr.size >= 106) {
-                        val flat = FloatArray(106 * 2)
-                        for (p in 0 until 106) {
+                    if (arr.size >= 68) {
+                        val flat = FloatArray(68 * 2)
+                        for (p in 0 until 68) {
                             flat[p * 2] = arr[p][0]
                             flat[p * 2 + 1] = arr[p][1]
                         }
@@ -375,6 +375,11 @@ class FaceIDAlgorithmImpl : IFaceIDAlgorithm {
                     } else null
                 }
                 val eyeEst = flatLandmarks?.let { mEyeMouthEstimator.estimate(it) }
+                // [EYE-CAL] 临时调试：输出每帧 aperture（睑距/脸宽）、EAR 与归一化开合度，用于重新标定阈值（采集后移除）
+                if (eyeEst != null) {
+                    Log.d(TAG, "[EYE-CAL] aperture=%.4f ear=%.4f faceW=%.1f ratio=%.2f mar=%.4f mouthRatio=%.2f"
+                        .format(eyeEst.aperture, eyeEst.ear, eyeEst.faceWidth, eyeEst.eyeOpenRatio, eyeEst.mar, eyeEst.mouthOpenRatio))
+                }
                 val eyeOpenRatio = eyeEst?.eyeOpenRatio ?: 1f
                 val mouthOpenRatio = eyeEst?.mouthOpenRatio ?: 0f
                 // 动态校准：更新基准，换算当前滞回阈值，喂给防抖器

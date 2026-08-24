@@ -107,14 +107,9 @@ class SignalDispatcher(
      */
     fun processAlgorithmResult(result: IFaceIDAlgorithm.FaceIDResult) {
         val input = distractionExtractor(result)
-        val distracted: Boolean
-        if (input.hasFace) {
-            distracted = stateMachine.update(input, currentSpeedKmh)
-        } else {
-            // 无人脸：重置分心状态
-            stateMachine.reset()
-            distracted = false
-        }
+        // 无人脸由状态机内部按确认时长延时复位（防算法短暂漏检误消除信号），
+        // 因此统一走 update，不再在此处立即 reset。
+        val distracted = stateMachine.update(input, currentSpeedKmh)
         lastDistraction = SignalTypes.DistractionOutput(
             distracted = distracted,
             activeThresholdMs = stateMachine.currentTriggerMs(),

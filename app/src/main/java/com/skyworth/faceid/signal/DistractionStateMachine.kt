@@ -6,7 +6,9 @@ package com.skyworth.faceid.signal
  * 算法输出的 gazeDistracted 为单帧结果，存在误检抖动。这里按"持续时间"累计判定
  * （而非帧数，因单槽替换+跳帧导致帧率不稳定）：
  *  - 连续分心达到当前车速对应的触发阈值 → 触发分心；
- *  - 已触发后，连续非分心达到解除阈值 → 解除分心。
+ *  - 已触发后，连续非分心达到解除阈值 → 解除分心；
+ *  - 无人脸：不立即复位（算法可能因漏检/遮挡短暂丢失人脸），
+ *    连续无人脸达到 [noFaceResetMs] 才真正复位（防误消除信号）。
  *
  * 触发阈值按车速分档（GSR ADDW (EU) 2023/2590）：
  *  - 无车速数据 或 ≥50km/h → 快速档（1.5s）
@@ -18,7 +20,9 @@ package com.skyworth.faceid.signal
  */
 class DistractionStateMachine(
     /** 单调时钟（ms），默认 elapsedRealtime；可注入便于测试。 */
-    private val clockMs: () -> Long = { android.os.SystemClock.elapsedRealtime() }
+    private val clockMs: () -> Long = { android.os.SystemClock.elapsedRealtime() },
+    /** 无人脸复位确认时长（ms）：连续无人脸达到该时长才复位，防单帧漏检误复位。 */
+    private val noFaceResetMs: Long = NO_FACE_RESET_MS
 ) {
 
     companion object {
@@ -30,6 +34,9 @@ class DistractionStateMachine(
 
         /** 分心解除阈值：0.5s。 */
         const val CLEAR_MS = 500L
+
+        /** 无人脸复位确认时长（ms）：连续无人脸达到该时长才复位（防误检）。 */
+        const val NO_FACE_RESET_MS = 3000L
 
         /** 分档车速阈值（km/h）。 */
         const val SPEED_FAST_THRESHOLD_KMH = 50f
@@ -44,6 +51,12 @@ class DistractionStateMachine(
     /** 最近一次状态累积起始时间戳。 */
     private var accumStart = 0L
 
+    /** 无人脸确认计时是否已开始。 */
+    private var noFaceTimingActive = false
+
+    /** 无人脸确认计时起始时间戳。 */
+    private var noFaceAccumStart = 0L
+
     /** 当前生效的触发阈值（ms）。 */
     private var triggerMs = TRIGGER_MS_FAST
 
@@ -52,6 +65,9 @@ class DistractionStateMachine(
 
     /**
      * 更新分心状态。
+     *
+     * 无人脸时不会立即复位，需连续无人脸达到 [noFaceResetMs] 才复位
+     * （期间返回当前分心状态，防止算法短暂漏检误消除信号）。
      *
      * @param hasFace 是否检测到人脸
      * @param gazeDistracted 单帧分心标志（>0 表示分心）
@@ -65,6 +81,24 @@ class DistractionStateMachine(
     ): Boolean {
         val now = clockMs()
         val distracted = gazeDistracted > 0f
+
+        // 无人脸：不立即复位（算法可能因漏检/遮挡短暂丢失人脸），
+        // 连续无人脸达到 noFaceResetMs 才真正复位，期间保持当前分心状态。
+        if (!hasFace) {
+            if (!noFaceTimingActive) {
+                noFaceTimingActive = true
+                noFaceAccumStart = now
+            } else if (now - noFaceAccumStart >= noFaceResetMs) {
+                noFaceTimingActive = false
+                noFaceAccumStart = 0L
+                distractActive = false
+                resetTiming()
+            }
+            return distractActive
+        }
+        // 有人脸：清除无人脸确认计时
+        noFaceTimingActive = false
+        noFaceAccumStart = 0L
 
         // 无车速数据(<0)或高速(≥50)用快速档，低速用慢速档
         triggerMs = if (vehicleSpeedKmh >= 0f && vehicleSpeedKmh < SPEED_FAST_THRESHOLD_KMH) {
@@ -115,9 +149,12 @@ class DistractionStateMachine(
         update(input.hasFace, input.gazeDistracted, vehicleSpeedKmh)
 
     /**
-     * 重置分心状态（无人脸时调用）。
+     * 强制重置分心状态（无人脸复位由 [update] 内部按确认时长自动完成；
+     * 此方法供外部需要立即复位时调用）。
      */
     fun reset() {
+        noFaceTimingActive = false
+        noFaceAccumStart = 0L
         distractActive = false
         resetTiming()
     }

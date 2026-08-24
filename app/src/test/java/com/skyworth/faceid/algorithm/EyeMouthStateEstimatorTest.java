@@ -19,28 +19,28 @@ public class EyeMouthStateEstimatorTest {
 
     private EyeMouthStateEstimator mEstimator;
 
-    /** 默认参考量：睁眼 EAR=0.25、闭眼残差 EAR=0.05；张嘴 MAR=0.5、闭嘴残差 MAR=0.05。 */
+    /** 默认参考量：睁眼 aperture（睑距/脸宽）=0.10、闭眼残差=0.02；张嘴 MAR=0.5、闭嘴残差 MAR=0.05。 */
     @Before
     public void setUp() {
         mEstimator = new EyeMouthStateEstimator();
     }
 
-    /** 构造 106 点坐标（展平 FloatArray）。仅设置眼睛/嘴巴相关点。 */
+    /** 构造 68 点坐标（展平 FloatArray）。仅设置眼睛/嘴巴相关点。 */
     private float[] landmarks(int eyeGap, int mouthGap) {
-        float[] lm = new float[212];
-        // 眼睛：眼宽 100（眼角 x=100、眼尾 x=0），上睑 y=10，下睑 y=10+eyeGap
-        // 左眼
-        set(lm, 35, 0f, 10f); set(lm, 39, 100f, 10f);
-        set(lm, 42, 25f, 10f); set(lm, 40, 50f, 10f); set(lm, 41, 75f, 10f);
-        set(lm, 36, 25f, 10f + eyeGap); set(lm, 33, 50f, 10f + eyeGap); set(lm, 37, 75f, 10f + eyeGap);
-        // 右眼
-        set(lm, 93, 0f, 10f); set(lm, 89, 100f, 10f);
-        set(lm, 95, 25f, 10f); set(lm, 94, 50f, 10f); set(lm, 96, 75f, 10f);
-        set(lm, 91, 25f, 10f + eyeGap); set(lm, 87, 50f, 10f + eyeGap); set(lm, 90, 75f, 10f + eyeGap);
+        float[] lm = new float[136];
+        // 眼睛：眼宽 100（外眼角 x=0、内眼角 x=100），上睑 y=10，下睑 y=10+eyeGap
+        // 左眼（观察者左侧，300W 36~41）：眼尾 36、眼角 39；上睑 37/38、下睑 41/40
+        set(lm, 36, 0f, 10f); set(lm, 39, 100f, 10f);
+        set(lm, 37, 25f, 10f); set(lm, 38, 75f, 10f);
+        set(lm, 41, 25f, 10f + eyeGap); set(lm, 40, 75f, 10f + eyeGap);
+        // 右眼（观察者右侧，300W 42~47）：眼尾 45、眼角 42；上睑 43/44、下睑 47/46
+        set(lm, 45, 100f, 10f); set(lm, 42, 0f, 10f);
+        set(lm, 43, 25f, 10f); set(lm, 44, 75f, 10f);
+        set(lm, 47, 25f, 10f + eyeGap); set(lm, 46, 75f, 10f + eyeGap);
         // 嘴巴：嘴角 x=0/80，上唇中央 y=20，下唇中央 y=20+mouthGap
-        set(lm, 61, 0f, 20f); set(lm, 52, 80f, 20f);
-        set(lm, 71, 40f, 20f);
-        set(lm, 53, 40f, 20f + mouthGap);
+        set(lm, 48, 0f, 20f); set(lm, 54, 80f, 20f);
+        set(lm, 51, 40f, 20f);
+        set(lm, 57, 40f, 20f + mouthGap);
         return lm;
     }
 
@@ -55,7 +55,7 @@ public class EyeMouthStateEstimatorTest {
 
     @Test
     public void testEyeOpen() {
-        // 睁眼：上下睑纵向 30 → 单眼 EAR=0.3，均值 0.3 ≥ 参考 0.25 → ratio=1.0
+        // 睁眼：上下睑纵向 30 → aperture=30/脸宽100=0.30 ≥ 参考 0.10 → ratio=1.0
         EyeMouthStateEstimator.EyeMouthEstimate r =
                 mEstimator.estimate(landmarks(30, 2));
         assertTrue(r.getValid());
@@ -64,7 +64,7 @@ public class EyeMouthStateEstimatorTest {
 
     @Test
     public void testEyeClosedWithResidual() {
-        // 闭眼：上下睑纵向 2（残差不完全闭合）→ EAR=0.02 ≤ 闭眼基线 0.05 → ratio=0.0
+        // 闭眼：上下睑纵向 2（残差不完全闭合）→ aperture=0.02 ≤ 闭眼基线 0.02 → ratio=0.0
         EyeMouthStateEstimator.EyeMouthEstimate r =
                 mEstimator.estimate(landmarks(2, 2));
         assertTrue(r.getValid());
@@ -113,16 +113,16 @@ public class EyeMouthStateEstimatorTest {
 
     @Test
     public void testEyeSemiOpenRatioBetween() {
-        // 上下睑纵向 15 → 单眼 EAR=0.15，均值 0.15
-        // ratio = (0.15-0.05)/(0.25-0.05) = 0.5
+        // 上下睑纵向 6 → aperture=6/脸宽100=0.06
+        // ratio = (0.06-0.02)/(0.10-0.02) = 0.5
         EyeMouthStateEstimator.EyeMouthEstimate r =
-                mEstimator.estimate(landmarks(15, 2));
+                mEstimator.estimate(landmarks(6, 2));
         assertEquals("半睁眼开合度应≈0.5", 0.5f, r.getEyeOpenRatio(), 0.03f);
     }
 
     @Test
     public void testEyeRatioClamped() {
-        // 超睁眼：纵向 100 → EAR=1.0 >> 参考，应截断为 1.0
+        // 超睁眼：纵向 100 → aperture=1.0 >> 参考，应截断为 1.0
         EyeMouthStateEstimator.EyeMouthEstimate r =
                 mEstimator.estimate(landmarks(100, 2));
         assertEquals("开合度应截断到 1.0", 1.0f, r.getEyeOpenRatio(), EPS);
@@ -134,7 +134,7 @@ public class EyeMouthStateEstimatorTest {
     public void testTooShortInputInvalid() {
         float[] shortLm = new float[100];
         EyeMouthStateEstimator.EyeMouthEstimate r = mEstimator.estimate(shortLm);
-        assertFalse("长度不足 212 应无效", r.getValid());
+        assertFalse("长度不足 136 应无效", r.getValid());
         assertEquals("无效时睁眼默认 1.0", 1.0f, r.getEyeOpenRatio(), EPS);
         assertEquals("无效时闭嘴默认 0.0", 0.0f, r.getMouthOpenRatio(), EPS);
     }
@@ -143,14 +143,14 @@ public class EyeMouthStateEstimatorTest {
     public void testNullMappingRegionInvalid() {
         // 自定义映射：仅左眼，缺右眼 → 应回退到左眼 EAR，仍有效
         java.util.Map<LandmarkRegion, int[]> custom = new java.util.HashMap<>();
-        custom.put(LandmarkRegion.LEFT_EYE_UPPER_LID, new int[]{42, 40, 41});
-        custom.put(LandmarkRegion.LEFT_EYE_LOWER_LID, new int[]{36, 33, 37});
-        custom.put(LandmarkRegion.LEFT_EYE_OUTER_CANTHUS, new int[]{35});
+        custom.put(LandmarkRegion.LEFT_EYE_UPPER_LID, new int[]{37, 38});
+        custom.put(LandmarkRegion.LEFT_EYE_LOWER_LID, new int[]{41, 40});
+        custom.put(LandmarkRegion.LEFT_EYE_OUTER_CANTHUS, new int[]{36});
         custom.put(LandmarkRegion.LEFT_EYE_INNER_CANTHUS, new int[]{39});
-        custom.put(LandmarkRegion.MOUTH_UPPER_LIP, new int[]{71});
-        custom.put(LandmarkRegion.MOUTH_LOWER_LIP, new int[]{53});
-        custom.put(LandmarkRegion.MOUTH_LEFT_CORNER, new int[]{61});
-        custom.put(LandmarkRegion.MOUTH_RIGHT_CORNER, new int[]{52});
+        custom.put(LandmarkRegion.MOUTH_UPPER_LIP, new int[]{51});
+        custom.put(LandmarkRegion.MOUTH_LOWER_LIP, new int[]{57});
+        custom.put(LandmarkRegion.MOUTH_LEFT_CORNER, new int[]{48});
+        custom.put(LandmarkRegion.MOUTH_RIGHT_CORNER, new int[]{54});
         EyeMouthStateEstimator est = new EyeMouthStateEstimator(
                 new LandmarkIndexMapping(custom));
         EyeMouthStateEstimator.EyeMouthEstimate r = est.estimate(landmarks(30, 40));
@@ -162,7 +162,7 @@ public class EyeMouthStateEstimatorTest {
 
     @Test
     public void testCustomReferences() {
-        // 参考睁眼 EAR=0.3、闭眼残差 0.1：纵向 30 → EAR=0.3 → ratio=1.0
+        // 参考睁眼 aperture=0.3、闭眼残差 0.1：纵向 30 → aperture=30/100=0.3 → ratio=1.0
         EyeMouthStateEstimator est = new EyeMouthStateEstimator(
                 new LandmarkIndexMapping(), 0.3f, 0.1f, 0.5f, 0.05f);
         EyeMouthStateEstimator.EyeMouthEstimate r = est.estimate(landmarks(30, 2));

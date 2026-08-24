@@ -78,9 +78,9 @@ class FaceOverlayView @JvmOverloads constructor(
         style = Paint.Style.FILL
     }
 
-    /** 黄色 106 密集地标画笔（疲劳模块绘制眼嘴点位）。 */
+    /** 粉色 68 密集地标画笔（疲劳模块绘制眼嘴点位）。 */
     private val mLandmarkPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        color = Color.YELLOW
+        color = Color.rgb(255, 105, 180)  // HotPink
         style = Paint.Style.FILL
     }
 
@@ -231,7 +231,7 @@ class FaceOverlayView @JvmOverloads constructor(
                 }
 
                 DRAW_MODE_FATIGUE -> {
-                    // 疲劳监测：106 眼嘴点位 + 眼睛/嘴巴开合状态（不画人脸框/名称/置信度）
+                    // 疲劳监测：68 眼嘴点位 + 眼睛/嘴巴开合状态（不画人脸框/名称/置信度）
                     face.denseLandmarks?.forEach { pt ->
                         canvas.drawCircle(pt.x * scaleX, pt.y * scaleY, 2f, mLandmarkPaint)
                     }
@@ -360,7 +360,7 @@ class FaceOverlayView @JvmOverloads constructor(
 
     /**
      * 绘制左右眼两条视线方向线 + 分心状态提示。
-     * 左眼起点 = 106 点地标 index 88（左瞳），右眼起点 = index 89（右瞳），
+     * 左眼起点 = 5 关键点 index 0（左眼中心），右眼起点 = index 1（右眼中心），
      * 各自以同一 gazeYaw/gazePitch 方向延伸（橙色线）。
      * 分心时显示红色 "DISTRACTED" 提示。
      */
@@ -505,7 +505,7 @@ class FaceOverlayView @JvmOverloads constructor(
         val label: String? = null,
         /** 5 个面部关键点（蓝色）。 */
         val keypoints: List<PointF>? = null,
-        /** 106 个密集地标（当前不绘制，保留字段兼容）。 */
+        /** 68 个密集地标（疲劳模式粉色绘制）。 */
         val denseLandmarks: List<PointF>? = null,
         /** 头部姿态角（度）。 */
         val pitch: Float = 0f,

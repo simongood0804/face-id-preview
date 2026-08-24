@@ -14,7 +14,7 @@ import static org.junit.Assert.*;
  * - 快速档（≥50km/h 或无数据）：1.5s 触发
  * - 慢速档（<50km/h）：3.0s 触发
  * - 解除阈值：0.5s
- * - 无人脸时重置
+ * - 无人脸延时复位（防算法短暂漏检误消除信号）
  */
 public class DistractionStateMachineTest {
 
@@ -25,7 +25,8 @@ public class DistractionStateMachineTest {
     @Before
     public void setUp() {
         mClock = new AtomicLong(0L);
-        mState = new DistractionStateMachine(() -> mClock.get());
+        mState = new DistractionStateMachine(
+                () -> mClock.get(), DistractionStateMachine.NO_FACE_RESET_MS);
     }
 
     private void advance(long ms) {
@@ -122,7 +123,42 @@ public class DistractionStateMachineTest {
         assertTrue("解除计时被重置，未到 0.5s", mState.update(true, 0f, -1f));
     }
 
-    // ---- 无人脸重置 ----
+    // ---- 无人脸延时复位 ----
+
+    @Test
+    public void testNoFaceDelayedReset() {
+        // 先触发分心
+        mState.update(true, 1f, -1f);
+        advance(1500);
+        assertTrue(mState.update(true, 1f, -1f));
+
+        // 无人脸：未达确认时长 → 保持分心（防算法短暂漏检误消除）
+        mState.update(false, 0f, -1f);
+        assertTrue("无人脸未达确认时长应保持分心", mState.isDistracted());
+
+        advance(DistractionStateMachine.NO_FACE_RESET_MS - 1);
+        mState.update(false, 0f, -1f);
+        assertTrue("无人脸差 1ms 不应复位", mState.isDistracted());
+
+        advance(1);
+        mState.update(false, 0f, -1f);
+        assertFalse("连续无人脸达确认时长应复位", mState.isDistracted());
+    }
+
+    @Test
+    public void testNoFaceInterruptedByFaceRestored() {
+        mState.update(true, 1f, -1f);
+        advance(1500);
+        assertTrue(mState.update(true, 1f, -1f));
+
+        // 短暂无人脸后又有人脸 → 无人脸确认计时清除，不复位
+        mState.update(false, 0f, -1f);
+        advance(2000);
+        mState.update(true, 1f, -1f);  // 人脸恢复，清除无人脸确认计时
+        advance(2000);
+        mState.update(false, 0f, -1f);
+        assertTrue("人脸恢复应中断无人脸确认计时", mState.isDistracted());
+    }
 
     @Test
     public void testResetWhenNoFace() {
@@ -151,7 +187,7 @@ public class DistractionStateMachineTest {
 
     @Test
     public void testUpdateWithNoFaceInput() {
-        // hasFace=false 时 update 仍会更新分心标志，但无人脸路径由 SignalDispatcher 调 reset
+        // hasFace=false：无人脸由状态机内部延时复位（未触发过告警时保持非分心）
         SignalTypes.AlgoDistractionInput noFace =
                 new SignalTypes.AlgoDistractionInput(false, 0f);
         mState.update(noFace, -1f);

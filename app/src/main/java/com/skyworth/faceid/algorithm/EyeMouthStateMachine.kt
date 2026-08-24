@@ -20,22 +20,26 @@ package com.skyworth.faceid.algorithm
  * - `eyeOpenRatio`：0.0=闭眼 ~ 1.0=睁眼；
  * - `mouthOpenRatio`：0.0=闭嘴 ~ 1.0=张嘴。
  *
- * 滞回说明：
+ * 滞回说明（**不对称防抖**：进入严格、退出即时）：
  * - 眼睛：`eyeOpenRatio ≤ [eyeCloseRatio]` → 闭眼候选，持续 [confirmMs] 确认 `eyeClosed=true`；
- *          `eyeOpenRatio ≥ [eyeOpenRatio]` → 睁眼候选，持续 [confirmMs] 确认 `eyeClosed=false`；
- * - 嘴巴：`mouthOpenRatio ≥ [mouthOpenRatio]` → 张嘴候选，持续 [confirmMs] 确认 `mouthOpen=true`；
- *          `mouthOpenRatio ≤ [mouthCloseRatio]` → 闭嘴候选，持续 [confirmMs] 确认 `mouthOpen=false`；
+ *          `eyeOpenRatio ≥ [eyeOpenRatio]` → 睁眼候选，**满足即解除** `eyeClosed=false`；
+ * - 嘴巴：`mouthOpenRatio ≥ [mouthOpenRatio]` → 张嘴候选，持续 [mouthConfirmMs] 确认 `mouthOpen=true`；
+ *          `mouthOpenRatio ≤ [mouthCloseRatio]` → 闭嘴候选，**满足即解除** `mouthOpen=false`；
  * - 滞回区间（介于两阈值之间）→ 维持上一状态，计时重置（吸收抖动）。
+ *
+ * 不对称理由：进入"关闭"状态（闭眼/张嘴）需要确认时长，防止阈值附近抖动误报；
+ * 退出方向对应**真实状态的恢复**（睁开眼/闭上嘴），应立即反映，若也要求连续确认，
+ * 会因单帧抖动反复重置计时，出现"明明睁眼了仍判闭眼"的延迟。
  *
  * 线程安全：非线程安全，需在单一线程内调用（如算法处理线程）。
  */
 class EyeMouthStateMachine @JvmOverloads constructor(
     /** 单调时钟（ms），默认 elapsedRealtime；可注入便于测试。 */
     private val clockMs: () -> Long = { android.os.SystemClock.elapsedRealtime() },
-    /** 眼睛闭眼候选阈值（eyeOpenRatio ≤ 此值进入闭眼候选）。 */
-    private val eyeCloseRatio: Float = 0.18f,
-    /** 眼睛睁眼候选阈值（eyeOpenRatio ≥ 此值进入睁眼候选）。 */
-    private val eyeOpenRatio: Float = 0.35f,
+    /** 眼睛闭眼候选阈值（eyeOpenRatio ≤ 此值进入闭眼候选；数值越小判定越严格）。 */
+    private val eyeCloseRatio: Float = 0.10f,
+    /** 眼睛睁眼候选阈值（eyeOpenRatio ≥ 此值进入睁眼候选；数值越小退出闭眼越容易）。 */
+    private val eyeOpenRatio: Float = 0.30f,
     /** 嘴巴张嘴候选阈值（mouthOpenRatio ≥ 此值进入张嘴候选）。 */
     private val mouthOpenRatio: Float = 0.60f,
     /** 嘴巴闭嘴候选阈值（mouthOpenRatio ≤ 此值进入闭嘴候选）。 */
@@ -47,10 +51,10 @@ class EyeMouthStateMachine @JvmOverloads constructor(
 ) {
 
     companion object {
-        /** 眼睛闭眼候选默认阈值。 */
-        const val DEFAULT_EYE_CLOSE_RATIO = 0.18f
-        /** 眼睛睁眼候选默认阈值。 */
-        const val DEFAULT_EYE_OPEN_RATIO = 0.35f
+        /** 眼睛闭眼候选默认阈值（数值越小判定越严格）。 */
+        const val DEFAULT_EYE_CLOSE_RATIO = 0.10f
+        /** 眼睛睁眼候选默认阈值（退出闭眼的开合度门槛）。 */
+        const val DEFAULT_EYE_OPEN_RATIO = 0.30f
         /** 嘴巴张嘴候选默认阈值（基于手动标定张嘴基准，高于此判张嘴）。 */
         const val DEFAULT_MOUTH_OPEN_RATIO = 0.60f
         /** 嘴巴闭嘴候选默认阈值（基于手动标定闭嘴基准，低于此判闭嘴）。 */
@@ -128,6 +132,11 @@ class EyeMouthStateMachine @JvmOverloads constructor(
      * 单轴滞回确认器（内部）。
      *
      * 维护一个"关闭"状态（眼睛=闭眼、嘴巴=张嘴），通过候选方向 + 持续确认。
+     * 进入/退出**不对称**：
+     * - **进入关闭**（闭眼/张嘴）：需 [confirmMs] 连续候选确认，防阈值附近抖动误报；
+     * - **退出关闭**（睁眼/闭嘴）：候选满足即**立即解除**，不设确认时长——
+     *   退出对应真实状态恢复（睁开眼/闭上嘴），应即时反映；若也要求连续确认，
+     *   真实值贴着阈值轻微抖动时计时会被反复重置，造成"已恢复仍保持关闭"的延迟。
      * 滞回区间（两个候选方向均为 false）时保持上一状态并重置计时，吸收抖动。
      */
     private class AxisState(
@@ -154,20 +163,15 @@ class EyeMouthStateMachine @JvmOverloads constructor(
             val now = clockMs()
 
             if (closed) {
-                // 已确认关闭：只有"打开候选"才可能解除
+                // 已确认关闭：打开候选满足即立即解除（不对称防抖，退出不设确认时长）
                 if (openCandidate) {
-                    if (!timing) {
-                        timing = true
-                        accumStart = now
-                    } else if (now - accumStart >= confirmMs) {
-                        closed = false
-                        resetTiming()
-                    }
+                    closed = false
+                    resetTiming()
                 } else {
                     resetTiming()  // 仍关闭或滞回区间，保持关闭
                 }
             } else {
-                // 未关闭（打开）：只有"关闭候选"才可能确认
+                // 未关闭（打开）：只有"关闭候选"持续确认才进入
                 if (closeCandidate) {
                     if (!timing) {
                         timing = true

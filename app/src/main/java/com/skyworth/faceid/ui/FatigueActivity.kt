@@ -44,7 +44,10 @@ class FatigueActivity : AppCompatActivity() {
 
     /** 疲劳业务判定计时（单调时钟注入便于测试）。 */
     private var mEyeClosedSince = 0L
+    private var mEyeOpenSince = 0L
     private var mMouthOpenSince = 0L
+    private var mMouthClosedSince = 0L
+    private var mNoFaceSince = 0L
     private var mFatigueActive = false
     private var mFatigueKind = 0  // 0=无, 1=闭眼, 2=哈欠
 
@@ -155,37 +158,48 @@ class FatigueActivity : AppCompatActivity() {
         mBridge?.setFaces(result, false, FaceOverlayBridge.Module.FATIGUE, imgW, imgH)
 
         val now = System.currentTimeMillis()
+
+        // 无人脸：不立即复位（算法可能因漏检/遮挡短暂丢失人脸），
+        // 持续无人脸达到 NO_FACE_RESET_MS 才整体复位，期间保持当前告警状态。
         if (result.faceId.isEmpty() && result.faceRect == null) {
-            // 无人脸：重置疲劳计时
-            mEyeClosedSince = 0L
-            mMouthOpenSince = 0L
-            mFatigueActive = false
-            mFatigueKind = 0
-            mFatigueText.setTextColor(0xFF00FF00.toInt())
-            mFatigueText.setText(R.string.fatigue_status_ok)
+            if (mNoFaceSince == 0L) mNoFaceSince = now
+            if (now - mNoFaceSince >= NO_FACE_RESET_MS) resetFatigue()
             return
         }
+        mNoFaceSince = 0L
 
-        // 持续闭眼判定
+        // 闭眼/睁眼计时（进入闭眼告警与退出闭眼告警共用）
         if (!result.eyeOpen) {
+            mEyeOpenSince = 0L
             if (mEyeClosedSince == 0L) mEyeClosedSince = now
             val closedMs = now - mEyeClosedSince
             if (closedMs >= EYE_CLOSE_ALERT_MS) setFatigue(1)
         } else {
             mEyeClosedSince = 0L
+            if (mEyeOpenSince == 0L) mEyeOpenSince = now
         }
 
-        // 持续哈欠判定
+        // 哈欠/闭嘴计时（进入哈欠告警与退出哈欠告警共用）
         if (result.mouthOpen) {
+            mMouthClosedSince = 0L
             if (mMouthOpenSince == 0L) mMouthOpenSince = now
             val openMs = now - mMouthOpenSince
             if (openMs >= YAWN_ALERT_MS) setFatigue(2)
         } else {
             mMouthOpenSince = 0L
+            if (mMouthClosedSince == 0L) mMouthClosedSince = now
         }
 
-        // 无持续告警 → 恢复正常
-        if (!mFatigueActive && mFatigueKind == 0) {
+        // 告警退出（不对称防抖）：恢复正常表现达短清除阈值即停止告警
+        // （进入需长阈值严格防误报；退出用短阈值，避免"睁眼/闭嘴后仍长时间告警"）
+        if (mFatigueKind == 1 && mEyeOpenSince != 0L && now - mEyeOpenSince >= EYE_CLOSE_CLEAR_MS) {
+            clearFatigue()
+        } else if (mFatigueKind == 2 && mMouthClosedSince != 0L && now - mMouthClosedSince >= YAWN_CLEAR_MS) {
+            clearFatigue()
+        }
+
+        // 无告警 → 恢复正常
+        if (mFatigueKind == 0) {
             mFatigueText.setTextColor(0xFF00FF00.toInt())
             mFatigueText.setText(R.string.fatigue_status_ok)
         }
@@ -203,6 +217,31 @@ class FatigueActivity : AppCompatActivity() {
         )
     }
 
+    /** 解除疲劳告警（恢复正常持续达阈值）。 */
+    private fun clearFatigue() {
+        mFatigueActive = false
+        mFatigueKind = 0
+        mEyeClosedSince = 0L
+        mEyeOpenSince = 0L
+        mMouthOpenSince = 0L
+        mMouthClosedSince = 0L
+        mFatigueText.setTextColor(0xFF00FF00.toInt())
+        mFatigueText.setText(R.string.fatigue_status_ok)
+    }
+
+    /** 整体复位疲劳状态（持续无人脸达阈值）。 */
+    private fun resetFatigue() {
+        mFatigueActive = false
+        mFatigueKind = 0
+        mEyeClosedSince = 0L
+        mEyeOpenSince = 0L
+        mMouthOpenSince = 0L
+        mMouthClosedSince = 0L
+        mNoFaceSince = 0L
+        mFatigueText.setTextColor(0xFF00FF00.toInt())
+        mFatigueText.setText(R.string.fatigue_status_ok)
+    }
+
     /** JNI 帧读取（复用 NativeFrameReader）。 */
     private fun readFrame(hwBuffer: HardwareBuffer, width: Int, height: Int): ByteArray? {
         return NativeFrameReader.readHardwareBuffer(hwBuffer, width, height)
@@ -212,12 +251,19 @@ class FatigueActivity : AppCompatActivity() {
         /** 原始帧尺寸（DMS 摄像头），算法结果坐标基于此缩放显示。 */
         private const val ORIGINAL_WIDTH = 1600
         private const val ORIGINAL_HEIGHT = 1300
-        /** 持续闭眼告警阈值（ms）。 */
+        /** 持续闭眼告警阈值（ms）：连续闭眼达到该时长触发闭眼告警（进入严格防误报）。 */
         private const val EYE_CLOSE_ALERT_MS = 3000L
-        /** 持续打哈欠告警阈值（ms）。 */
+        /** 退出闭眼告警阈值（ms）：连续睁眼达到该时长解除告警（远小于进入阈值，不对称防抖，
+         *  避免"睁大眼睛后仍长时间显示闭眼"，也避免眨眼/单帧抖动把清除计时反复清零）。 */
+        private const val EYE_CLOSE_CLEAR_MS = 500L
+        /** 持续打哈欠告警阈值（ms）：连续张嘴达到该时长触发哈欠告警（进入严格防误报）。 */
         private const val YAWN_ALERT_MS = 2000L
+        /** 退出哈欠告警阈值（ms）：连续闭嘴达到该时长解除告警（不对称防抖，理由同眼睛）。 */
+        private const val YAWN_CLEAR_MS = 500L
+        /** 无人脸复位确认时长（ms）：连续无人脸达到该时长才复位（防算法漏检误复位）。 */
+        private const val NO_FACE_RESET_MS = 3000L
 
-        /** 疲劳监测模块算法流程（只需检测 + 106点眼嘴开合，不需识别/头姿/视线）。 */
+        /** 疲劳监测模块算法流程（只需检测 + 68点眼嘴开合，不需识别/头姿/视线）。 */
         private val FATIGUE_FLAG = atlas.face.sdk.FaceFlag.DETECTION or
             atlas.face.sdk.FaceFlag.LANDMARK
     }
