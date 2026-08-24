@@ -2,7 +2,8 @@
 
 > 提案编号：FACEP-006  
 > 创建日期：2026-07-28  
-> 状态：已实现
+> 状态：已实现  
+> **更新（2026-08-24）**：本提案 §2.1 的 `FaceResult` 字段为**早期 AAR（v1.1.x 早期）快照**。当前 `face-sdk-v1.1.4.aar` 的实际 `FaceResult` 已**新增头姿/视线/分区字段**（`headPitch/headYaw/headRoll`、`gaze*`、`zoneId`、`distractionScore` 等），完整字段清单见 `proposals/FACEP-013-直连libface绕过AAR探索.md` §2.4 及 `docs/设计方案.md` §18.1。
 
 ---
 

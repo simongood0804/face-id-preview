@@ -40,6 +40,8 @@ interface IFaceIDAlgorithm {
         val landmarks: List<PointF>? = null,
         /** 是否为新录入的人脸。 */
         val isNewEnrollment: Boolean = false,
+        /** FACEP-012：手动录入模式下已采集到可命名的稳定人脸帧（可弹框命名）。 */
+        val enrollmentReady: Boolean = false,
         /** 5 个面部关键点（左眼、右眼、鼻尖、左嘴角、右嘴角）。 */
         val keypoints: List<PointF>? = null,
         /** 头部姿态：俯仰角（Pitch），单位度。 */
@@ -156,4 +158,45 @@ interface IFaceIDAlgorithm {
      * 默认返回 0；支持人脸录入管理的实现应重写返回实际数量。
      */
     fun getEnrolledCount(): Int = 0
+
+    // ============================================================
+    // FACEP-012：手动录入 / 人脸管理（透传至 FaceEnrollmentManager）
+    // 以下方法默认空实现；支持人脸录入管理的实现应重写。
+    // ============================================================
+
+    /** 是否处于手动录入模式。 */
+    fun isEnrolling(): Boolean = false
+
+    /** 开始手动录入模式。 */
+    fun startManualEnrollment() {}
+
+    /** 结束手动录入模式。 */
+    fun stopManualEnrollment() {}
+
+    /**
+     * 录入模式下采集稳定人脸帧。
+     * @return true 表示已采集足够稳定帧，可弹框命名
+     */
+    fun onEnrollmentFrame(emb: FloatArray, score: Float): Boolean = false
+
+    /** 采集到待命名的特征向量（onEnrollmentFrame 返回 true 后有效）。 */
+    fun pendingEmbedding(): FloatArray? = null
+
+    /**
+     * 保存一个已命名的录入人脸。
+     * @return 成功返回 true；空名/重名返回 false
+     */
+    fun addEnrolledFace(name: String, emb: FloatArray): Boolean = false
+
+    /** 删除一个已录入的人脸。返回是否成功删除。 */
+    fun deleteFace(name: String): Boolean = false
+
+    /** 已录入人脸名称列表。 */
+    fun getEnrolledNames(): Set<String> = emptySet()
+
+    /**
+     * 录入已满可用的默认命名集合（供命名对话框兜底建议）。
+     * 默认返回空集；实现可返回异兽名等候选。
+     */
+    fun defaultNameCandidates(): List<String> = emptyList()
 }

@@ -35,6 +35,12 @@
             android:exported="true"
             android:screenOrientation="landscape" />
 
+        <!-- 人脸管理页（FACEP-012：GridView 批量删除） -->
+        <activity
+            android:name=".ui.FaceManageActivity"
+            android:exported="false"
+            android:screenOrientation="landscape" />
+
         <!-- 疲劳监测模块 -->
         <activity
             android:name=".ui.FatigueActivity"

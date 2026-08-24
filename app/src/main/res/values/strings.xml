@@ -25,6 +25,29 @@
     <string name="face_id_none">—</string>
     <string name="enrolled_count_zero">已导入：0 人</string>
     <string name="enrolled_count_format">已导入：%1$d 人</string>
+
+    <!-- FACEP-012 人脸识别细化 -->
+    <string name="btn_start_enroll">开始录入</string>
+    <string name="btn_manage_faces">管理已录入人脸</string>
+    <string name="enroll_prompt">正在录入人脸，请正视镜头…</string>
+    <string name="enroll_captured">人脸录入成功</string>
+    <string name="enroll_name_hint">请输入人脸名称</string>
+    <string name="enroll_name_empty">名称不能为空</string>
+    <string name="enroll_name_duplicate">该名称已存在</string>
+    <string name="enroll_confirm">确认</string>
+    <string name="enroll_cancel">取消</string>
+    <string name="enroll_delete_confirm">确定删除「%1$s」？</string>
+    <string name="enroll_delete_title">删除人脸</string>
+    <string name="enroll_list_empty">暂未录入任何人脸</string>
+    <string name="enroll_manage_title">已录入人脸</string>
+    <string name="enroll_delete_success">已删除：%1$s</string>
+    <string name="unregistered_face">未录入人脸</string>
+    <string name="manage_done">完成</string>
+    <string name="manage_delete_selected">删除选中</string>
+    <string name="manage_title_format">已录入人脸（%1$d）</string>
+    <string name="manage_select_prompt">请选择要删除的人脸</string>
+    <string name="manage_delete_batch_confirm">确定删除选中的 %1$d 张人脸？</string>
+    <string name="manage_no_selection">请先选择要删除的人脸</string>
     <string name="face_confidence_label">Confidence:</string>
     <string name="face_id_detected">Face Detected</string>
     <string name="face_id_not_detected">No Face</string>

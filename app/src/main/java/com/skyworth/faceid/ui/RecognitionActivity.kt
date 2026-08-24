@@ -7,7 +7,10 @@ import android.os.Bundle
 import android.util.Log
 import android.view.View
 import android.widget.Button
+import android.widget.EditText
 import android.widget.TextView
+import android.widget.Toast
+import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import com.skyworth.faceid.algorithm.IFaceIDAlgorithm
 import com.skyworth.faceid.core.AlgoSession
@@ -35,6 +38,9 @@ class RecognitionActivity : AppCompatActivity() {
     private lateinit var mSurface: GLSurfaceView
     private lateinit var mFaceIdText: TextView
     private lateinit var mEnrolledCountText: TextView
+    private lateinit var mEnrollStatusText: TextView
+    private lateinit var mStartEnrollBtn: Button
+    private lateinit var mManageFacesBtn: Button
 
     private var mAlgoSession: AlgoSession? = null
     private var mFrameSession: FrameSession? = null
@@ -51,6 +57,12 @@ class RecognitionActivity : AppCompatActivity() {
     /** 渲染器是否已设置（GLSurfaceView.setRenderer 仅能调用一次）。 */
     private var mRendererSet = false
 
+    /** FACEP-012：是否处于手动录入模式。 */
+    private var mIsEnrolling = false
+
+    /** FACEP-012：命名弹框是否已弹出（避免每帧重复弹）。 */
+    private var mEnrollDialogShown = false
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_recognition)
@@ -58,11 +70,27 @@ class RecognitionActivity : AppCompatActivity() {
         mSurface = findViewById(R.id.preview_surface)
         mFaceIdText = findViewById(R.id.tv_face_id)
         mEnrolledCountText = findViewById(R.id.tv_enrolled_count)
+        mEnrollStatusText = findViewById(R.id.tv_enroll_status)
+        mStartEnrollBtn = findViewById(R.id.btn_start_enroll)
+        mManageFacesBtn = findViewById(R.id.btn_manage_faces)
         findViewById<Button>(R.id.btn_back_home).setOnClickListener {
             finish()
         }
 
+        mStartEnrollBtn.setOnClickListener { onStartEnrollClick() }
+        // 人脸管理改为独立页面（FaceManageActivity）
+        mManageFacesBtn.setOnClickListener {
+            startActivity(Intent(this, FaceManageActivity::class.java))
+        }
+
         Log.i(TAG, "onCreate: done")
+    }
+
+    override fun onResume() {
+        super.onResume()
+        mSurface.onResume()
+        // 从人脸管理页返回后刷新已导入数量（可能发生删除）
+        updateEnrolledCount()
     }
 
     override fun onStart() {
@@ -79,11 +107,6 @@ class RecognitionActivity : AppCompatActivity() {
         // 暂停 GLSurfaceView，停止 GLThread（避免渲染已释放的相机/算法资源导致 SIGSEGV）
         mSurface.onPause()
         super.onPause()
-    }
-
-    override fun onResume() {
-        super.onResume()
-        mSurface.onResume()
     }
 
     override fun onDestroy() {
@@ -132,6 +155,12 @@ class RecognitionActivity : AppCompatActivity() {
 
     /** 停止预览并释放引用计数。 */
     private fun stopPreview() {
+        // 若处于录入模式，先退出，避免状态残留到下次进入
+        if (mIsEnrolling) {
+            mAlgoSession?.algorithm()?.stopManualEnrollment()
+            mIsEnrolling = false
+            mEnrollDialogShown = false
+        }
         try {
             mBridge?.clearFaces()
             mFrameSession?.release()
@@ -146,13 +175,22 @@ class RecognitionActivity : AppCompatActivity() {
         }
     }
 
-    /** 算法结果回调（识别区桥接 + 识别文本展示）。 */
+    /** 算法结果回调（识别区桥接 + 识别文本展示 + 录入采集）。 */
     private fun onAlgorithmResult(result: IFaceIDAlgorithm.FaceIDResult) {
         // 算法结果已修正回原图空间（1600×1300），用原图尺寸缩放显示（FACEP-011 裁剪映射）
         val distributor = mFrameSession?.frameDistributor()
         val imgW = distributor?.frameWidth ?: ORIGINAL_WIDTH
         val imgH = distributor?.frameHeight ?: ORIGINAL_HEIGHT
         mBridge?.setFaces(result, false, FaceOverlayBridge.Module.RECOGNITION, imgW, imgH)
+
+        // FACEP-012：录入模式下，采集成功 → 弹命名框
+        if (mIsEnrolling) {
+            if (result.enrollmentReady && !mEnrollDialogShown) {
+                mEnrollDialogShown = true
+                showNameDialog()
+            }
+            return
+        }
 
         val faceId = result.faceId
         if (faceId != mLastFaceId) {
@@ -161,12 +199,110 @@ class RecognitionActivity : AppCompatActivity() {
                 faceId.isEmpty() -> "无人脸"
                 faceId == "detected" -> "检测到人脸（未识别）"
                 faceId == "spoof" -> "疑似照片/翻拍"
+                faceId == "unregistered" -> getString(R.string.unregistered_face)
                 else -> "识别: $faceId"
             }
         }
 
         // 刷新已导入人脸数量（仅数量变化时更新）
         updateEnrolledCount()
+    }
+
+    // ============================================================
+    // FACEP-012：手动录入 / 人脸管理
+    // ============================================================
+
+    /** 「开始录入 / 取消录入」按钮。 */
+    private fun onStartEnrollClick() {
+        val algo = mAlgoSession?.algorithm() ?: return
+        if (!mIsEnrolling) {
+            algo.startManualEnrollment()
+            mIsEnrolling = true
+            mEnrollDialogShown = false
+            mEnrollStatusText.visibility = View.VISIBLE
+            mStartEnrollBtn.text = getString(R.string.enroll_cancel)
+            mFaceIdText.text = getString(R.string.enroll_prompt)
+            Toast.makeText(this, R.string.enroll_prompt, Toast.LENGTH_SHORT).show()
+            Log.i(TAG, "manual enrollment started")
+        } else {
+            algo.stopManualEnrollment()
+            exitEnrollment()
+        }
+    }
+
+    /** 退出录入模式（取消或保存完成），恢复 UI。 */
+    private fun exitEnrollment() {
+        mIsEnrolling = false
+        mEnrollDialogShown = false
+        mEnrollStatusText.visibility = View.GONE
+        mStartEnrollBtn.text = getString(R.string.btn_start_enroll)
+        mFaceIdText.text = getString(R.string.face_id_label)
+        mLastFaceId = ""
+        Log.i(TAG, "manual enrollment ended")
+    }
+
+    /** 弹出命名对话框（录入采集成功）。 */
+    private fun showNameDialog() {
+        val emb = mAlgoSession?.algorithm()?.pendingEmbedding() ?: run {
+            // 无待命名特征：重置标志，等待下一帧
+            mEnrollDialogShown = false
+            return
+        }
+        val input = EditText(this)
+        input.hint = getString(R.string.enroll_name_hint)
+        input.textSize = 14f
+        // 限制输入框宽度，避免车机大屏下弹框过宽
+        val editWidth = (resources.displayMetrics.density * 260).toInt()
+        input.width = editWidth
+        val dialog = AlertDialog.Builder(this)
+            .setTitle(R.string.enroll_prompt)
+            .setView(input)
+            .setPositiveButton(R.string.enroll_confirm, null)
+            .setNegativeButton(R.string.enroll_cancel, null)
+            .create()
+        // 确认时校验并保存；失败则保持弹框，不退出录入
+        dialog.setOnShowListener {
+            dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
+                val name = input.text.toString().trim()
+                if (name.isEmpty()) {
+                    Toast.makeText(this, R.string.enroll_name_empty, Toast.LENGTH_SHORT).show()
+                    return@setOnClickListener
+                }
+                val algo = mAlgoSession?.algorithm() ?: return@setOnClickListener
+                if (!algo.addEnrolledFace(name, emb)) {
+                    Toast.makeText(this, R.string.enroll_name_duplicate, Toast.LENGTH_SHORT).show()
+                    return@setOnClickListener
+                }
+                dialog.dismiss()
+                Toast.makeText(this, R.string.enroll_captured, Toast.LENGTH_SHORT).show()
+                algo.stopManualEnrollment()
+                exitEnrollment()
+                updateEnrolledCount()
+            }
+            dialog.getButton(AlertDialog.BUTTON_NEGATIVE).setOnClickListener {
+                dialog.dismiss()
+                mAlgoSession?.algorithm()?.stopManualEnrollment()
+                exitEnrollment()
+            }
+        }
+        dialog.setOnDismissListener {
+            // 若未通过确认/取消正常退出（如点击外部），也结束录入模式
+            mEnrollDialogShown = false
+            if (mIsEnrolling) {
+                mAlgoSession?.algorithm()?.stopManualEnrollment()
+                exitEnrollment()
+            }
+        }
+        dialog.show()
+        shrinkDialog(dialog)
+    }
+
+    /** 缩小 AlertDialog 窗口宽度（车机大屏下默认弹框过宽）。 */
+    private fun shrinkDialog(dialog: AlertDialog) {
+        dialog.window?.let { w ->
+            val width = (resources.displayMetrics.density * 360).toInt()
+            w.setLayout(width, android.view.WindowManager.LayoutParams.WRAP_CONTENT)
+        }
     }
 
     /** 更新已导入人脸数量展示。 */

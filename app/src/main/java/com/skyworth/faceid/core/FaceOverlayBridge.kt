@@ -105,8 +105,10 @@ class FaceOverlayBridge(
         module: Module
     ): FaceOverlayView.FaceBox {
         val faceId = result.faceId
-        val isNamed = faceId.isNotEmpty() && faceId != "detected" && faceId != "spoof"
-        val overlayType = if (isNamed || faceId == "detected")
+        // FACEP-012：unregistered（未录入）不显示名字标签，且按绿色 detected 框处理（有效人脸）
+        val isNamed = faceId.isNotEmpty() && faceId != "detected" &&
+            faceId != "spoof" && faceId != "unregistered"
+        val overlayType = if (isNamed || faceId == "detected" || faceId == "unregistered")
             FaceOverlayView.FaceType.DETECTED
         else FaceOverlayView.FaceType.SPOOF
 

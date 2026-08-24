@@ -173,6 +173,37 @@ class FaceIDAlgorithmImpl : IFaceIDAlgorithm {
     override fun getEnrolledCount(): Int = mEnrollmentManager?.getCount() ?: 0
 
     // ============================================================
+    // FACEP-012：手动录入 / 人脸管理（透传至 FaceEnrollmentManager）
+    // ============================================================
+
+    override fun isEnrolling(): Boolean = mEnrollmentManager?.isEnrolling ?: false
+
+    override fun startManualEnrollment() {
+        mEnrollmentManager?.startManualEnrollment()
+    }
+
+    override fun stopManualEnrollment() {
+        mEnrollmentManager?.stopManualEnrollment()
+    }
+
+    override fun onEnrollmentFrame(emb: FloatArray, score: Float): Boolean =
+        mEnrollmentManager?.onEnrollmentFrame(emb, score) ?: false
+
+    override fun pendingEmbedding(): FloatArray? = mEnrollmentManager?.pendingEmbedding()
+
+    override fun addEnrolledFace(name: String, emb: FloatArray): Boolean =
+        mEnrollmentManager?.addEnrolledFace(name, emb) ?: false
+
+    override fun deleteFace(name: String): Boolean =
+        mEnrollmentManager?.deleteFace(name) ?: false
+
+    override fun getEnrolledNames(): Set<String> =
+        mEnrollmentManager?.getEnrolledNames() ?: emptySet()
+
+    override fun defaultNameCandidates(): List<String> =
+        mEnrollmentManager?.defaultNameCandidates() ?: emptyList()
+
+    // ============================================================
     // IFaceIDAlgorithm
     // ============================================================
 
@@ -287,14 +318,22 @@ class FaceIDAlgorithmImpl : IFaceIDAlgorithm {
 
                 var faceId = "detected"
                 var isNewEnroll = false
+                var enrollmentReady = false
                 val enrollMgr = mEnrollmentManager
                 val emb = r.embedding
                 val faceSize = maxOf(r.box[2] - r.box[0], r.box[3] - r.box[1])
                 if (enrollMgr != null && emb != null && emb.size == 512 &&
                         faceSize >= MIN_FACE_SIZE) {
-                    val result = enrollMgr.recognize(emb, r.score, r.liveness)
-                    if (result.name != null) {
-                        faceId = result.name
+                    if (enrollMgr.isEnrolling) {
+                        // FACEP-012：手动录入模式——采集稳定帧，成功后置可命名标记
+                        if (enrollMgr.onEnrollmentFrame(emb, r.score)) {
+                            enrollmentReady = true
+                        }
+                        faceId = "enrolling"
+                    } else {
+                        // FACEP-012：recognize 仅匹配，未命中（库外人脸）→ 显示"未录入人脸"
+                        val result = enrollMgr.recognize(emb, r.score, r.liveness)
+                        faceId = result.name ?: "unregistered"
                         isNewEnroll = result.isNewEnroll
                     }
                 } else {
@@ -350,6 +389,7 @@ class FaceIDAlgorithmImpl : IFaceIDAlgorithm {
                     faceRect = faceRect,
                     // processedData 不再携带帧数据（渲染层不消费，避免每帧大数组拷贝）
                     isNewEnrollment = isNewEnroll,
+                    enrollmentReady = enrollmentReady,
                     keypoints = kpsList,
                     landmarks = lmList,
                     headposePitch = r.headPitch,
