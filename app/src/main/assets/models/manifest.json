@@ -78,30 +78,27 @@
         }
     },
     {
-      "id": "2d106det",
-      "name": "2D 106-point Landmark",
+      "id": "pipnet68",
+      "name": "PIPNet 68-point Landmark (ResNet18, 300W+CelebA)",
       "backend": "snpe",
-      "model_path": "/vendor/etc/faceid/2d106det_int8.dlc",
+      "model_path": "/vendor/etc/faceid/pipnet68_int8.dlc",
       "load_strategy": "lazy",
       "inputs": [
         {
           "name": "data",
-          "shape": [1, 192, 192, 3],
+          "shape": [1, 256, 256, 3],
           "layout": "NHWC",
           "pipeline": [
-            {"name": "face::affine_warp_u8", "params": {"output_size": "192", "transform": "from_bbox"}}
+            {"name": "face::affine_warp_u8", "params": {"output_size": "256", "transform": "from_bbox_pipnet"}}
           ]
         }
       ],
       "outputs": [
-        {
-          "name": "fc1",
-          "shape": [1, 212],
-          "dtype": "float32",
-          "pipeline": [
-            {"name": "face::landmark_decode", "params": {"num_points": "106", "model_input_size": "192"}}
-          ]
-        }
+        {"name": "cls_map", "shape": [8, 8, 68],   "dtype": "float32"},
+        {"name": "offset_x", "shape": [8, 8, 68],  "dtype": "float32"},
+        {"name": "offset_y", "shape": [8, 8, 68],  "dtype": "float32"},
+        {"name": "nb_x", "shape": [8, 8, 680],     "dtype": "float32"},
+        {"name": "nb_y", "shape": [8, 8, 680],     "dtype": "float32"}
       ],
       "config":
         {
