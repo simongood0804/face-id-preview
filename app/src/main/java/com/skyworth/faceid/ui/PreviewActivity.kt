@@ -533,14 +533,15 @@ class PreviewActivity : AppCompatActivity() {
                 Toast.makeText(this, "录入成功: $displayText", Toast.LENGTH_SHORT).show()
             }
 
-            if (result.faceRect != null) {
+            val faceRect = result.faceRect
+            if (faceRect != null) {
                 val isNamed = faceId != "detected" && faceId != "spoof"
                 val overlayType = if (isNamed || faceId == "detected")
                     FaceOverlayView.FaceType.DETECTED
                 else FaceOverlayView.FaceType.SPOOF
                 mFaceOverlay.setFaces(
                     listOf(FaceOverlayView.FaceBox(
-                        rect = result.faceRect,
+                        rect = faceRect,
                         type = overlayType,
                         confidence = result.confidence,
                         label = if (isNamed) faceId else null,

@@ -34,8 +34,8 @@ package com.skyworth.faceid.algorithm
  * 线程安全：非线程安全，需在单一线程内调用（如算法处理线程）。
  */
 class EyeMouthStateMachine @JvmOverloads constructor(
-    /** 单调时钟（ms），默认 elapsedRealtime；可注入便于测试。 */
-    private val clockMs: () -> Long = { android.os.SystemClock.elapsedRealtime() },
+    /** 单调时钟（ms），默认 JVM 单调时钟（去 Android 化，algo 可脱离 Android 编译）；可注入便于测试。 */
+    private val clockMs: () -> Long = { System.nanoTime() / 1_000_000 },
     /** 眼睛闭眼候选阈值（eyeOpenRatio ≤ 此值进入闭眼候选；数值越小判定越严格）。 */
     private val eyeCloseRatio: Float = 0.10f,
     /** 眼睛睁眼候选阈值（eyeOpenRatio ≥ 此值进入睁眼候选；数值越小退出闭眼越容易）。 */

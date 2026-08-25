@@ -90,7 +90,13 @@ android {
 }
 
 dependencies {
-    // AAR 算法库（替换原生 so + JNI）
+    // FACEP-014：算法/总线/逻辑下沉到 :algo 库模块
+    implementation(project(":algo"))
+
+    // 方案 B（FACEP-014）：face-sdk 由消费方（本 app）自行提供。
+    // :algo 以 compileOnly 引用 face-sdk（仅编译期，不打包/不传递），因此这里必须
+    // implementation 它，否则运行时报 NoClassDefFoundError。app 是 application 模块，
+    // 本地 aar 文件依赖合法（不受 library"禁止本地 aar 打包"限制）。
     implementation(files("libs/face-sdk-v1.1.4.aar"))
 
     // EvsSDK AOSP 依赖（通过 maven-repo-plugin 加载）

@@ -19,8 +19,8 @@ package com.skyworth.faceid.signal
  * 线程安全：非线程安全，需在单一线程（如信号分发线程）内调用。
  */
 class DistractionStateMachine(
-    /** 单调时钟（ms），默认 elapsedRealtime；可注入便于测试。 */
-    private val clockMs: () -> Long = { android.os.SystemClock.elapsedRealtime() },
+    /** 单调时钟（ms），默认 JVM 单调时钟（去 Android 化）；可注入便于测试。 */
+    private val clockMs: () -> Long = { System.nanoTime() / 1_000_000 },
     /** 无人脸复位确认时长（ms）：连续无人脸达到该时长才复位，防单帧漏检误复位。 */
     private val noFaceResetMs: Long = NO_FACE_RESET_MS
 ) {

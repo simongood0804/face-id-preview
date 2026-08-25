@@ -1,7 +1,8 @@
 package com.skyworth.faceid.algorithm
 
-import android.util.Log
 import java.util.concurrent.ExecutorService
+import java.util.logging.Level
+import java.util.logging.Logger
 
 /**
  * 帧数据处理管理器（单槽替换 + 全图推理）。
@@ -22,7 +23,7 @@ class FrameProcessor(
     private val mExecutor: ExecutorService,
     private val mCallback: (IFaceIDAlgorithm.FaceIDResult) -> Unit
 ) {
-    private val TAG = "FrameProcessor"
+    private val logger = Logger.getLogger("FrameProcessor")
 
     companion object {
         /** 性能摘要输出间隔（帧数），每 N 帧输出一次 [PERF] 汇总。 */
@@ -67,7 +68,7 @@ class FrameProcessor(
     private var mPerfDropped = 0L   // 单槽被覆盖 = 丢帧（累计）
 
     init {
-        Log.i(TAG, "FrameProcessor started (full-frame inference, no crop)")
+        logger.info("FrameProcessor started (full-frame inference, no crop)")
     }
 
     fun submitFrame(data: ByteArray, w: Int, h: Int) {
@@ -109,11 +110,11 @@ class FrameProcessor(
                 val inferMs = tDone - tInfer0
                 collectPerfStats(convertMs, inferMs, tDone)
 
-                Log.d(TAG, "full ${p.w}x${p.h} convert=${convertMs}ms infer=${inferMs}ms face=${result.faceId}")
+                logger.fine("full ${p.w}x${p.h} convert=${convertMs}ms infer=${inferMs}ms face=${result.faceId}")
 
-                try { mCallback(result) } catch (e: Exception) { Log.e(TAG, "cb error", e) }
+                try { mCallback(result) } catch (e: Exception) { logger.log(Level.SEVERE, "cb error", e) }
             } catch (e: Exception) {
-                Log.e(TAG, "loop error", e)
+                logger.log(Level.SEVERE, "loop error", e)
                 synchronized(this) { mProcessing = false }; return
             }
         }
@@ -137,8 +138,7 @@ class FrameProcessor(
             val avgInfer = mPerfInferSumMs.toFloat() / mPerfCount
             val avgInterval = if (mPerfIntervalCount > 0) mPerfIntervalSumMs.toFloat() / mPerfIntervalCount else 0f
             val fps = if (avgInterval > 0) 1000f / avgInterval else 0f
-            Log.i(
-                TAG,
+            logger.info(
                 "[PERF] ${PERF_REPORT_INTERVAL}帧汇总: 转换 avg=${"%.1f".format(avgConvert)}ms max=${mPerfMaxConvertMs}ms | " +
                         "推理 avg=${"%.1f".format(avgInfer)}ms max=${mPerfMaxInferMs}ms | " +
                         "帧间隔 avg=${"%.1f".format(avgInterval)}ms (~${"%.1f".format(fps)}fps) | 累计丢帧=${mPerfDropped}"
