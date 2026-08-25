@@ -80,6 +80,43 @@
         app:layout_constraintBottom_toBottomOf="parent"
         app:layout_constraintStart_toStartOf="parent" />
 
+    <!-- FACEP-011：dump 调试按钮（左下角，返回按钮上方，自下而上：dump原图→导出→清除） -->
+    <Button
+        android:id="@+id/btn_dump"
+        android:layout_width="wrap_content"
+        android:minWidth="120dp"
+        android:layout_height="40dp"
+        android:layout_marginStart="12dp"
+        android:layout_marginBottom="8dp"
+        android:text="@string/btn_dump_origin"
+        android:textSize="13sp"
+        app:layout_constraintBottom_toTopOf="@id/btn_back_home"
+        app:layout_constraintStart_toStartOf="parent" />
+
+    <Button
+        android:id="@+id/btn_move_dump"
+        android:layout_width="wrap_content"
+        android:minWidth="120dp"
+        android:layout_height="40dp"
+        android:layout_marginStart="12dp"
+        android:layout_marginBottom="8dp"
+        android:text="@string/btn_move_dump"
+        android:textSize="13sp"
+        app:layout_constraintBottom_toTopOf="@id/btn_dump"
+        app:layout_constraintStart_toStartOf="parent" />
+
+    <Button
+        android:id="@+id/btn_clear_dump"
+        android:layout_width="wrap_content"
+        android:minWidth="120dp"
+        android:layout_height="40dp"
+        android:layout_marginStart="12dp"
+        android:layout_marginBottom="8dp"
+        android:text="@string/btn_clear_dump"
+        android:textSize="13sp"
+        app:layout_constraintBottom_toTopOf="@id/btn_move_dump"
+        app:layout_constraintStart_toStartOf="parent" />
+
     <!-- FACEP-012：开始录入按钮（右下角） -->
     <Button
         android:id="@+id/btn_start_enroll"

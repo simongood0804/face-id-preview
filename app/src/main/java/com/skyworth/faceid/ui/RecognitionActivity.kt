@@ -12,6 +12,7 @@ import android.widget.TextView
 import android.widget.Toast
 import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
+import com.skyworth.faceid.algorithm.FaceIDAlgorithmImpl
 import com.skyworth.faceid.algorithm.IFaceIDAlgorithm
 import com.skyworth.faceid.core.AlgoSession
 import com.skyworth.faceid.core.FaceOverlayBridge
@@ -82,6 +83,11 @@ class RecognitionActivity : AppCompatActivity() {
         mManageFacesBtn.setOnClickListener {
             startActivity(Intent(this, FaceManageActivity::class.java))
         }
+
+        // FACEP-011：恢复 dump 调试功能（dump原图/导出/清除）
+        findViewById<Button>(R.id.btn_dump).setOnClickListener { onDumpClick() }
+        findViewById<Button>(R.id.btn_move_dump).setOnClickListener { onMoveDumpClick() }
+        findViewById<Button>(R.id.btn_clear_dump).setOnClickListener { onClearDumpClick() }
 
         Log.i(TAG, "onCreate: done")
     }
@@ -206,6 +212,66 @@ class RecognitionActivity : AppCompatActivity() {
 
         // 刷新已导入人脸数量（仅数量变化时更新）
         updateEnrolledCount()
+    }
+
+    // ============================================================
+    // FACEP-011：dump 调试功能（恢复，仅识别页提供入口）
+    // ============================================================
+
+    /** 获取算法具体类以调用 dump 方法（AlgoSession.algorithm() 返回接口类型）。 */
+    private fun dumpAlgo(): FaceIDAlgorithmImpl? = mAlgoSession?.algorithm() as? FaceIDAlgorithmImpl
+
+    /**
+     * 手动触发 dump：后台保存最近一帧原始图像为 PNG，完成后 Toast 提示。
+     * 若系统属性 algorithm_face_dump_enable 未启用，弹框提示。
+     */
+    private fun onDumpClick() {
+        val algo = dumpAlgo()
+        if (algo == null) {
+            Toast.makeText(this, "dump: algorithm not initialized", Toast.LENGTH_SHORT).show()
+            return
+        }
+        if (!algo.isDumpAvailable()) {
+            Toast.makeText(
+                this,
+                "dump: system property disabled, set algorithm_face_dump_enable first",
+                Toast.LENGTH_LONG
+            ).show()
+            return
+        }
+        algo.triggerManualDump { ok ->
+            val msg = if (ok) "dump: saved" else "dump: failed"
+            Toast.makeText(this, msg, Toast.LENGTH_SHORT).show()
+        }
+        Log.i(TAG, "onDumpClick: manual dump triggered")
+    }
+
+    /** 清除 debugDump 文件夹内容，并删除 /sdcard/debugDmsDump。 */
+    private fun onClearDumpClick() {
+        val algo = dumpAlgo()
+        if (algo == null) {
+            Toast.makeText(this, "clear dump: algorithm not initialized", Toast.LENGTH_SHORT).show()
+            return
+        }
+        algo.clearDumpDirs { ok ->
+            val msg = if (ok) "clear dump: done" else "clear dump: failed"
+            Toast.makeText(this, msg, Toast.LENGTH_SHORT).show()
+        }
+        Log.i(TAG, "onClearDumpClick: clear triggered")
+    }
+
+    /** 将 debugDump 中的 png 移动到 /sdcard/debugDmsDump。 */
+    private fun onMoveDumpClick() {
+        val algo = dumpAlgo()
+        if (algo == null) {
+            Toast.makeText(this, "move dump: algorithm not initialized", Toast.LENGTH_SHORT).show()
+            return
+        }
+        algo.moveDumpPngToSdcard { ok ->
+            val msg = if (ok) "move dump: done" else "move dump: failed"
+            Toast.makeText(this, msg, Toast.LENGTH_SHORT).show()
+        }
+        Log.i(TAG, "onMoveDumpClick: move triggered")
     }
 
     // ============================================================
