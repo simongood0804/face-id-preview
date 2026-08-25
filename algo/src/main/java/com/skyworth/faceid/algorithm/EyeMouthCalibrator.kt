@@ -12,7 +12,7 @@ import kotlin.math.min
  *
  * 目的：静态阈值只对特定人脸有效，不同人眼/嘴大小、距摄像头距离、姿态、光照
  * 差异会导致 aperture/MAR 绝对范围漂移。本校准器维护**每个驾驶员**的"睁/闭眼、张/闭嘴"
- * 基准，据此动态换算滞回阈值，喂给 [EyeMouthStateMachine]，避免"此人总是睁眼/闭眼"
+ * 基准，据此动态换算阈值，供单帧判定眼/嘴状态（防抖已去除），避免"此人总是睁眼/闭眼"
  * 误判。
  *
  * 输入量纲：本校准器跟踪**未归一化的原始几何量**（眼睛 aperture=睑距/双眼外眼角距离、
@@ -70,9 +70,9 @@ class EyeMouthCalibrator @JvmOverloads constructor(
         const val MIN_SAMPLES = 10
         /** 单态判定阈值：窗口内（高位-低位）差小于默认高位的该比例时视为单态分布（持续闭眼/闭嘴）。 */
         const val SINGLE_STATE_RANGE_FACTOR = 0.2f
-        /** 嘴巴闭嘴候选阈值（**固定**，不随动态校准漂移；须与 [EyeMouthStateMachine] 构造默认一致）。 */
+        /** 嘴巴闭嘴候选阈值（**固定**，不随动态校准漂移）。 */
         const val MOUTH_CLOSE_RATIO = 0.35f
-        /** 嘴巴张嘴候选阈值（**固定**，不随动态校准漂移；须与 [EyeMouthStateMachine] 构造默认一致）。 */
+        /** 嘴巴张嘴候选阈值（**固定**，不随动态校准漂移）。 */
         const val MOUTH_OPEN_RATIO = 0.60f
 
         /** 默认眼睛归一化端点：完全睁眼 aperture（睑距/脸宽），与 [EyeMouthStateEstimator.referenceEyeAperture] 默认一致。 */
@@ -85,7 +85,7 @@ class EyeMouthCalibrator @JvmOverloads constructor(
         const val DEFAULT_MOUTH_CLOSE_MAR = 0.35f
     }
 
-    /** 动态换算后的防抖阈值（喂给 [EyeMouthStateMachine]）。 */
+    /** 动态换算后的阈值（供单帧判定眼/嘴状态，防抖已去除）。 */
     data class CalibratedThresholds(
         /** 眼睛闭眼候选阈值（滞回下界）。 */
         val eyeCloseRatio: Float,
@@ -97,8 +97,7 @@ class EyeMouthCalibrator @JvmOverloads constructor(
         val mouthOpenRatio: Float
     ) {
         companion object {
-            /** 静态默认阈值（与 [EyeMouthStateMachine] 构造默认完全一致；v3.5 起校准器
-             *  恒输出"眼睛因子 + 嘴巴固定值"，不再退回本默认，此处仅作状态机未接入动态阈值时的兜底参考）。 */
+            /** 静态默认阈值（v3.5 起校准器恒输出"眼睛因子 + 嘴巴固定值"，此处作未接入校准时的兜底参考）。 */
             @JvmField
             val DEFAULT = CalibratedThresholds(
                 eyeCloseRatio = 0.10f,
@@ -121,7 +120,7 @@ class EyeMouthCalibrator @JvmOverloads constructor(
      * @param eyeAperture 本帧眼睛原始开合量（aperture=睑距/双眼外眼角距离，未归一化，
      *                    **仅限主路径**；外眼角缺失回退的 EAR 量纲不同，需用 [updateEye] 前先排除）。
      * @param mouthMar 本帧嘴巴原始开合量（MAR，未归一化；区域缺失时估计器输出 0，会被忽略）。
-     * @return 换算后的 [CalibratedThresholds]（ratio 量纲，喂 [EyeMouthStateMachine]）。
+     * @return 换算后的 [CalibratedThresholds]（ratio 量纲，供单帧判定眼/嘴状态）。
      */
     fun update(eyeAperture: Float, mouthMar: Float): CalibratedThresholds {
         updateEye(eyeAperture)

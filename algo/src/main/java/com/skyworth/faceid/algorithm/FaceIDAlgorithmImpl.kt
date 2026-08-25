@@ -88,11 +88,10 @@ class FaceIDAlgorithmImpl : IFaceIDAlgorithm {
      */
     fun setFlagAndReset(flag: Int) {
         configure(flag)
-        // 复位眼嘴判定（防抖状态机 + 动态校准基准）
+        // 复位眼嘴判定（动态校准基准；防抖状态机已去除）
         try {
-            mEyeMouthState.reset()
             mEyeMouthCalibrator.reset()
-            Log.i(TAG, "setFlagAndReset: eye/mouth state reset, flag=$flag")
+            Log.i(TAG, "setFlagAndReset: eye/mouth calibrator reset, flag=$flag")
         } catch (e: Exception) {
             Log.w(TAG, "setFlagAndReset: reset error", e)
         }
@@ -147,10 +146,7 @@ class FaceIDAlgorithmImpl : IFaceIDAlgorithm {
     /** 眼睛/嘴巴单帧几何判定器（EAR/MAR → 连续开合度）。 */
     private val mEyeMouthEstimator = EyeMouthStateEstimator()
 
-    /** 眼睛/嘴巴基础状态防抖器（多帧时序 → 稳定基础状态）。 */
-    private val mEyeMouthState = EyeMouthStateMachine()
-
-    /** 眼睛/嘴巴阈值动态校准器（维护睁/闭眼、张/闭嘴基准，动态换算滞回阈值）。 */
+    /** 眼睛/嘴巴阈值动态校准器（维护睁/闭眼、张/闭嘴基准，动态换算阈值）。 */
     private val mEyeMouthCalibrator = EyeMouthCalibrator()
 
     init {
@@ -395,9 +391,10 @@ class FaceIDAlgorithmImpl : IFaceIDAlgorithm {
                 val calibrated = mEyeMouthCalibrator.thresholds()
                 val eyeOpenRatio = validEst?.let { mEyeMouthCalibrator.normalizeEye(it.aperture) } ?: 1f
                 val mouthOpenRatio = validEst?.let { mEyeMouthCalibrator.normalizeMouth(it.mar) } ?: 0f
-                mEyeMouthState.update(true, eyeOpenRatio, mouthOpenRatio, calibrated)
-                val eyeOpen = !mEyeMouthState.isEyeClosed()
-                val mouthOpen = mEyeMouthState.isMouthOpen()
+                // 去除眼嘴防抖（FACEP-015 后疲劳引擎用连续量 eyeOpenRatio/mouthOpenRatio，
+                // 布尔仅作渲染标注）：直接用单帧连续量阈值判定，无多帧确认。
+                val eyeOpen = eyeOpenRatio > calibrated.eyeCloseRatio   // 开合度高于闭眼下界 → 睁眼
+                val mouthOpen = mouthOpenRatio >= calibrated.mouthOpenRatio  // 开合度高于张嘴上界 → 张嘴
 
                 IFaceIDAlgorithm.FaceIDResult(
                     faceId = faceId,
@@ -422,12 +419,14 @@ class FaceIDAlgorithmImpl : IFaceIDAlgorithm {
                     zoneId = r.zoneId,
                     zoneConfidence = r.zoneConfidence,
                     eyeOpen = eyeOpen,
-                    mouthOpen = mouthOpen
+                    mouthOpen = mouthOpen,
+                    // FACEP-015：透传连续开合度供疲劳判定（打哈欠/闭眼分级）
+                    eyeOpenRatio = eyeOpenRatio,
+                    mouthOpenRatio = mouthOpenRatio
                 )
             } else {
                 if (n == 0) Log.i(TAG, "  no face detected")
-                // 无人脸：重置眼嘴状态防抖器，输出默认（睁眼/闭嘴）
-                mEyeMouthState.update(false, 1f, 0f)
+                // 无人脸：输出默认（睁眼/闭嘴）
                 IFaceIDAlgorithm.FaceIDResult()
             }
         } catch (e: Exception) {
@@ -457,7 +456,6 @@ class FaceIDAlgorithmImpl : IFaceIDAlgorithm {
     fun onDoorOpened() {
         Log.i(TAG, "onDoorOpened: door open, reset eye/mouth calibrator")
         mEyeMouthCalibrator.reset()
-        mEyeMouthState.reset()
     }
 
     // ============================================================

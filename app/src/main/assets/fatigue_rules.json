@@ -1,0 +1,48 @@
+{
+  "schema_version": 1,
+  "yawn": {
+    "enabled": true,
+    "mouth_open_ratio": 0.3,
+    "min_duration_ms": 2000,
+    "min_open_ratio": 0.7
+  },
+  "eye_close": {
+    "enabled": true,
+    "min_count_duration_ms": 200
+  },
+  "levels": [
+    {
+      "level": "LIGHT",
+      "enabled": true,
+      "enter": [
+        { "type": "eye_close_count", "window_ms": 60000, "count_min": 9, "min_duration_ms": 200 },
+        { "type": "yawn_count", "window_ms": 60000, "count_min": 2 }
+      ],
+      "exit": { "type": "clean_clear", "window_ms": 20000, "clear_duration_ms": 750 }
+    },
+    {
+      "level": "MODERATE",
+      "enabled": true,
+      "enter": [
+        { "type": "eye_close_count", "window_ms": 60000, "count_min": 10, "min_duration_ms": 200 },
+        { "type": "eye_close_count", "window_ms": 20000, "count_min": 2, "min_duration_ms": 750 },
+        { "type": "eye_close_duration", "min_ms": 1500, "max_ms": 2400 },
+        { "type": "yawn_count", "window_ms": 60000, "count_min": 3 }
+      ],
+      "exit": { "type": "clean_clear", "window_ms": 20000, "clear_duration_ms": 750 }
+    },
+    {
+      "level": "SEVERE",
+      "enabled": true,
+      "enter": [
+        { "type": "eye_close_count", "window_ms": 20000, "count_min": 2, "min_duration_ms": 1200 },
+        { "type": "eye_close_duration", "min_ms": 2400 }
+      ],
+      "exit": { "type": "clean_clear", "window_ms": 20000, "clear_duration_ms": 750 }
+    }
+  ],
+  "no_face": {
+    "enabled": true,
+    "reset_ms": 3000
+  }
+}

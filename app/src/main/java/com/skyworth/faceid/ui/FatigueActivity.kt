@@ -1,5 +1,6 @@
 package com.skyworth.faceid.ui
 
+import android.graphics.Color
 import android.hardware.HardwareBuffer
 import android.opengl.GLSurfaceView
 import android.os.Bundle
@@ -14,17 +15,21 @@ import com.skyworth.faceid.core.AlgoSession
 import com.skyworth.faceid.core.FaceOverlayBridge
 import com.skyworth.faceid.core.FrameSession
 import com.skyworth.faceid.core.NativeFrameReader
+import com.skyworth.faceid.fatigue.FatigueRule
+import com.skyworth.faceid.fatigue.FatigueRuleLoader
+import com.skyworth.faceid.fatigue.FatigueStateMachine
 import com.skyworth.faceid.signal.DoorSignalSource
 
 /**
- * 疲劳监测模块（FACEP-011 阶段三）。
+ * 疲劳监测模块（FACEP-011 阶段三 / FACEP-015 配置化分级）。
  *
  * 复用公共基础设施：`AlgoSession`（含眼嘴管线）、`FrameSession`、`FaceOverlayBridge`（疲劳区）。
  *
- * - 疲劳业务判定（补全 FACEP-011 §4.3）：基于算法输出的 `eyeOpen`/`mouthOpen`，
- *   统计**持续闭眼/打哈欠时长**，超过阈值 → 疲劳告警展示；
- * - 门信号（[DoorSignalSource]）：门开触发眼/嘴校准复位（换驾驶员重校）；
- * - 渲染只消费疲劳区字段（数据隔离，§4.6-B）。
+ * - **疲劳判定下沉 `:algo`**（FACEP-015）：规则从 `assets/fatigue_rules.json` 加载（[FatigueRuleLoader]），
+ *   判定由 [FatigueStateMachine] 完成——三级疲劳（轻度/中度/重度）覆盖升级、逐级退出、窗口统计、无人脸复位；
+ * - **渲染**（FACEP-015 §4.3）：左上角状态指示灯（正常绿/轻度黄/中度橙/重度红）+ 状态文本，
+ *   下方闭眼/哈欠描述 + 诊断统计区（当前命中条件与窗口计数，不跳变，便于观察规则影响）；
+ * - 门信号（[DoorSignalSource]）：门开触发眼/嘴校准复位（换驾驶员重校）。
  *
  * 生命周期：onStart 装配并 acquire，onStop release。
  */
@@ -33,23 +38,23 @@ class FatigueActivity : AppCompatActivity() {
     private val TAG = "FatigueActivity"
 
     private lateinit var mSurface: GLSurfaceView
+    private lateinit var mIndicator: View
     private lateinit var mFatigueText: TextView
+    private lateinit var mEyeDesc: TextView
+    private lateinit var mMouthDesc: TextView
+    private lateinit var mDiagLevel: TextView
+    private lateinit var mDiagStats: TextView
+    private lateinit var mDiagCont: TextView
 
     private var mAlgoSession: AlgoSession? = null
     private var mFrameSession: FrameSession? = null
     private var mBridge: FaceOverlayBridge? = null
     private var mDoorSource: DoorSignalSource? = null
 
-    private var mAlgorithmEnabled = true
+    /** FACEP-015：疲劳判定引擎（规则从 JSON 注入）。 */
+    private var mFatigueMachine: FatigueStateMachine? = null
 
-    /** 疲劳业务判定计时（单调时钟注入便于测试）。 */
-    private var mEyeClosedSince = 0L
-    private var mEyeOpenSince = 0L
-    private var mMouthOpenSince = 0L
-    private var mMouthClosedSince = 0L
-    private var mNoFaceSince = 0L
-    private var mFatigueActive = false
-    private var mFatigueKind = 0  // 0=无, 1=闭眼, 2=哈欠
+    private var mAlgorithmEnabled = true
 
     /** 渲染器是否已设置（GLSurfaceView.setRenderer 仅能调用一次）。 */
     private var mRendererSet = false
@@ -59,10 +64,19 @@ class FatigueActivity : AppCompatActivity() {
         setContentView(R.layout.activity_fatigue)
 
         mSurface = findViewById(R.id.preview_surface)
+        mIndicator = findViewById(R.id.indicator_light)
         mFatigueText = findViewById(R.id.tv_fatigue)
+        mEyeDesc = findViewById(R.id.tv_eye_desc)
+        mMouthDesc = findViewById(R.id.tv_mouth_desc)
+        mDiagLevel = findViewById(R.id.tv_diag_level)
+        mDiagStats = findViewById(R.id.tv_diag_stats)
+        mDiagCont = findViewById(R.id.tv_diag_cont)
         findViewById<Button>(R.id.btn_back_home).setOnClickListener { finish() }
 
-        Log.i(TAG, "onCreate: done")
+        // FACEP-015：加载疲劳规则（assets/fatigue_rules.json；缺失/损坏回退默认）
+        val rule = FatigueRuleLoader.loadFromAssets(this)
+        mFatigueMachine = FatigueStateMachine(rule)
+        Log.i(TAG, "onCreate: fatigue rule loaded (levels=${rule.levels.size})")
     }
 
     override fun onStart() {
@@ -149,7 +163,7 @@ class FatigueActivity : AppCompatActivity() {
         }
     }
 
-    /** 算法结果回调：疲劳区桥接 + 疲劳业务判定。 */
+    /** 算法结果回调：疲劳区桥接 + 疲劳分级判定（FACEP-015）。 */
     private fun onAlgorithmResult(result: IFaceIDAlgorithm.FaceIDResult) {
         // 算法结果已修正回原图空间（1600×1300），用原图尺寸缩放显示（FACEP-011 裁剪映射）
         val distributor = mFrameSession?.frameDistributor()
@@ -157,89 +171,68 @@ class FatigueActivity : AppCompatActivity() {
         val imgH = distributor?.frameHeight ?: ORIGINAL_HEIGHT
         mBridge?.setFaces(result, false, FaceOverlayBridge.Module.FATIGUE, imgW, imgH)
 
-        val now = System.currentTimeMillis()
+        val machine = mFatigueMachine ?: return
+        val hasFace = result.faceId.isNotEmpty() || result.faceRect != null
 
-        // 无人脸：不立即复位（算法可能因漏检/遮挡短暂丢失人脸），
-        // 持续无人脸达到 NO_FACE_RESET_MS 才整体复位，期间保持当前告警状态。
-        if (result.faceId.isEmpty() && result.faceRect == null) {
-            if (mNoFaceSince == 0L) mNoFaceSince = now
-            if (now - mNoFaceSince >= NO_FACE_RESET_MS) resetFatigue()
-            return
-        }
-        mNoFaceSince = 0L
-
-        // 闭眼/睁眼计时（进入闭眼告警与退出闭眼告警共用）
-        if (!result.eyeOpen) {
-            mEyeOpenSince = 0L
-            if (mEyeClosedSince == 0L) mEyeClosedSince = now
-            val closedMs = now - mEyeClosedSince
-            if (closedMs >= EYE_CLOSE_ALERT_MS) setFatigue(1)
-        } else {
-            mEyeClosedSince = 0L
-            if (mEyeOpenSince == 0L) mEyeOpenSince = now
-        }
-
-        // 哈欠/闭嘴计时（进入哈欠告警与退出哈欠告警共用）
-        if (result.mouthOpen) {
-            mMouthClosedSince = 0L
-            if (mMouthOpenSince == 0L) mMouthOpenSince = now
-            val openMs = now - mMouthOpenSince
-            if (openMs >= YAWN_ALERT_MS) setFatigue(2)
-        } else {
-            mMouthOpenSince = 0L
-            if (mMouthClosedSince == 0L) mMouthClosedSince = now
-        }
-
-        // 告警退出（不对称防抖）：恢复正常表现达短清除阈值即停止告警
-        // （进入需长阈值严格防误报；退出用短阈值，避免"睁眼/闭嘴后仍长时间告警"）
-        if (mFatigueKind == 1 && mEyeOpenSince != 0L && now - mEyeOpenSince >= EYE_CLOSE_CLEAR_MS) {
-            clearFatigue()
-        } else if (mFatigueKind == 2 && mMouthClosedSince != 0L && now - mMouthClosedSince >= YAWN_CLEAR_MS) {
-            clearFatigue()
-        }
-
-        // 无告警 → 恢复正常
-        if (mFatigueKind == 0) {
-            mFatigueText.setTextColor(0xFF00FF00.toInt())
-            mFatigueText.setText(R.string.fatigue_status_ok)
-        }
-    }
-
-    /** 设置疲劳告警。 */
-    private fun setFatigue(kind: Int) {
-        mFatigueActive = true
-        if (mFatigueKind == kind) return
-        mFatigueKind = kind
-        mFatigueText.setTextColor(0xFFFF0000.toInt())
-        mFatigueText.setText(
-            if (kind == 1) R.string.fatigue_status_eye_closed
-            else R.string.fatigue_status_yawn
+        // FACEP-015：疲劳引擎判定（喂连续开合度，引擎内部判闭眼/哈欠/窗口统计/无人脸复位）。
+        // 用单调时钟（nanoTime），避免 wall clock 被 NTP/校时回拨导致时长异常（隐患 A 修复）。
+        val out = machine.update(
+            result.eyeOpenRatio,
+            result.mouthOpenRatio,
+            hasFace,
+            System.nanoTime() / 1_000_000
         )
+        renderFatigue(out)
     }
 
-    /** 解除疲劳告警（恢复正常持续达阈值）。 */
-    private fun clearFatigue() {
-        mFatigueActive = false
-        mFatigueKind = 0
-        mEyeClosedSince = 0L
-        mEyeOpenSince = 0L
-        mMouthOpenSince = 0L
-        mMouthClosedSince = 0L
-        mFatigueText.setTextColor(0xFF00FF00.toInt())
-        mFatigueText.setText(R.string.fatigue_status_ok)
+    /** FACEP-015 §4.3：按疲劳等级渲染指示灯/状态文本/闭眼/哈欠描述/诊断统计。 */
+    private fun renderFatigue(out: FatigueStateMachine.FatigueOutput) {
+        val level = out.level
+        val color = when (level) {
+            FatigueRule.Level.NONE -> Color.rgb(0x00, 0xFF, 0x00)
+            FatigueRule.Level.LIGHT -> Color.rgb(0xFF, 0xFF, 0x00)
+            FatigueRule.Level.MODERATE -> Color.rgb(0xFF, 0xA5, 0x00)
+            FatigueRule.Level.SEVERE -> Color.rgb(0xFF, 0x00, 0x00)
+        }
+        mIndicator.setBackgroundColor(color)
+        mIndicator.invalidate()
+        mFatigueText.setTextColor(color)
+        mFatigueText.text = when (level) {
+            FatigueRule.Level.NONE -> getString(R.string.fatigue_status_ok)
+            FatigueRule.Level.LIGHT -> getString(R.string.fatigue_status_light)
+            FatigueRule.Level.MODERATE -> getString(R.string.fatigue_status_moderate)
+            FatigueRule.Level.SEVERE -> getString(R.string.fatigue_status_severe)
+        }
+
+        // 闭眼状态描述（不跳变，实时刷新）
+        mEyeDesc.text = if (out.curEyeCloseMs > 0) {
+            getString(R.string.fatigue_desc_eye_closed, out.curEyeCloseMs)
+        } else {
+            getString(R.string.fatigue_desc_eye_open)
+        }
+
+        // 哈欠状态描述
+        mMouthDesc.text = if (out.curYawnMs > 0) {
+            getString(R.string.fatigue_desc_mouth_open, out.mouthOpenRatio, out.curYawnMs)
+        } else {
+            getString(R.string.fatigue_desc_mouth_closed)
+        }
+
+        // 诊断统计区（当前命中条件 + 窗口计数 + 连续时长）
+        val levelName = levelText(level)
+        val condition = out.matchedCondition ?: "-"
+        mDiagLevel.text = getString(R.string.fatigue_diag_level, levelName, condition)
+        mDiagStats.text = getString(R.string.fatigue_diag_stats,
+            out.eyeCloseCount60s, out.eyeCloseCount20s, out.yawnCount60s)
+        mDiagCont.text = getString(R.string.fatigue_diag_cont,
+            out.curEyeCloseMs, out.curYawnMs, out.curNoFaceMs)
     }
 
-    /** 整体复位疲劳状态（持续无人脸达阈值）。 */
-    private fun resetFatigue() {
-        mFatigueActive = false
-        mFatigueKind = 0
-        mEyeClosedSince = 0L
-        mEyeOpenSince = 0L
-        mMouthOpenSince = 0L
-        mMouthClosedSince = 0L
-        mNoFaceSince = 0L
-        mFatigueText.setTextColor(0xFF00FF00.toInt())
-        mFatigueText.setText(R.string.fatigue_status_ok)
+    private fun levelText(level: FatigueRule.Level): String = when (level) {
+        FatigueRule.Level.NONE -> "正常"
+        FatigueRule.Level.LIGHT -> "轻度"
+        FatigueRule.Level.MODERATE -> "中度"
+        FatigueRule.Level.SEVERE -> "重度"
     }
 
     /** JNI 帧读取（复用 NativeFrameReader）。 */
@@ -251,17 +244,6 @@ class FatigueActivity : AppCompatActivity() {
         /** 原始帧尺寸（DMS 摄像头），算法结果坐标基于此缩放显示。 */
         private const val ORIGINAL_WIDTH = 1600
         private const val ORIGINAL_HEIGHT = 1300
-        /** 持续闭眼告警阈值（ms）：连续闭眼达到该时长触发闭眼告警（进入严格防误报）。 */
-        private const val EYE_CLOSE_ALERT_MS = 3000L
-        /** 退出闭眼告警阈值（ms）：连续睁眼达到该时长解除告警（远小于进入阈值，不对称防抖，
-         *  避免"睁大眼睛后仍长时间显示闭眼"，也避免眨眼/单帧抖动把清除计时反复清零）。 */
-        private const val EYE_CLOSE_CLEAR_MS = 500L
-        /** 持续打哈欠告警阈值（ms）：连续张嘴达到该时长触发哈欠告警（进入严格防误报）。 */
-        private const val YAWN_ALERT_MS = 2000L
-        /** 退出哈欠告警阈值（ms）：连续闭嘴达到该时长解除告警（不对称防抖，理由同眼睛）。 */
-        private const val YAWN_CLEAR_MS = 500L
-        /** 无人脸复位确认时长（ms）：连续无人脸达到该时长才复位（防算法漏检误复位）。 */
-        private const val NO_FACE_RESET_MS = 3000L
 
         /** 疲劳监测模块算法流程（只需检测 + 68点眼嘴开合，不需识别/头姿/视线）。 */
         private val FATIGUE_FLAG = atlas.face.sdk.FaceFlag.DETECTION or

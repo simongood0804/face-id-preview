@@ -43,4 +43,7 @@ dependencies {
 
     // ========== 测试依赖 ==========
     testImplementation("junit:junit:4.13.2")
+    // org.json 的 JVM 实现：让纯 JVM 单测可解析 JSON（Android 内置 org.json 与之一致）。
+    // 用于 FatigueRuleLoader 解析正确性测试（隐患 E 修复，FACEP-015）。
+    testImplementation("org.json:json:20231013")
 }

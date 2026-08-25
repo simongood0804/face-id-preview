@@ -72,10 +72,23 @@
     <string name="home_version">版本</string>
     <string name="btn_back_home">返回主页</string>
 
-    <!-- 疲劳监测（FACEP-011 阶段三） -->
-    <string name="fatigue_status_ok">状态：正常</string>
+    <!-- 疲劳监测（FACEP-011 阶段三 / FACEP-015 配置化分级） -->
+    <string name="fatigue_status_ok">正常</string>
+    <string name="fatigue_status_light">轻度疲劳</string>
+    <string name="fatigue_status_moderate">中度疲劳</string>
+    <string name="fatigue_status_severe">重度疲劳</string>
     <string name="fatigue_status_eye_closed">⚠ 疲劳：持续闭眼</string>
     <string name="fatigue_status_yawn">⚠ 疲劳：打哈欠</string>
+
+    <!-- 疲劳渲染页（FACEP-015 §4.3） -->
+    <string name="fatigue_label_state">疲劳状态</string>
+    <string name="fatigue_desc_eye_open">闭眼状态：睁眼</string>
+    <string name="fatigue_desc_eye_closed">闭眼状态：闭眼 已持续 %1$d ms</string>
+    <string name="fatigue_desc_mouth_closed">哈欠状态：无</string>
+    <string name="fatigue_desc_mouth_open">哈欠状态：哈欠 嘴开合 %1$.2f 已持续 %2$d ms</string>
+    <string name="fatigue_diag_level">疲劳等级：%1$s  命中条件：%2$s</string>
+    <string name="fatigue_diag_stats">[统计] 60s闭眼 %1$d次  20s闭眼 %2$d次  60s哈欠 %3$d次</string>
+    <string name="fatigue_diag_cont">[统计] 连续闭眼 %1$dms  持续张嘴 %2$dms  无人脸 %3$dms</string>
 
     <!-- 分心监测（FACEP-011 阶段四） -->
     <string name="distraction_status_ok">分心状态：正常</string>
