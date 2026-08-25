@@ -88,9 +88,10 @@ class FaceIDAlgorithmImpl : IFaceIDAlgorithm {
      */
     fun setFlagAndReset(flag: Int) {
         configure(flag)
-        // 复位眼嘴判定（动态校准基准；防抖状态机已去除）
+        // 复位眼嘴判定（动态校准基准 + 眼睛滞回状态；防抖状态机已去除）
         try {
             mEyeMouthCalibrator.reset()
+            mEyeWasOpen = true
             Log.i(TAG, "setFlagAndReset: eye/mouth calibrator reset, flag=$flag")
         } catch (e: Exception) {
             Log.w(TAG, "setFlagAndReset: reset error", e)
@@ -148,6 +149,9 @@ class FaceIDAlgorithmImpl : IFaceIDAlgorithm {
 
     /** 眼睛/嘴巴阈值动态校准器（维护睁/闭眼、张/闭嘴基准，动态换算阈值）。 */
     private val mEyeMouthCalibrator = EyeMouthCalibrator()
+
+    /** 眼睛滞回状态：上一帧是否睁眼（滞回区间内维持上一状态，防半开合抖动）。 */
+    private var mEyeWasOpen = true
 
     init {
         for (i in 0 until MAX_FACES) {
@@ -392,8 +396,16 @@ class FaceIDAlgorithmImpl : IFaceIDAlgorithm {
                 val eyeOpenRatio = validEst?.let { mEyeMouthCalibrator.normalizeEye(it.aperture) } ?: 1f
                 val mouthOpenRatio = validEst?.let { mEyeMouthCalibrator.normalizeMouth(it.mar) } ?: 0f
                 // 去除眼嘴防抖（FACEP-015 后疲劳引擎用连续量 eyeOpenRatio/mouthOpenRatio，
-                // 布尔仅作渲染标注）：直接用单帧连续量阈值判定，无多帧确认。
-                val eyeOpen = eyeOpenRatio > calibrated.eyeCloseRatio   // 开合度高于闭眼下界 → 睁眼
+                // 布尔仅作渲染标注）：用滞回判定——开合度 ≤0.10 判闭眼、>0.20 判睁眼，
+                // 0.10~0.20 之间维持上一状态（防半开合抖动）。mouthOpen 用张嘴上界。
+                val eyeOpen = if (eyeOpenRatio <= EYE_CLOSE_RATIO) {
+                    false
+                } else if (eyeOpenRatio > EYE_OPEN_RATIO) {
+                    true
+                } else {
+                    mEyeWasOpen // 滞回区间：维持上一状态
+                }
+                mEyeWasOpen = eyeOpen
                 val mouthOpen = mouthOpenRatio >= calibrated.mouthOpenRatio  // 开合度高于张嘴上界 → 张嘴
 
                 IFaceIDAlgorithm.FaceIDResult(
@@ -426,7 +438,8 @@ class FaceIDAlgorithmImpl : IFaceIDAlgorithm {
                 )
             } else {
                 if (n == 0) Log.i(TAG, "  no face detected")
-                // 无人脸：输出默认（睁眼/闭嘴）
+                // 无人脸：输出默认（睁眼/闭嘴），眼睛滞回状态复位为睁眼
+                mEyeWasOpen = true
                 IFaceIDAlgorithm.FaceIDResult()
             }
         } catch (e: Exception) {
@@ -456,6 +469,7 @@ class FaceIDAlgorithmImpl : IFaceIDAlgorithm {
     fun onDoorOpened() {
         Log.i(TAG, "onDoorOpened: door open, reset eye/mouth calibrator")
         mEyeMouthCalibrator.reset()
+        mEyeWasOpen = true
     }
 
     // ============================================================
@@ -574,6 +588,11 @@ class FaceIDAlgorithmImpl : IFaceIDAlgorithm {
         private const val MAX_FACES = 10
         private const val DEFAULT_MODEL_DIR = "/data/faceid/models"
         private const val MODEL_ASSET_PATH = "models"
+
+        /** 眼睛滞回阈值：开合度 ≤ 此值判闭眼（与 FatigueRule.EYE_CLOSE_RATIO 一致）。 */
+        private const val EYE_CLOSE_RATIO = 0.10f
+        /** 眼睛滞回阈值：开合度 > 此值判睁眼；[EYE_CLOSE_RATIO]~此值之间维持上一状态（0.1~0.2 滞回）。 */
+        private const val EYE_OPEN_RATIO = 0.20f
 
         /** 录入所需的最小人脸像素尺寸（RECOG 需要足够大的对齐人脸）。 */
         private const val MIN_FACE_SIZE = 200
