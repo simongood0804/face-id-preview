@@ -121,12 +121,14 @@ class FatigueActivity : AppCompatActivity() {
             }
             mBridge = FaceOverlayBridge(findViewById(R.id.face_overlay))
 
-            // 门信号：门开 → 眼/嘴校准复位（换驾驶员重校，§4.6-B 全局事件）
+            // 门信号：门开 → 眼/嘴校准复位 + 疲劳统计复位（换驾驶员重校，§4.6-B 全局事件；
+            // FACEP-015 中危修复：避免换人后沿用上一位驾驶员的疲劳累计）
             mDoorSource = DoorSignalSource(this).also { ds ->
                 ds.onDoorChanged = { door ->
                     if (door.isOpen) {
-                        Log.i(TAG, "door open, reset calibration")
+                        Log.i(TAG, "door open, reset calibration & fatigue")
                         algo.onDoorOpened()
+                        mFatigueMachine?.reset()
                     }
                 }
                 ds.connect()

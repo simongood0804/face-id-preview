@@ -269,4 +269,87 @@ class FatigueStateMachineTest {
         val out = m.update(1.0f, 0.08f, true, 2200)
         assertEquals("闭口(开合度0.08)不应显示持续张嘴", 0L, out.curYawnMs)
     }
+
+    @Test
+    fun `退出疲劳后累计统计归零`() {
+        // 退出疲劳时，已累计的闭眼/哈欠应归零，重新计算
+        val m = machine()
+        var t = 0L
+        // 触发轻度：9 次有效闭眼（300ms）
+        repeat(9) { driveEyeClose(m, t, 300); t += 1000 }
+        assertEquals(Level.LIGHT, m.update(1.0f, 0f, true, t).level)
+        // 此时 60s 闭眼统计应 >0
+        assertTrue("触发前闭眼统计应>0", m.update(1.0f, 0f, true, t).eyeCloseCount60s > 0)
+
+        // 持续正常 20s+ 退出疲劳（直接回 NONE）
+        repeat(25) { t += 1000; m.update(1.0f, 0f, true, t) }
+        assertEquals("退出后应回正常", Level.NONE, m.update(1.0f, 0f, true, t).level)
+
+        // 退出后闭眼/哈欠统计应归零
+        val out = m.update(1.0f, 0f, true, t + 100)
+        assertEquals("退出后闭眼累计应归零", 0, out.eyeCloseCount60s)
+        assertEquals("退出后哈欠累计应归零", 0, out.yawnCount60s)
+    }
+
+    @Test
+    fun `退出后立刻闭眼不会立刻告警`() {
+        // 退出疲劳时重置了检测器边沿状态：退出后立刻闭眼，需重新累积闭眼时长，
+        // 不会因旧闭眼计时延续而立刻触发（"恢复正常后立刻告警"）。
+        val m = machine()
+        var t = 0L
+        // 触发重度：连续闭眼 2.5s
+        m.update(1.0f, 0f, true, t)
+        m.update(0.0f, 0f, true, t + 100)
+        m.update(0.0f, 0f, true, t + 2600)
+        assertEquals(Level.SEVERE, m.update(0.0f, 0f, true, t + 2700).level)
+
+        // 睁眼并持续正常 20s+，退出重度（直接回 NONE）
+        t = 2700L
+        repeat(25) { t += 1000; m.update(1.0f, 0f, true, t) }
+        assertEquals(Level.NONE, m.update(1.0f, 0f, true, t).level)
+
+        // 退出后立刻闭眼，仅闭眼 1s（< 中度连续闭眼 1.5s 阈值），不应立刻告警
+        m.update(0.0f, 0f, true, t + 100)
+        val out = m.update(0.0f, 0f, true, t + 1100)  // 闭眼持续 1s
+        assertEquals("退出后闭眼1s不应立刻告警", Level.NONE, out.level)
+        // 需重新累积闭眼时长：闭眼 2.5s 同时满足中度(1.5~2.4s)和重度(≥2.4s)，
+        // 按"重覆盖轻"升级取最高 → 重度
+        val out2 = m.update(0.0f, 0f, true, t + 2600) // 闭眼持续 2.5s
+        assertEquals("重新累积2.5s应进入重度(覆盖中度)", Level.SEVERE, out2.level)
+    }
+
+    @Test
+    fun `短暂无人脸后恢复统计不被污染`() {
+        // 无人脸期间不应累计闭眼/哈欠事件：短暂无人脸(<resetMs)后恢复，统计保持干净
+        val m = machine()
+        // 触发一次有效闭眼
+        driveEyeClose(m, 0, 300)
+        val before = m.update(1.0f, 0f, true, 2000).eyeCloseCount60s
+        assertTrue("触发前应有1次闭眼", before >= 1)
+
+        // 短暂无人脸 1s（< resetMs=3s），期间闭眼（不应累计事件）
+        m.update(0.0f, 0f, false, 3000)  // 无人脸，闭眼
+        m.update(0.0f, 0f, false, 4000)  // 无人脸持续 1s
+        // 恢复人脸（睁眼）
+        val out = m.update(1.0f, 0f, true, 4100)
+        // 无人脸期间未累计新闭眼事件，闭眼统计仍为之前的 1 次
+        assertEquals("无人脸期间不应累计闭眼", before, out.eyeCloseCount60s)
+    }
+
+    @Test
+    fun `reset清零等级与统计`() {
+        // 门开换人调用 reset()：等级回 NONE、累计统计清空、检测器复位
+        val m = machine()
+        var t = 0L
+        // 触发轻度：9 次有效闭眼
+        repeat(9) { driveEyeClose(m, t, 300); t += 1000 }
+        assertEquals(Level.LIGHT, m.update(1.0f, 0f, true, t).level)
+
+        // 手动 reset（模拟门开换人）
+        m.reset()
+        val out = m.update(1.0f, 0f, true, t + 100)
+        assertEquals("reset后应回正常", Level.NONE, out.level)
+        assertEquals("reset后闭眼统计应归零", 0, out.eyeCloseCount60s)
+        assertEquals("reset后哈欠统计应归零", 0, out.yawnCount60s)
+    }
 }

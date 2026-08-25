@@ -45,7 +45,7 @@
         android:layout_marginTop="12dp"
         android:text="@string/fatigue_status_ok"
         android:textColor="@color/fatigue_normal"
-        android:textSize="16sp"
+        android:textSize="32sp"
         android:textStyle="bold"
         app:layout_constraintTop_toTopOf="parent"
         app:layout_constraintStart_toEndOf="@id/indicator_light" />

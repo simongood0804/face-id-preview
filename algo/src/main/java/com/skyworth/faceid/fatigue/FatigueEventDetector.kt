@@ -69,6 +69,26 @@ class FatigueEventDetector(
         private set
 
     /**
+     * 重置所有边沿/窗口状态（疲劳退出或无人脸复位时调用）。
+     * 避免退出后旧的闭眼/张嘴计时延续，导致 `eye_close_duration` 等条件立刻满足、
+     * "恢复正常后立刻告警"（FACEP-015）。
+     */
+    fun reset() {
+        eyeClosed = false
+        eyeCloseStartMs = 0L
+        yawnActive = false
+        yawnStartMs = 0L
+        yawnOpenAccumMs = 0L
+        lastOpenStartMs = 0L
+        activeEndMs = 0L
+        lastCloseStartMs = -1L
+        lastEyeCloseStartMs = -1L
+        lastYawnStartMs = -1L
+        curEyeCloseMs = 0L
+        curYawnMs = 0L
+    }
+
+    /**
      * 输入一帧，产出本帧新结束的事件。
      *
      * @param nowMs 当前时刻（ms，单调递增）

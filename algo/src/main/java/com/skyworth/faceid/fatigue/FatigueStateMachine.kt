@@ -36,6 +36,20 @@ class FatigueStateMachine(
         private set
 
     /**
+     * 重置疲劳状态机（换驾驶员/门开时调用，FACEP-015 中危修复）：
+     * 等级回 NONE、累计统计清空、检测器边沿状态复位，重新累计。
+     */
+    fun reset() {
+        level = FatigueRule.Level.NONE
+        levelEnterMs = 0L
+        lastMatchedCondition = null
+        lastNoFaceStartMs = -1L
+        lastNoFaceMs = 0L
+        events.clear()
+        detector.reset()
+    }
+
+    /**
      * 更新一帧，返回当前疲劳等级与诊断信息。
      *
      * @param eyeOpenRatio 眼睛连续开合度（0~1，1=全睁）
@@ -44,9 +58,13 @@ class FatigueStateMachine(
      * @param nowMs 当前时刻（ms，单调递增）
      */
     fun update(eyeOpenRatio: Float, mouthOpenRatio: Float, hasFace: Boolean, nowMs: Long): FatigueOutput {
-        // 1. 事件检测：新结束的闭眼/哈欠事件入池
+        // 1. 事件检测：新结束的闭眼/哈欠事件入池。
+        //    无人脸期间不累计事件（onFrame 仍重置边沿状态，但产出的"最后一段闭眼/张嘴"
+        //    事件不入池——无人脸时其时长会随 nowMs 虚高，且无人脸应视为复位，不入统计）。
         val newEvents = detector.onFrame(eyeOpenRatio, mouthOpenRatio, hasFace, nowMs)
-        for (e in newEvents) events.add(nowMs to e)
+        if (hasFace) {
+            for (e in newEvents) events.add(nowMs to e)
+        }
 
         // 2. 无人脸复位
         if (!hasFace) {
@@ -57,6 +75,7 @@ class FatigueStateMachine(
                 levelEnterMs = nowMs
                 lastMatchedCondition = null
                 events.clear()
+                detector.reset() // 重置边沿/窗口状态，避免退出后旧闭眼/张嘴计时延续
             }
             lastNoFaceMs = noFaceMs
             return output(eyeOpenRatio, mouthOpenRatio, nowMs)
@@ -106,7 +125,10 @@ class FatigueStateMachine(
     /** 当前等级 exit 满足 → **直接退出疲劳（回 NONE）**，不再逐级降（重度→轻度→…）。
      *  语义：三级是"覆盖"关系（重替换轻），退出即回到正常状态。
      *  滞回：等级进入后需持续 ≥ exit 窗口时长，且窗口内仍无显著事件，才允许退出——
-     *  避免"刚触发(如 9 次短闭眼进入轻度)就因无长事件立即退出"。 */
+     *  避免"刚触发(如 9 次短闭眼进入轻度)就因无长事件立即退出"。
+     *  **退出时清空已累计的闭眼/哈欠事件 + 重置检测器边沿状态**，重新计算——
+     *  避免退出前旧统计残留（新进入被旧累计快速触发），也避免退出瞬间正在闭眼/张嘴的
+     *  计时延续导致 `eye_close_duration` 条件立刻满足（"恢复正常后立刻告警"）。 */
     private fun maybeDowngrade(nowMs: Long) {
         val cur = rule.levels.firstOrNull { it.level == level && it.enabled } ?: return
         val exitWindow = (cur.exit as? Condition.CleanClear)?.windowMs ?: 20_000L
@@ -115,6 +137,8 @@ class FatigueStateMachine(
             level = FatigueRule.Level.NONE
             levelEnterMs = nowMs
             lastMatchedCondition = null
+            events.clear()   // 退出疲劳：闭眼/哈欠累计归零，重新计算
+            detector.reset() // 重置边沿状态，避免退出后旧闭眼/张嘴计时延续
         }
     }
 
