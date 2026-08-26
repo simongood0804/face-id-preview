@@ -31,7 +31,7 @@ val atlasMavenRepoUrl: String =
         ?: "ssh://git@10.14.101.201:9005/algo/atlas_maven.git").toString()
 val atlasMavenLocalDir: String =
     (project.findProperty("atlasMavenLocalDir")
-        ?: "${System.getProperty("user.home")}/.m2/atlas_maven").toString()
+        ?: "${System.getProperty("user.home")}/.m2/repository/atlas_maven").toString()
 
 // 非交互执行 git 命令：BatchMode 防止无 SSH key 时挂起等待密码
 fun runGit(workDir: File?, vararg args: String) {
@@ -106,7 +106,7 @@ val repo_common_jars_node: String by extra("script://common/compile/jars")
 
 apply(plugin = "pizzk.gradle.maven.repo")
 with(extensions["mavenrepo"] as pizzk.gradle.plugin.index.MavenRepoConfig) {
-    changing(false)
+    changing(true)
     manifests {
         manifestGitee(false)
     }
