@@ -34,12 +34,11 @@ android {
 
 // 方案 B（FACEP-014）：face-sdk 由**最终消费方自行提供**，algo 不打包、不传递它。
 // face-sdk 用 compileOnly（仅编译期需要其类定义），产物 AAR 不含 face-sdk；
-// 原因：AGP 禁止 library 用 api/implementation 依赖本地 .aar 再打包 AAR（产物破损，
-// face-sdk 的 classes 不会进 AAR），且若 api() 坐标依赖则必须发布到可复现仓库——
-// 当前 face-sdk 授权/分发未定，故走"消费方自供"路径。
+// 原因：AGP 禁止 library 用 api/implementation 依赖 aar 再打包 AAR（产物破损，
+// face-sdk 的 classes 不会进 AAR）。坐标来自本地 maven 仓库（~/.m2）。
 dependencies {
     // 唯一算法依赖：face-sdk（compileOnly，仅编译期；运行时由消费方实现/打包）
-    compileOnly(files("libs/face-sdk-v1.1.4.aar"))
+    compileOnly("atlas.sdk.face:face-sdk:${rootProject.extra["faceSdkVersion"]}")
 
     // ========== 测试依赖 ==========
     testImplementation("junit:junit:4.13.2")

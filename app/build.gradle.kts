@@ -16,6 +16,17 @@ android {
         versionName = "1.0.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+
+        // face-sdk native so 仅含 arm64，固定 ABI 避免误加其他架构导致缺 so 崩溃
+        ndk {
+            abiFilters.add("arm64-v8a")
+        }
+        externalNativeBuild {
+            cmake {
+                // AHardwareBuffer_fromHardwareBuffer 需要 API 26+
+                arguments("-DANDROID_PLATFORM=android-29")
+            }
+        }
     }
 
     signingConfigs {
@@ -72,20 +83,18 @@ android {
         }
     }
 
-    defaultConfig {
-        ndk {
-            abiFilters.add("arm64-v8a")
-        }
-        externalNativeBuild {
-            cmake {
-                // AHardwareBuffer_fromHardwareBuffer 需要 API 26+
-                arguments("-DANDROID_PLATFORM=android-29")
-            }
-        }
-    }
-
     packagingOptions {
-        jniLibs.pickFirsts.add("lib/arm64-v8a/libc++_shared.so")
+        // hardware_buffer_reader 与 face-sdk 均链接 libc++_shared，取一份即可
+        jniLibs.pickFirsts.add("**/libc++_shared.so")
+        // 排除 aar/jar 中冗余的 META-INF 元数据，避免打包合并冲突
+        excludes.addAll(
+            setOf(
+                "META-INF/*.version",
+                "META-INF/DEPENDENCIES",
+                "META-INF/LICENSE*",
+                "META-INF/NOTICE*"
+            )
+        )
     }
 }
 
@@ -96,8 +105,8 @@ dependencies {
     // 方案 B（FACEP-014）：face-sdk 由消费方（本 app）自行提供。
     // :algo 以 compileOnly 引用 face-sdk（仅编译期，不打包/不传递），因此这里必须
     // implementation 它，否则运行时报 NoClassDefFoundError。app 是 application 模块，
-    // 本地 aar 文件依赖合法（不受 library"禁止本地 aar 打包"限制）。
-    implementation(files("libs/face-sdk-v1.1.4.aar"))
+    // 用 maven 坐标依赖本地仓库（~/.m2）的 aar 合法。
+    implementation("atlas.sdk.face:face-sdk:${rootProject.extra["faceSdkVersion"]}")
 
     // EvsSDK AOSP 依赖（通过 maven-repo-plugin 加载）
     implementation("${rootProject.extra["aosp_evs_lib"]}:${rootProject.extra["aosp_evs_lib_version"]}")
