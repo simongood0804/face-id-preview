@@ -112,7 +112,7 @@ data class FatigueRule(
 
     companion object {
         /** 闭眼判定阈值（单帧连续开合度 ≤ 此值判闭眼，防抖已去除）。 */
-        const val EYE_CLOSE_RATIO = 0.10f
+        const val EYE_CLOSE_RATIO = 0.08f
 
         /** 用户给定规则（2026-08-25）对应的默认三级规则。 */
         val DEFAULT_LEVELS: List<LevelRule> = listOf(

@@ -25,7 +25,7 @@ data class FatigueEvent(
  * 跟踪状态边沿与持续时长。纯 JVM（时钟由外部注入，便于测试）。
  *
  * 判定规则：
- * - 闭眼：`eyeOpenRatio ≤ FatigueRule.EYE_CLOSE_RATIO(0.10)`；
+ * - 闭眼：`eyeOpenRatio ≤ FatigueRule.EYE_CLOSE_RATIO(0.08)`；
  * - 哈欠（方案 C，区分说话抖动）：维护一个"张嘴窗口"（从首次嘴开进入，到**持续闭合 ≥
  *   内部确认时长 [yawnCloseEndMs]** 退出）。窗口内用**时间**累计：
  *   - `openAccumMs`：开口（≥阈值）累计时长；

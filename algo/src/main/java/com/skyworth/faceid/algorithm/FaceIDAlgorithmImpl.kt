@@ -396,8 +396,8 @@ class FaceIDAlgorithmImpl : IFaceIDAlgorithm {
                 val eyeOpenRatio = validEst?.let { mEyeMouthCalibrator.normalizeEye(it.aperture) } ?: 1f
                 val mouthOpenRatio = validEst?.let { mEyeMouthCalibrator.normalizeMouth(it.mar) } ?: 0f
                 // 去除眼嘴防抖（FACEP-015 后疲劳引擎用连续量 eyeOpenRatio/mouthOpenRatio，
-                // 布尔仅作渲染标注）：用滞回判定——开合度 ≤0.10 判闭眼、>0.20 判睁眼，
-                // 0.10~0.20 之间维持上一状态（防半开合抖动）。mouthOpen 用张嘴上界。
+                // 布尔仅作渲染标注）：用滞回判定——开合度 ≤0.08 判闭眼、>0.15 判睁眼，
+                // 0.08~0.15 之间维持上一状态（防半开合抖动）。mouthOpen 用张嘴上界。
                 val eyeOpen = if (eyeOpenRatio <= EYE_CLOSE_RATIO) {
                     false
                 } else if (eyeOpenRatio > EYE_OPEN_RATIO) {
@@ -590,9 +590,9 @@ class FaceIDAlgorithmImpl : IFaceIDAlgorithm {
         private const val MODEL_ASSET_PATH = "models"
 
         /** 眼睛滞回阈值：开合度 ≤ 此值判闭眼（与 FatigueRule.EYE_CLOSE_RATIO 一致）。 */
-        private const val EYE_CLOSE_RATIO = 0.10f
-        /** 眼睛滞回阈值：开合度 > 此值判睁眼；[EYE_CLOSE_RATIO]~此值之间维持上一状态（0.1~0.2 滞回）。 */
-        private const val EYE_OPEN_RATIO = 0.20f
+        private const val EYE_CLOSE_RATIO = 0.08f
+        /** 眼睛滞回阈值：开合度 > 此值判睁眼；[EYE_CLOSE_RATIO]~此值之间维持上一状态（0.08~0.15 滞回）。 */
+        private const val EYE_OPEN_RATIO = 0.15f
 
         /** 录入所需的最小人脸像素尺寸（RECOG 需要足够大的对齐人脸）。 */
         private const val MIN_FACE_SIZE = 200
