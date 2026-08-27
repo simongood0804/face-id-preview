@@ -434,7 +434,26 @@ class FaceIDAlgorithmImpl : IFaceIDAlgorithm {
                     mouthOpen = mouthOpen,
                     // FACEP-015：透传连续开合度供疲劳判定（打哈欠/闭眼分级）
                     eyeOpenRatio = eyeOpenRatio,
-                    mouthOpenRatio = mouthOpenRatio
+                    mouthOpenRatio = mouthOpenRatio,
+                    // 透传 AAR FaceResult 补充返回值（活体/头姿/球面视线/视线关键点/头姿坐标系）
+                    liveness = r.liveness,
+                    flags = r.flags,
+                    headPose6d = r.headPose6d,
+                    headValid = r.headValid,
+                    sphereYaw = r.sphereYaw,
+                    spherePitch = r.spherePitch,
+                    area3Hit = r.area3Hit,
+                    sphereValid = r.sphereValid,
+                    gazeKps = r.gazeKps,
+                    headHcRot = r.headHcRot,
+                    headHcT = r.headHcT,
+                    headHwRot = r.headHwRot,
+                    headHwT = r.headHwT,
+                    // 车辆系头朝向（headDir 单位向量 + yaw/pitch 角，需 flags&HEADFRAME 且 headDirValid==1）
+                    headDir = r.headDir,
+                    headDirYaw = r.headDirYaw,
+                    headDirPitch = r.headDirPitch,
+                    headDirValid = r.headDirValid
                 )
             } else {
                 if (n == 0) Log.i(TAG, "  no face detected")

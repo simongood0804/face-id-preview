@@ -1,10 +1,13 @@
 package com.skyworth.faceid.signal
 
+import android.util.Log
+import atlas.face.sdk.FaceFlag
 import com.skyworth.faceid.algorithm.IFaceIDAlgorithm
 import com.skyworth.faceid.bus.BusHub
 import com.skyworth.faceid.bus.BusPublisher
 import com.skyworth.faceid.bus.BusSubscriber
 import com.skyworth.faceid.bus.ServiceRegistry
+import com.skyworth.faceid.zone.GazeFallpointDetector
 
 /**
  * 信号转发层核心：信号分发器。
@@ -30,9 +33,26 @@ class SignalDispatcher(
     private val distractionExtractor: (IFaceIDAlgorithm.FaceIDResult) -> SignalTypes.AlgoDistractionInput =
         { r -> SignalTypes.AlgoDistractionInput(r.faceId.isNotEmpty(), r.gazeDistracted) },
     /** 分心状态机实例（可注入便于测试）。 */
-    private val stateMachine: DistractionStateMachine = DistractionStateMachine()
+    private val stateMachine: DistractionStateMachine = DistractionStateMachine(),
+    /** 自研视线落点判定器（[DistractionSource.SELF] 源用），由外部构建注入；null 时 SELF 退化为 SDK。 */
+    private val fallpointDetector: GazeFallpointDetector? = null,
+    /** 分心数据源开关（FACEP-016，默认 [DistractionSource.SDK]），启动时由外部按持久化值注入。 */
+    private val initialSource: DistractionSource = DistractionSource.SDK
 ) {
     private val TAG = "SignalDispatcher"
+
+    /** 当前分心数据源（仅分心监测模块），默认 [DistractionSource.SDK]。 */
+    @Volatile
+    var distractionSource: DistractionSource = initialSource
+        private set
+
+    /**
+     * 手动切换分心数据源（FACEP-016）。
+     * 即时生效；持久化由调用方（UI 层）配合 [DistractionSourceStore] 完成。
+     */
+    fun setDistractionSource(source: DistractionSource) {
+        distractionSource = source
+    }
 
     /** 当前缓存的车速。 */
     @Volatile
@@ -52,6 +72,14 @@ class SignalDispatcher(
     @Volatile
     var lastDistraction: SignalTypes.DistractionOutput = SignalTypes.DistractionOutput.IDLE
         private set
+
+    /** SELF 源 headDir 无效诊断日志节流：距上次日志的最小间隔（ms）。 */
+    private var lastInvalidLogMs = 0L
+
+    companion object {
+        /** SELF 源 headDir 无效诊断日志节流间隔（ms）。 */
+        private const val INVALID_LOG_INTERVAL_MS = 5_000L
+    }
 
     /** 最近一次故障事件（无故障时为 null）。 */
     @Volatile
@@ -103,10 +131,42 @@ class SignalDispatcher(
     }
 
     /**
+     * 按当前 [distractionSource] 解析分心输入（FACEP-016）。
+     * - [DistractionSource.SDK]：用算法返回的 `gazeDistracted`（默认）。
+     * - [DistractionSource.SELF]：用自研落点区域判定结果；detector 为 null 时退化为 SDK。
+     */
+    private fun resolveDistractionInput(result: IFaceIDAlgorithm.FaceIDResult): SignalTypes.AlgoDistractionInput {
+        val detector = fallpointDetector
+        if (distractionSource == DistractionSource.SELF && detector != null) {
+            // headDir* 需 flags&HEADFRAME 且 headDirValid==1（底层 cam_transform_enabled 开启）
+            // 隐患修复：hasFace 表示"检测到人脸"（headDir 有效即有人脸），
+            // 与落点是否命中区域无关——落点不命中任何区域 ≠ 无人脸（否则会被状态机按
+            // "无人脸 3s 复位"误复位，导致 SELF 模式分心判定失效）。
+            val valid = (result.flags and FaceFlag.HEADFRAME) != 0 &&
+                result.headDirValid >= 1.0f
+            if (!valid) {
+                // 隐患修复：headDir 无效时节流记日志，提示可能底层 cam_transform_enabled 未开启
+                val nowMs = System.currentTimeMillis()
+                if (nowMs - lastInvalidLogMs > INVALID_LOG_INTERVAL_MS) {
+                    Log.w(TAG, "SELF: headDir invalid (flags HEADFRAME=${(result.flags and FaceFlag.HEADFRAME) != 0}, " +
+                        "headDirValid=${result.headDirValid}); check cam_transform_enabled")
+                    lastInvalidLogMs = nowMs
+                }
+            }
+            val pred = detector.update(result.headHwTSafe, result.headDirSafe, valid)
+            return SignalTypes.AlgoDistractionInput(
+                hasFace = valid,                        // 有人脸（headDir 有效）
+                gazeDistracted = if (pred.isDistracted) 1f else 0f
+            )
+        }
+        return distractionExtractor(result)
+    }
+
+    /**
      * 直接处理一条算法结果消息（外部推送路径）。
      */
     fun processAlgorithmResult(result: IFaceIDAlgorithm.FaceIDResult) {
-        val input = distractionExtractor(result)
+        val input = resolveDistractionInput(result)
         // 无人脸由状态机内部按确认时长延时复位（防算法短暂漏检误消除信号），
         // 因此统一走 update，不再在此处立即 reset。
         val distracted = stateMachine.update(input, currentSpeedKmh)

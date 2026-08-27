@@ -53,6 +53,22 @@
         app:layout_constraintTop_toTopOf="parent"
         app:layout_constraintEnd_toEndOf="parent" />
 
+    <!-- 分心数据源切换（FACEP-016：点击切换 SDK/SELF，默认 SDK，持久化） -->
+    <TextView
+        android:id="@+id/tv_distraction_source"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_marginEnd="12dp"
+        android:layout_marginTop="6dp"
+        android:padding="6dp"
+        android:background="#3300FF00"
+        android:clickable="true"
+        android:focusable="true"
+        android:textColor="#00FF00"
+        android:textSize="13sp"
+        app:layout_constraintTop_toBottomOf="@id/tv_speed"
+        app:layout_constraintEnd_toEndOf="parent" />
+
     <!-- 返回主页按钮 -->
     <Button
         android:id="@+id/btn_back_home"

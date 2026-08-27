@@ -77,8 +77,57 @@ interface IFaceIDAlgorithm {
         /** 眼睛连续开合度（0~1，1=全睁；FACEP-015 疲劳判定用，未检测人脸/地标缺失时=1）。 */
         val eyeOpenRatio: Float = 1f,
         /** 嘴部连续开合度（0~1，1=全张；FACEP-015 打哈欠判定用，未检测人脸/地标缺失时=0）。 */
-        val mouthOpenRatio: Float = 0f
+        val mouthOpenRatio: Float = 0f,
+        /** 活体得分（AAR FaceResult.liveness 透传；<0=不可用，>0.5=活体，否则疑似 spoof）。 */
+        val liveness: Float = 0f,
+        /** 结果包含哪些模型输出（AAR FaceResult.flags 位标志透传）。 */
+        val flags: Int = 0,
+        /** 头部姿态 6D 旋转（AAR FaceResult.headPose6d，3 或 6 元素）。 */
+        val headPose6d: FloatArray? = null,
+        /** 头部姿态有效性（AAR FaceResult.headValid，1=有效，0=无效）。 */
+        val headValid: Int = 0,
+        /** 球面视线-偏航角（AAR FaceResult.sphereYaw，单位度）。 */
+        val sphereYaw: Float = 0f,
+        /** 球面视线-俯仰角（AAR FaceResult.spherePitch，单位度）。 */
+        val spherePitch: Float = 0f,
+        /** 球面视线-3 区域命中标记（AAR FaceResult.area3Hit）。 */
+        val area3Hit: Float = 0f,
+        /** 球面视线-有效性（AAR FaceResult.sphereValid）。 */
+        val sphereValid: Float = 0f,
+        /** 视线关键点（AAR FaceResult.gazeKps，每行 [x,y]）。 */
+        val gazeKps: Array<FloatArray>? = null,
+        /** 头姿-头心旋转矩阵（AAR FaceResult.headHcRot）。 */
+        val headHcRot: FloatArray? = null,
+        /** 头姿-头心平移向量（AAR FaceResult.headHcT）。 */
+        val headHcT: FloatArray? = null,
+        /** 头姿-头旋旋转矩阵（AAR FaceResult.headHwRot）。 */
+        val headHwRot: FloatArray? = null,
+        /** 头姿-头旋平移向量（AAR FaceResult.headHwT）。 */
+        val headHwT: FloatArray? = null,
+        /** 车辆系头朝向单位向量 xyz（AAR FaceResult.headDir，需 flags&HEADFRAME 且 headDirValid==1）。 */
+        val headDir: FloatArray? = null,
+        /** 车辆系头朝向偏航角（AAR FaceResult.headDirYaw，度；0=正前，右转+）。 */
+        val headDirYaw: Float = 0f,
+        /** 车辆系头朝向俯仰角（AAR FaceResult.headDirPitch，度；0=水平，低头-）。 */
+        val headDirPitch: Float = 0f,
+        /** 头朝向有效性（AAR FaceResult.headDirValid，1=有效，需底层 cam_transform_enabled）。 */
+        val headDirValid: Float = 0f
     ) {
+        /** 头部姿态 6D 旋转（防御性拷贝，null 保持 null）。 */
+        val headPose6dSafe: FloatArray? = headPose6d?.copyOf()
+        /** 视线关键点（防御性拷贝，null 保持 null）。 */
+        val gazeKpsSafe: Array<FloatArray>? = gazeKps?.map { it.copyOf() }?.toTypedArray()
+        /** 头姿-头心旋转矩阵（防御性拷贝）。 */
+        val headHcRotSafe: FloatArray? = headHcRot?.copyOf()
+        /** 头姿-头心平移向量（防御性拷贝）。 */
+        val headHcTSafe: FloatArray? = headHcT?.copyOf()
+        /** 头姿-头旋旋转矩阵（防御性拷贝）。 */
+        val headHwRotSafe: FloatArray? = headHwRot?.copyOf()
+        /** 头姿-头旋平移向量（防御性拷贝）。 */
+        val headHwTSafe: FloatArray? = headHwT?.copyOf()
+        /** 车辆系头朝向单位向量（防御性拷贝）。 */
+        val headDirSafe: FloatArray? = headDir?.copyOf()
+
         /** Face ID 唯一标识，不为 null。 */
         val faceId: String = faceId ?: ""
 

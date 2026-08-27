@@ -15,8 +15,12 @@ import com.skyworth.faceid.core.AlgoSession
 import com.skyworth.faceid.core.FaceOverlayBridge
 import com.skyworth.faceid.core.FrameSession
 import com.skyworth.faceid.core.NativeFrameReader
+import com.skyworth.faceid.signal.DistractionSource
+import com.skyworth.faceid.signal.DistractionSourceStore
 import com.skyworth.faceid.signal.SignalDispatcher
 import com.skyworth.faceid.signal.VehicleSignalSource
+import com.skyworth.faceid.zone.GazeFallpointDetector
+import com.skyworth.faceid.zone.RegionConfigLoader
 
 /**
  * 分心监测模块（FACEP-011 阶段四）。
@@ -37,6 +41,7 @@ class DistractionActivity : AppCompatActivity() {
     private lateinit var mSurface: GLSurfaceView
     private lateinit var mDistractionText: TextView
     private lateinit var mSpeedText: TextView
+    private lateinit var mSourceText: TextView
 
     private var mAlgoSession: AlgoSession? = null
     private var mFrameSession: FrameSession? = null
@@ -56,7 +61,10 @@ class DistractionActivity : AppCompatActivity() {
         mSurface = findViewById(R.id.preview_surface)
         mDistractionText = findViewById(R.id.tv_distraction)
         mSpeedText = findViewById(R.id.tv_speed)
+        mSourceText = findViewById(R.id.tv_distraction_source)
         findViewById<Button>(R.id.btn_back_home).setOnClickListener { finish() }
+        // FACEP-016：点击切换分心数据源（SDK/SELF），即时生效 + 持久化
+        mSourceText.setOnClickListener { toggleDistractionSource() }
 
         Log.i(TAG, "onCreate: done")
     }
@@ -106,7 +114,17 @@ class DistractionActivity : AppCompatActivity() {
             // 分心信号链路（直接路径：算法结果 → processAlgorithmResult）
             val hub = BusHub()
             val publisher = BusPublisher(hub)
-            mDispatcher = SignalDispatcher(hub, publisher)
+            // FACEP-016：自研视线落点判定器（SELF 源）+ 数据源开关（默认 SDK，持久化读取）
+            // 区域配置从 assets 的 zone_regions.json 解析（4 点四边形，后续可改）。
+            val regions = RegionConfigLoader.loadFromAssets(this)
+            val fallpointDetector = GazeFallpointDetector(regions)
+            mDispatcher = SignalDispatcher(
+                hub = hub,
+                publisher = publisher,
+                fallpointDetector = fallpointDetector,
+                initialSource = DistractionSourceStore.load(this)
+            )
+            updateDistractionSource()   // 初始化显示当前数据源
 
             // 车速源
             mVehicleSource = VehicleSignalSource(this).also { vs ->
@@ -173,6 +191,32 @@ class DistractionActivity : AppCompatActivity() {
         } else {
             mDistractionText.setTextColor(0xFF00FF00.toInt())
             mDistractionText.setText(R.string.distraction_status_ok)
+        }
+    }
+
+    /**
+     * FACEP-016：点击切换分心数据源（SDK ↔ SELF），即时生效 + 持久化（重启保留）。
+     */
+    private fun toggleDistractionSource() {
+        val dispatcher = mDispatcher ?: return
+        val next = if (dispatcher.distractionSource == DistractionSource.SDK) {
+            DistractionSource.SELF
+        } else {
+            DistractionSource.SDK
+        }
+        dispatcher.setDistractionSource(next)
+        DistractionSourceStore.save(this, next)   // 持久化，重启保留
+        updateDistractionSource()
+        Log.i(TAG, "distraction source -> $next")
+    }
+
+    /** 更新数据源显示文本。 */
+    private fun updateDistractionSource() {
+        val source = mDispatcher?.distractionSource ?: DistractionSource.SDK
+        mSourceText.text = if (source == DistractionSource.SDK) {
+            "SRC:SDK(算法) 点击切换"
+        } else {
+            "SRC:SELF(自研) 点击切换"
         }
     }
 

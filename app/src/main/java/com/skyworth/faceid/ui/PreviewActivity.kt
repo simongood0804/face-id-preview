@@ -32,9 +32,12 @@ import com.skyworth.faceid.core.NativeFrameReader
 import com.skyworth.faceid.camera.FaceIDCameraController
 import com.skyworth.faceid.frame.FrameDistributor
 import com.skyworth.faceid.render.FaceOverlayView
+import com.skyworth.faceid.signal.DistractionSourceStore
 import com.skyworth.faceid.signal.DistractionStateMachine
 import com.skyworth.faceid.signal.SignalDispatcher
 import com.skyworth.faceid.signal.VehicleSignalSource
+import com.skyworth.faceid.zone.GazeFallpointDetector
+import com.skyworth.faceid.zone.RegionConfigLoader
 import java.util.concurrent.Executors
 
 /**
@@ -229,7 +232,16 @@ class PreviewActivity : AppCompatActivity() {
         mBusHub = hub
         val publisher = BusPublisher(hub)
         mBusPublisher = publisher
-        mSignalDispatcher = SignalDispatcher(hub, publisher)
+        // FACEP-016：自研视线落点判定器（SELF 源）+ 数据源开关（默认 SDK，持久化读取）
+        // 区域配置从 assets 的 zone_regions.json 解析（4 点四边形，后续可改）。
+        val regions = RegionConfigLoader.loadFromAssets(this)
+        val fallpointDetector = GazeFallpointDetector(regions)
+        mSignalDispatcher = SignalDispatcher(
+            hub = hub,
+            publisher = publisher,
+            fallpointDetector = fallpointDetector,
+            initialSource = DistractionSourceStore.load(this)
+        )
 
         mVehicleSignal = VehicleSignalSource(this).also { vs ->
             vs.onSpeedChanged = { speed ->
