@@ -42,6 +42,8 @@ class RecognitionActivity : AppCompatActivity() {
     private lateinit var mEnrollStatusText: TextView
     private lateinit var mStartEnrollBtn: Button
     private lateinit var mManageFacesBtn: Button
+    private lateinit var mContinuousDumpBtn: Button
+    private lateinit var mMoveDumpBtn: Button
 
     private var mAlgoSession: AlgoSession? = null
     private var mFrameSession: FrameSession? = null
@@ -86,8 +88,12 @@ class RecognitionActivity : AppCompatActivity() {
 
         // FACEP-011：恢复 dump 调试功能（dump原图/导出/清除）
         findViewById<Button>(R.id.btn_dump).setOnClickListener { onDumpClick() }
-        findViewById<Button>(R.id.btn_move_dump).setOnClickListener { onMoveDumpClick() }
+        mMoveDumpBtn = findViewById(R.id.btn_move_dump)
+        mMoveDumpBtn.setOnClickListener { onMoveDumpClick() }
         findViewById<Button>(R.id.btn_clear_dump).setOnClickListener { onClearDumpClick() }
+        // 连续 dump（每秒 5 帧，持续 30s；点击后置灰显示"连续dump中"，完成恢复）
+        mContinuousDumpBtn = findViewById(R.id.btn_dump_continuous)
+        mContinuousDumpBtn.setOnClickListener { onContinuousDumpClick() }
 
         Log.i(TAG, "onCreate: done")
     }
@@ -116,6 +122,8 @@ class RecognitionActivity : AppCompatActivity() {
     }
 
     override fun onDestroy() {
+        // 连续 dump 进行中时停止，避免后台线程持续采集/回调
+        dumpAlgo()?.takeIf { it.isContinuousDumpActive() }?.stopContinuousDump()
         stopPreview()
         super.onDestroy()
     }
@@ -246,6 +254,44 @@ class RecognitionActivity : AppCompatActivity() {
         Log.i(TAG, "onDumpClick: manual dump triggered")
     }
 
+    /**
+     * 连续 dump：每秒 5 帧（200ms 间隔）持续 30s（150 帧），存到
+     * debugDump/continuous/{时间戳}/。点击后按钮置灰显示"连续dump中"，完成后恢复。
+     */
+    private fun onContinuousDumpClick() {
+        val algo = dumpAlgo()
+        if (algo == null) {
+            Toast.makeText(this, "dump: algorithm not initialized", Toast.LENGTH_SHORT).show()
+            return
+        }
+        if (algo.isContinuousDumpActive()) return
+        if (!algo.isDumpAvailable()) {
+            Toast.makeText(
+                this,
+                "dump: system property disabled, set algorithm_face_dump_enable first",
+                Toast.LENGTH_LONG
+            ).show()
+            return
+        }
+        // 置灰按钮 + 显示进行中
+        mContinuousDumpBtn.isEnabled = false
+        mContinuousDumpBtn.setText(R.string.btn_dump_continuous_active)
+        Log.i(TAG, "onContinuousDumpClick: start continuous dump (5fps x 30s)")
+
+        val started = algo.startContinuousDump(totalFrames = 150, intervalMs = 200) { saved ->
+            // 完成后恢复按钮（主线程）
+            mContinuousDumpBtn.isEnabled = true
+            mContinuousDumpBtn.setText(R.string.btn_dump_continuous)
+            Toast.makeText(this, "连续dump完成: 保存 $saved 帧", Toast.LENGTH_SHORT).show()
+            Log.i(TAG, "onContinuousDumpClick: finished, saved $saved frames")
+        }
+        if (!started) {
+            // 启动失败，恢复按钮
+            mContinuousDumpBtn.isEnabled = true
+            mContinuousDumpBtn.setText(R.string.btn_dump_continuous)
+        }
+    }
+
     /** 清除 debugDump 文件夹内容，并删除 /sdcard/debugDmsDump。 */
     private fun onClearDumpClick() {
         val algo = dumpAlgo()
@@ -267,11 +313,18 @@ class RecognitionActivity : AppCompatActivity() {
             Toast.makeText(this, "move dump: algorithm not initialized", Toast.LENGTH_SHORT).show()
             return
         }
+        // 导出中：置灰按钮 + 显示"导出中"，防重复触发，完成后再恢复
+        if (!mMoveDumpBtn.isEnabled) return   // 防重复
+        mMoveDumpBtn.isEnabled = false
+        mMoveDumpBtn.setText(R.string.btn_move_dump_active)
+        Log.i(TAG, "onMoveDumpClick: move triggered")
         algo.moveDumpPngToSdcard { ok ->
+            // 完成后恢复按钮（主线程回调）
+            mMoveDumpBtn.isEnabled = true
+            mMoveDumpBtn.setText(R.string.btn_move_dump)
             val msg = if (ok) "move dump: done" else "move dump: failed"
             Toast.makeText(this, msg, Toast.LENGTH_SHORT).show()
         }
-        Log.i(TAG, "onMoveDumpClick: move triggered")
     }
 
     // ============================================================
