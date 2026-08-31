@@ -17,7 +17,6 @@ import android.os.Handler
 import android.os.Looper
 import java.io.File
 import java.text.SimpleDateFormat
-import java.util.ArrayDeque
 import java.util.Date
 import java.util.Locale
 import java.util.concurrent.ExecutorService
@@ -123,20 +122,11 @@ class FaceIDAlgorithmImpl : IFaceIDAlgorithm {
     @Volatile private var mContinuousActive = false
     /** 连续 dump 定时任务句柄（用于手动停止）。 */
     private var mContinuousFuture: ScheduledFuture<*>? = null
-    /** 连续 dump 子目录（debugDump/continuous/{时间戳}）。 */
+    /** 连续 dump 子目录（debugDump/continuous）。 */
     private var mContinuousDir: File? = null
-    /** 连续 dump 待保存帧队列（有界，防 OOM；保存慢时丢弃最旧帧）。 */
-    private var mContinuousQueue: ArrayDeque<ContinuousFrame>? = null
     /** 连续 dump 保存子目录（采集线程写）。 */
     private var mContinuousSaveDir: File? = null
 
-    /** 连续 dump 一帧（UYVY 拷贝 + 元数据），入队异步保存。 */
-    private class ContinuousFrame(
-        val data: ByteArray,
-        val w: Int,
-        val h: Int,
-        val seq: Int
-    )
     /** 最近一帧原始 UYVY 数据缓存（手动触发时保存此帧）。 */
     private var mLatestFrame: ByteArray? = null
     private var mLatestW = 0
@@ -637,11 +627,6 @@ class FaceIDAlgorithmImpl : IFaceIDAlgorithm {
         private const val DEFAULT_MODEL_DIR = "/data/faceid/models"
         private const val MODEL_ASSET_PATH = "models"
 
-        /** 连续 dump 待保存队列最大容量（帧）；满则丢弃最旧，防 OOM。 */
-        private const val MAX_SAVE_QUEUE = 16
-        /** 连续 dump 保存图宽度（缩图，保证快速保存，避免逐帧 2s 拖垮采样）。 */
-        private const val CONTINUOUS_SAVE_WIDTH = 640
-
         /** 眼睛滞回阈值：开合度 ≤ 此值判闭眼（与 FatigueRule.EYE_CLOSE_RATIO 一致）。 */
         private const val EYE_CLOSE_RATIO = 0.08f
         /** 眼睛滞回阈值：开合度 > 此值判睁眼；[EYE_CLOSE_RATIO]~此值之间维持上一状态（0.08~0.15 滞回）。 */
@@ -726,22 +711,26 @@ class FaceIDAlgorithmImpl : IFaceIDAlgorithm {
      */
     fun isContinuousDumpActive(): Boolean = mContinuousActive
 
+    /** 连续 dump 当前已采样帧数。 */
+    fun getContinuousSampledCount(): Int = sampledCount.get()
+
+    /** 连续 dump 实际保存成功帧数（用于 UI 显示剩余张数倒计时，与磁盘文件数一致）。 */
+    fun getContinuousSavedCount(): Int = mContinuousSavedIndex.get()
+
     /**
      * 启动连续 dump：定时（[intervalMs] 间隔）从最近一帧原始 UYVY 采样保存为 PNG，
      * 共 [totalFrames] 帧，完成后回调（主线程）。
      *
-     * 目录结构：`debugDump/continuous/{启动时间戳}/dumpOrigin{seq}.png`，
-     * 每次启动生成独立时间戳子目录，index 从 0 开始（seq 3 位）。
+     * 目录结构：`debugDump/continuous/dumpOrigin{idx}.png`，
+     * 保存 index 从 0 开始（idx 3 位），以"实际保存成功帧数"为据，编号连续。
      *
-     * 默认每秒 5 帧（200ms 间隔）、持续 30s（150 帧）。
-     *
-     * @param totalFrames 采样帧数（默认 150 = 5fps × 30s）
-     * @param intervalMs  采样间隔（默认 200ms）
-     * @param onResult    完成回调（主线程），参数为实际保存成功数
+     * @param totalFrames 采样帧数上限（默认 300，采满即自然结束，不设固定时长）
+     * @param intervalMs  采样间隔（默认 200ms，最快 5fps）
+     * @param onResult    完成回调（主线程），参数为采样完成帧数
      * @return 是否成功启动（进行中或 dump 不可用返回 false）
      */
     fun startContinuousDump(
-        totalFrames: Int = 150,
+        totalFrames: Int = 300,
         intervalMs: Long = 200,
         onResult: ((Int) -> Unit)? = null
     ): Boolean {
@@ -756,8 +745,8 @@ class FaceIDAlgorithmImpl : IFaceIDAlgorithm {
             return false
         }
         // 连续 dump 固定目录 debugDump/continuous/（不按时间区分子目录）。
-        // 每次启动 index 从 0 开始，写 dumpOrigin{seq}.png 同名覆盖，
-        // 因此多次连续 dump 只保留最新 150 张（后覆盖前），不累积。
+        // 每次启动保存 index 从 0 开始，写 dumpOrigin{idx}.png 同名覆盖，
+        // 因此多次连续 dump 只保留最新一轮的帧（后覆盖前），不累积。
         val dir = File(sourceDir, "continuous")
         if (!dir.exists() && !dir.mkdirs()) {
             Log.w(TAG, "startContinuousDump: failed to create dir $dir")
@@ -767,76 +756,79 @@ class FaceIDAlgorithmImpl : IFaceIDAlgorithm {
 
         mContinuousDir = dir
         mContinuousSaveDir = dir
-        mContinuousQueue = ArrayDeque(MAX_SAVE_QUEUE)
+        // 关键：重置采样计数器。sampledCount 是实例字段，若上一次未归零，
+        // 第二次启动 getAndIncrement() 从上次的 totalFrames 继续，第一次采样即 seq>=totalFrames
+        // 立刻触发 finish，导致"第二次点击连续 dump 立刻完成"而非重新开始。
+        sampledCount.set(0)
+        mContinuousSavedIndex.set(0)
         mContinuousActive = true
         onResultContinuous = onResult   // finish 时消费一次
         Log.i(TAG, "startContinuousDump: dir=$dir total=$totalFrames interval=${intervalMs}ms")
 
-        // 采样与保存分离：
-        // 采样在 mContinuousExecutor 定时（200ms 节奏），采样满 totalFrames 即触发 finish（按钮恢复），
-        // 保存由 mDumpExecutor 异步消费队列执行（不阻塞采样，保证按钮 30s 准时恢复）。
-        mContinuousFuture = mContinuousExecutor.scheduleAtFixedRate({
-            try {
-                val seq = sampledCount.getAndIncrement()
-                if (seq >= totalFrames) {
-                    // 已采满，停止采样并回调（按钮恢复；后台保存继续）
-                    finishContinuousDump(seq)
-                    return@scheduleAtFixedRate
-                }
-                // 采样最近一帧（UYVY 拷贝入队，避免后续被覆盖）
-                val frame: ByteArray?; val w: Int; val h: Int
-                synchronized(this@FaceIDAlgorithmImpl) {
-                    frame = mLatestFrame
-                    w = mLatestW; h = mLatestH
-                }
-                if (frame != null && w > 0 && h > 0) {
-                    val copy = frame.copyOf()   // 防御性拷贝，避免主线程覆盖
-                    val q = mContinuousQueue
-                    if (q != null) {
-                        synchronized(q) {
-                            if (q.size >= MAX_SAVE_QUEUE) q.removeFirst()   // 满则丢弃最旧，防 OOM
-                            q.addLast(ContinuousFrame(copy, w, h, seq))
-                        }
-                    }
-                }
-                triggerContinuousSave()
-            } catch (e: Throwable) {
-                // 关键：采样任务绝不能因单帧异常终止周期（否则采不满 totalFrames，
-                // finishContinuousDump 永不触发，按钮卡在"连续DUMP中…"无法恢复）
-                Log.e(TAG, "continuous sampling frame failed, continue", e)
-            }
-        }, 0, intervalMs, TimeUnit.MILLISECONDS)
+        // 保存驱动采样（保帧率）：采一帧 → 保存一帧 → 完成后再调度下一次采样。
+        // 实际节奏 = max(保存耗时, intervalMs)，保证每帧都能成功写盘、不丢帧，最终存满 totalFrames。
+        // 保存失败也不中断，单帧异常不终止整轮（否则按钮卡在"连续DUMP中…"无法恢复）。
+        mContinuousFuture = mContinuousExecutor.schedule({
+            continuousSampleAndSave(totalFrames, intervalMs)
+        }, 0, TimeUnit.MILLISECONDS)
         return true
+    }
+
+    /**
+     * 连续 dump 单次"采样+保存"步骤（在 mContinuousExecutor 线程执行）。
+     * 采满 totalFrames 即结束并回调；否则延迟 [intervalMs] 后再采下一帧，
+     * 保证相邻两帧至少间隔 intervalMs（最快 5fps），且保存完成才继续。
+     */
+    private fun continuousSampleAndSave(totalFrames: Int, intervalMs: Long) {
+        if (!mContinuousActive) return
+        try {
+            val seq = sampledCount.getAndIncrement()
+            if (seq >= totalFrames) {
+                // 已采满，停止并回调（按钮恢复）
+                finishContinuousDump(seq)
+                return
+            }
+            // 采样最近一帧（UYVY 拷贝，避免被主线程后续覆盖）
+            val frame: ByteArray?; val w: Int; val h: Int
+            synchronized(this@FaceIDAlgorithmImpl) {
+                frame = mLatestFrame
+                w = mLatestW; h = mLatestH
+            }
+            if (frame != null && w > 0 && h > 0) {
+                val copy = frame.copyOf()
+                val dir = mContinuousSaveDir
+                if (dir != null) {
+                    // 同步保存本帧（保存多快就多快，不丢帧），成功后才 +index 并调度下一帧
+                    val idx = mContinuousSavedIndex.get()
+                    savePngScaled(File(dir, "dumpOrigin%03d.png".format(Locale.US, idx)), copy, w, h)
+                    mContinuousSavedIndex.incrementAndGet()
+                }
+            }
+            // 保存完成后，延迟 intervalMs 再采下一帧（保证最快不超过 5fps）
+            if (mContinuousActive) {
+                mContinuousFuture = mContinuousExecutor.schedule({
+                    continuousSampleAndSave(totalFrames, intervalMs)
+                }, intervalMs, TimeUnit.MILLISECONDS)
+            }
+        } catch (e: Throwable) {
+            // 关键：单帧异常不终止整轮，继续调度下一帧
+            Log.e(TAG, "continuousSampleAndSave: frame failed, continue", e)
+            if (mContinuousActive) {
+                mContinuousFuture = mContinuousExecutor.schedule({
+                    continuousSampleAndSave(totalFrames, intervalMs)
+                }, intervalMs, TimeUnit.MILLISECONDS)
+            }
+        }
     }
 
     /** 连续 dump 已采样帧数（每次 start 重置）。 */
     private val sampledCount = AtomicInteger(0)
 
     /**
-     * 异步保存连续 dump 队列（在 mDumpExecutor 单线程执行，缩图保证快速）。
-     * 保存慢时队列有界，超出的帧被丢弃（采样不阻塞）。
+     * 连续 dump 实际保存成功帧数（每次 start 重置）。
+     * 保存线程每成功写盘一帧 +1，文件名 index 以此为据，保证磁盘文件编号连续（0,1,2,...）。
      */
-    private fun triggerContinuousSave() {
-        val dir = mContinuousSaveDir ?: return
-        mDumpExecutor.execute {
-            try {
-                val q = mContinuousQueue ?: return@execute
-                while (true) {
-                    val f: ContinuousFrame
-                    synchronized(q) {
-                        f = q.pollFirst() ?: return@execute
-                    }
-                    try {
-                        savePngScaled(File(dir, "dumpOrigin%03d.png".format(Locale.US, f.seq)), f)
-                    } catch (e: Exception) {
-                        Log.e(TAG, "continuous save frame ${f.seq} failed", e)
-                    }
-                }
-            } catch (e: Exception) {
-                Log.e(TAG, "triggerContinuousSave: failed", e)
-            }
-        }
-    }
+    private val mContinuousSavedIndex = AtomicInteger(0)
 
     /**
      * 手动停止连续 dump（取消采样）。回调已采到的帧数（主线程）。
@@ -1002,7 +994,6 @@ class FaceIDAlgorithmImpl : IFaceIDAlgorithm {
                     mContinuousFuture?.cancel(false)
                     mContinuousFuture = null
                     mContinuousActive = false
-                    mContinuousQueue?.clear()
                 }
                 // 1. 彻底删除应用内 debugDump 目录（含 continuous/{时间戳} 子目录）
                 //    用 deleteRecursively 而非逐项 delete（后者删不掉非空子目录）
@@ -1148,51 +1139,16 @@ class FaceIDAlgorithmImpl : IFaceIDAlgorithm {
     }
 
     /**
-     * 连续 dump 专用缩图保存：UYVY → 缩采样 RGB → PNG。
+     * 连续 dump 保存：UYVY → RGB → PNG，**原尺寸**（1600×1300 等，不缩图）。
      *
-     * 连续 dump 每帧保存若用全分辨率（1920x1080）PNG 压缩约 2s，150 帧串行需约 5 分钟，
-     * 导致"按钮迟迟不恢复"。此处缩到 [CONTINUOUS_SAVE_WIDTH] 宽，单帧保存 <100ms，
-     * 保证 30s 采样节奏内 150 帧可快速落盘。
+     * 由保存驱动采样调用（采一帧存一帧），保存多快采多快，不丢帧，最终存满 totalFrames。
      */
-    private fun savePngScaled(file: File, frame: ContinuousFrame) {
+    private fun savePngScaled(file: File, data: ByteArray, w: Int, h: Int) {
         try {
-            val sw = frame.w
-            val sh = frame.h
-            if (sw <= 0 || sh <= 0) return
-            val targetW = CONTINUOUS_SAVE_WIDTH.coerceAtMost(sw)
-            val targetH = maxOf(1, sh * targetW / sw)
-            val data = frame.data
-            val scaleW = sw / targetW          // 每 targetW 像素取 1 个源像素列
-            val scaleH = sh / targetH          // 每 targetH 像素取 1 个源像素行
-            val pixels = IntArray(targetW * targetH)
-            var p = 0
-            for (ty in 0 until targetH) {
-                val sy = minOf(sh - 1, ty * scaleH)
-                val rowBase = sy * sw * 2
-                for (tx in 0 until targetW) {
-                    val sx = minOf(sw - 1, tx * scaleW)
-                    val pos = rowBase + sx * 2   // UYVY: [U][Y0][V][Y1]... 取 sx 处 UY
-                    val u = data[pos].toInt() and 0xFF
-                    val y = data[pos + 1].toInt() and 0xFF
-                    val v = data[minOf(data.size - 1, pos + 2)].toInt() and 0xFF
-                    val c = y - 16; val d = u - 128; val e = v - 128
-                    val r = clamp8((298 * c + 409 * e + 128) shr 8)
-                    val g = clamp8((298 * c - 100 * d - 208 * e + 128) shr 8)
-                    val b = clamp8((298 * c + 516 * d + 128) shr 8)
-                    pixels[p++] = (0xFF shl 24) or (r shl 16) or (g shl 8) or b
-                }
-            }
-            val bmp = Bitmap.createBitmap(targetW, targetH, Bitmap.Config.ARGB_8888).apply {
-                setPixels(pixels, 0, targetW, 0, 0, targetW, targetH)
-            }
-            file.parentFile?.mkdirs()
-            val os = file.outputStream()
-            try {
-                bmp.compress(Bitmap.CompressFormat.PNG, 100, os)
-            } finally {
-                os.close()
-            }
-            bmp.recycle()
+            if (w <= 0 || h <= 0) return
+            // 原尺寸：UYVY → RGB888 → savePng（全分辨率）
+            val rgb = uyvyToRgb(data, w, h)
+            savePng(file, rgb, w, h)
         } catch (e: Exception) {
             Log.e(TAG, "savePngScaled: failed", e)
         }

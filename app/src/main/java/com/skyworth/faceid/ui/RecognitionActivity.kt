@@ -4,6 +4,8 @@ import android.content.Intent
 import android.hardware.HardwareBuffer
 import android.opengl.GLSurfaceView
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
 import android.util.Log
 import android.view.View
 import android.widget.Button
@@ -44,6 +46,16 @@ class RecognitionActivity : AppCompatActivity() {
     private lateinit var mManageFacesBtn: Button
     private lateinit var mContinuousDumpBtn: Button
     private lateinit var mMoveDumpBtn: Button
+    private lateinit var mDumpTimerText: TextView
+
+    /** 连续 dump 采样总帧数（150 帧，三等分各 50 张）。 */
+    private val CONTINUOUS_DUMP_TOTAL_FRAMES = 150
+
+    /** 连续 dump 倒计时更新 Handler。 */
+    private val mDumpCountDownHandler = Handler(Looper.getMainLooper())
+
+    /** 连续 dump 剩余张数。 */
+    @Volatile private var mDumpRemainingFrames = CONTINUOUS_DUMP_TOTAL_FRAMES
 
     private var mAlgoSession: AlgoSession? = null
     private var mFrameSession: FrameSession? = null
@@ -91,9 +103,10 @@ class RecognitionActivity : AppCompatActivity() {
         mMoveDumpBtn = findViewById(R.id.btn_move_dump)
         mMoveDumpBtn.setOnClickListener { onMoveDumpClick() }
         findViewById<Button>(R.id.btn_clear_dump).setOnClickListener { onClearDumpClick() }
-        // 连续 dump（每秒 5 帧，持续 30s；点击后置灰显示"连续dump中"，完成恢复）
+        // 连续 dump（最快 5fps，保存驱动采样；点击后置灰显示"连续dump中"，完成恢复）
         mContinuousDumpBtn = findViewById(R.id.btn_dump_continuous)
         mContinuousDumpBtn.setOnClickListener { onContinuousDumpClick() }
+        mDumpTimerText = findViewById(R.id.tv_dump_timer)
 
         Log.i(TAG, "onCreate: done")
     }
@@ -255,8 +268,8 @@ class RecognitionActivity : AppCompatActivity() {
     }
 
     /**
-     * 连续 dump：每秒 5 帧（200ms 间隔）持续 30s（150 帧），存到
-     * debugDump/continuous/{时间戳}/。点击后按钮置灰显示"连续dump中"，完成后恢复。
+     * 连续 dump：共 CONTINUOUS_DUMP_TOTAL_FRAMES 帧（150，采满自然结束，不设固定时长），
+     * 存到 debugDump/continuous/。点击后按钮置灰显示"连续dump中"，完成后恢复。
      */
     private fun onContinuousDumpClick() {
         val algo = dumpAlgo()
@@ -276,12 +289,14 @@ class RecognitionActivity : AppCompatActivity() {
         // 置灰按钮 + 显示进行中
         mContinuousDumpBtn.isEnabled = false
         mContinuousDumpBtn.setText(R.string.btn_dump_continuous_active)
-        Log.i(TAG, "onContinuousDumpClick: start continuous dump (5fps x 30s)")
+        Log.i(TAG, "onContinuousDumpClick: start continuous dump, total ${CONTINUOUS_DUMP_TOTAL_FRAMES} frames")
 
-        val started = algo.startContinuousDump(totalFrames = 150, intervalMs = 200) { saved ->
-            // 完成后恢复按钮（主线程）
+        val started = algo.startContinuousDump(totalFrames = CONTINUOUS_DUMP_TOTAL_FRAMES, intervalMs = 200) {
+            // 完成后恢复按钮（主线程）；展示实际保存帧数（与倒计时口径一致）
+            val saved = algo.getContinuousSavedCount()
             mContinuousDumpBtn.isEnabled = true
             mContinuousDumpBtn.setText(R.string.btn_dump_continuous)
+            stopDumpCountdown()   // 停止倒计时 + 隐藏提示
             Toast.makeText(this, "连续dump完成: 保存 $saved 帧", Toast.LENGTH_SHORT).show()
             Log.i(TAG, "onContinuousDumpClick: finished, saved $saved frames")
         }
@@ -289,6 +304,43 @@ class RecognitionActivity : AppCompatActivity() {
             // 启动失败，恢复按钮
             mContinuousDumpBtn.isEnabled = true
             mContinuousDumpBtn.setText(R.string.btn_dump_continuous)
+        } else {
+            startDumpCountdown()   // 启动左上角倒计时 + 动作提示
+        }
+    }
+
+    /**
+     * 启动连续 dump 倒计时：每秒更新左上角提示（剩余张数 + 当前动作）。
+     * 分三段（各 50 张）：前"请坐好"，中间"请做出打电话动作"，最后"请做出抽烟动作"。
+     */
+    private fun startDumpCountdown() {
+        mDumpRemainingFrames = CONTINUOUS_DUMP_TOTAL_FRAMES
+        mDumpTimerText.visibility = TextView.VISIBLE
+        mDumpCountDownHandler.removeCallbacksAndMessages(null)
+        mDumpCountDownHandler.post(mDumpCountdownRunnable)
+    }
+
+    /** 停止倒计时并隐藏提示。 */
+    private fun stopDumpCountdown() {
+        mDumpCountDownHandler.removeCallbacksAndMessages(null)
+        mDumpTimerText.visibility = TextView.GONE
+    }
+
+    private val mDumpCountdownRunnable = object : Runnable {
+        override fun run() {
+            if (mDumpRemainingFrames <= 0) return
+            // 剩余张数 = 总帧数 - 实际保存成功帧数（与磁盘文件数一致，避免按采样计数跳动）
+            val saved = dumpAlgo()?.getContinuousSavedCount() ?: 0
+            val remaining = (CONTINUOUS_DUMP_TOTAL_FRAMES - saved).coerceAtLeast(0)
+            // 按剩余张数三等分（总 150，各 50）：>100 坐好，50~100 打电话，≤50 抽烟
+            val action = when {
+                remaining > 100 -> getString(R.string.dump_action_sit)
+                remaining > 50 -> getString(R.string.dump_action_call)
+                else -> getString(R.string.dump_action_smoke)
+            }
+            mDumpTimerText.text = getString(R.string.dump_timer_format, remaining, action)
+            mDumpRemainingFrames = remaining
+            mDumpCountDownHandler.postDelayed(this, 1000L)
         }
     }
 
