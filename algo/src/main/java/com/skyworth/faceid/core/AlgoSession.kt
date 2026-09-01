@@ -32,10 +32,19 @@ class AlgoSession private constructor() {
     /** 唯一算法实例（模型只加载一次）。 */
     private val mAlgorithm: FaceIDAlgorithmImpl = FaceIDAlgorithmImpl()
 
-    /** 算法处理线程池（单线程，避免 GL 线程阻塞）。 */
+    /**
+     * 算法处理线程池（单线程，避免 GL 线程阻塞）。
+     *
+     * 线程优先级设为**低**（NORM-2=3）：算法推理耗时高（数百 ms/帧），若占用高优先级 CPU，
+     * 会抢占 GLThread 渲染线程导致预览帧率下降。降为低优先级后，渲染/UI 优先获取 CPU，
+     * 保证"预览帧率跟随摄像头、算法结果作为附加层慢一点也无妨"。
+     */
     private val mAlgoExecutor: ExecutorService =
         Executors.newSingleThreadExecutor { r ->
-            Thread(r, "AlgoProcessor").apply { isDaemon = true }
+            Thread(r, "AlgoProcessor").apply {
+                isDaemon = true
+                priority = Thread.NORM_PRIORITY - 2  // 3，低于 UI/GL（默认 5）
+            }
         }
 
     /** 帧处理器（算法帧处理，需回调注入）。 */

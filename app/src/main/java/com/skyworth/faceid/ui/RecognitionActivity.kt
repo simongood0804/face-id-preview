@@ -148,16 +148,20 @@ class RecognitionActivity : AppCompatActivity() {
             val algo = AlgoSession.get().acquire(applicationContext, RECOGNITION_FLAG)
             mAlgoSession = algo
 
-            // 2. 相机帧会话（单例，引用计数 +1，注入 JNI 帧读取回调）
+            // 2. 相机帧会话（单例）
             val frame = FrameSession.get(::readFrame)
-                .acquire(algo.frameProcessor()) { mAlgorithmEnabled }
-            mFrameSession = frame
 
-            // 3. GL 渲染预览（renderer 每次新建，保持 1600×1300 画面比例；仅配置一次）
+            // 3. GL 渲染预览（renderer 每次新建，按实际帧尺寸等比适配；仅配置一次）
+            //    顺序要求：configureSurface 须在 acquire（attach FrameDistributor）之前，
+            //    以便 attach 链式保留 onFrameSizeChanged（更新 frameWidth + 触发适配）。
             if (!mRendererSet) {
                 frame.configureSurface(mSurface, findViewById(R.id.face_overlay))
                 mRendererSet = true
             }
+
+            // 4. acquire：引用计数 +1，注入 JNI 帧读取回调（attach FrameDistributor）
+            frame.acquire(algo.frameProcessor()) { mAlgorithmEnabled }
+            mFrameSession = frame
 
             // 4. 渲染桥接（识别区）
             mBridge = FaceOverlayBridge(findViewById(R.id.face_overlay))
@@ -268,8 +272,8 @@ class RecognitionActivity : AppCompatActivity() {
     }
 
     /**
-     * 连续 dump：共 CONTINUOUS_DUMP_TOTAL_FRAMES 帧（150，采满自然结束，不设固定时长），
-     * 存到 debugDump/continuous/。点击后按钮置灰显示"连续dump中"，完成后恢复。
+     * 连续 dump：点击后先弹二次确认弹框选择输出格式（PNG / JPEG / 视频），
+     * 再按所选模式启动连续 dump（默认 150 帧，采满自然结束）。
      */
     private fun onContinuousDumpClick() {
         val algo = dumpAlgo()
@@ -286,19 +290,48 @@ class RecognitionActivity : AppCompatActivity() {
             ).show()
             return
         }
+        // 二次确认弹框：选择连续 dump 输出格式
+        val options = arrayOf(
+            getString(R.string.dump_mode_png),
+            getString(R.string.dump_mode_jpeg),
+            getString(R.string.dump_mode_video)
+        )
+        AlertDialog.Builder(this)
+            .setTitle(R.string.dump_mode_title)
+            .setItems(options) { _, which ->
+                val mode = when (which) {
+                    0 -> FaceIDAlgorithmImpl.ContinuousDumpMode.PNG
+                    1 -> FaceIDAlgorithmImpl.ContinuousDumpMode.JPEG
+                    else -> FaceIDAlgorithmImpl.ContinuousDumpMode.VIDEO
+                }
+                startContinuousDumpWith(mode)
+            }
+            .setNegativeButton(R.string.enroll_cancel, null)
+            .show()
+    }
+
+    /** 按所选模式启动连续 dump。 */
+    private fun startContinuousDumpWith(mode: FaceIDAlgorithmImpl.ContinuousDumpMode) {
+        val algo = dumpAlgo() ?: return
         // 置灰按钮 + 显示进行中
         mContinuousDumpBtn.isEnabled = false
         mContinuousDumpBtn.setText(R.string.btn_dump_continuous_active)
-        Log.i(TAG, "onContinuousDumpClick: start continuous dump, total ${CONTINUOUS_DUMP_TOTAL_FRAMES} frames")
+        Log.i(TAG, "startContinuousDumpWith: mode=$mode total=${CONTINUOUS_DUMP_TOTAL_FRAMES} frames")
 
-        val started = algo.startContinuousDump(totalFrames = CONTINUOUS_DUMP_TOTAL_FRAMES, intervalMs = 200) {
+        val started = algo.startContinuousDump(
+            totalFrames = CONTINUOUS_DUMP_TOTAL_FRAMES, intervalMs = 200, mode = mode
+        ) {
             // 完成后恢复按钮（主线程）；展示实际保存帧数（与倒计时口径一致）
             val saved = algo.getContinuousSavedCount()
             mContinuousDumpBtn.isEnabled = true
             mContinuousDumpBtn.setText(R.string.btn_dump_continuous)
             stopDumpCountdown()   // 停止倒计时 + 隐藏提示
-            Toast.makeText(this, "连续dump完成: 保存 $saved 帧", Toast.LENGTH_SHORT).show()
-            Log.i(TAG, "onContinuousDumpClick: finished, saved $saved frames")
+            val label = when (mode) {
+                FaceIDAlgorithmImpl.ContinuousDumpMode.VIDEO -> "视频录制完成"
+                else -> "连续dump完成: 保存 $saved 帧"
+            }
+            Toast.makeText(this, label, Toast.LENGTH_SHORT).show()
+            Log.i(TAG, "startContinuousDumpWith: finished mode=$mode saved=$saved")
         }
         if (!started) {
             // 启动失败，恢复按钮

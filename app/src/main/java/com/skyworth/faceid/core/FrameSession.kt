@@ -80,15 +80,18 @@ class FrameSession private constructor(
      * - GLES 2.0 上下文（EvsGL20CameraRenderer 依赖）；
      * - 新建 renderer 绑定共享相机源；
      * - 连续渲染；
-     * - **不依赖帧数据回调**：DMS 帧分辨率恒定 1600×1300，直接在布局完成后
-     *   基于父容器尺寸按固定比例等比缩放并居中，只算一次（避免首帧时序导致拉伸）。
+     * - **基于实际帧尺寸等比适配**（摄像头可切换，尺寸不固定：DMS 1600×1300、RVC 1280×760 等）：
+     *   注册帧尺寸回调，在首帧/尺寸变化时按实际宽高等比缩放 + 居中。
      *
      * 注意：surface 的父容器须为 FrameLayout（FrameLayout 尊重 layoutParams.width/height
      * 与 gravity；ConstraintLayout 用约束计算尺寸、忽略 width/height）。
      *
+     * 顺序要求：本方法须在 [FrameSession.acquire]（attach FrameDistributor）**之前**调用，
+     * 以便 FrameDistributor 链式保留本方法的 onFrameSizeChanged，既更新 frameWidth 又触发适配。
+     *
      * @param surface 模块的 GLSurfaceView。
      * @param overlay 覆盖在其上的人脸框 View（随 surface 一起缩放），可为 null。
-     * @param resizeEnabled 是否启用固定比例（1600:1300）等比适配（默认 true）。
+     * @param resizeEnabled 是否启用按实际帧尺寸等比适配（默认 true）。
      */
     fun configureSurface(
         surface: GLSurfaceView,
@@ -99,16 +102,23 @@ class FrameSession private constructor(
         surface.setRenderer(createRenderer())
         surface.renderMode = GLSurfaceView.RENDERMODE_CONTINUOUSLY
         if (resizeEnabled) {
-            // 帧分辨率恒定 1600×1300：布局完成后按固定比例等比缩放 + 居中，只算一次。
-            // 不注册 onFrameSizeChanged（避免帧回调时序、parent 未布局导致的拉伸）。
-            surface.post { fitFixedAspect(surface, overlay, ORIGINAL_WIDTH, ORIGINAL_HEIGHT) }
+            // 帧尺寸变化（首帧/摄像头切换）时按实际宽高等比缩放 + 居中
+            mController.onFrameSizeChanged = { w, h ->
+                surface.post { fitFixedAspect(surface, overlay, w, h) }
+            }
+            // 布局完成后先按当前已知帧尺寸（无则用 DMS 兜底）适配一次，避免首帧前全屏
+            surface.post {
+                val w = mController.frameWidth.takeIf { it > 0 } ?: ORIGINAL_WIDTH
+                val h = mController.frameHeight.takeIf { it > 0 } ?: ORIGINAL_HEIGHT
+                fitFixedAspect(surface, overlay, w, h)
+            }
         }
     }
 
     /**
-     * 基于父容器尺寸，把 surface 与 overlay 等比缩放到固定帧比例（1600:1300）并**居中**。
+     * 基于父容器尺寸，把 surface 与 overlay 等比缩放到帧比例并**居中**。
      * 未覆盖区域由黑色背景填充。
-     * 只调用一次（布局完成后），不依赖帧数据回调。
+     * 帧尺寸来自实际摄像头（首帧/切换时回调），非固定 1600×1300。
      * 父容器应为 FrameLayout（尊重 layoutParams 与 gravity），
      * 否则 ConstraintLayout 会忽略 width/height 导致拉伸。
      */
@@ -179,10 +189,12 @@ class FrameSession private constructor(
 
     /**
      * 打开相机并开始预览。
+     * 打开前刷新摄像头 ID（读取主页选择的摄像头，见 [CameraPreference]）。
      * @return 是否成功打开。
      */
     fun open(): Boolean {
         return try {
+            mCameraManager.cameraId = CameraPreference.selectedCameraId
             mCameraManager.openCamera()
             true
         } catch (e: Exception) {

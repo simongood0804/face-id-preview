@@ -13,9 +13,15 @@ import atlas.face.sdk.FaceFlag
 import atlas.face.sdk.FaceImage
 import atlas.face.sdk.FaceResult
 import atlas.face.sdk.FaceSDK
+import android.media.MediaCodec
+import android.media.MediaCodecInfo
+import android.media.MediaFormat
+import android.media.MediaMuxer
 import android.os.Handler
 import android.os.Looper
+import android.os.SystemClock
 import java.io.File
+import java.nio.ByteBuffer
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -40,6 +46,9 @@ import java.util.concurrent.atomic.AtomicInteger
 class FaceIDAlgorithmImpl : IFaceIDAlgorithm {
 
     private val TAG = "FaceIDAlgorithm"
+
+    /** 连续 dump 输出模式。 */
+    enum class ContinuousDumpMode { PNG, JPEG, VIDEO }
 
     @Volatile
     private var mInitialized = false
@@ -732,6 +741,7 @@ class FaceIDAlgorithmImpl : IFaceIDAlgorithm {
     fun startContinuousDump(
         totalFrames: Int = 300,
         intervalMs: Long = 200,
+        mode: ContinuousDumpMode = ContinuousDumpMode.PNG,
         onResult: ((Int) -> Unit)? = null
     ): Boolean {
         if (mContinuousActive) {
@@ -756,6 +766,7 @@ class FaceIDAlgorithmImpl : IFaceIDAlgorithm {
 
         mContinuousDir = dir
         mContinuousSaveDir = dir
+        mContinuousMode = mode
         // 关键：重置采样计数器。sampledCount 是实例字段，若上一次未归零，
         // 第二次启动 getAndIncrement() 从上次的 totalFrames 继续，第一次采样即 seq>=totalFrames
         // 立刻触发 finish，导致"第二次点击连续 dump 立刻完成"而非重新开始。
@@ -763,7 +774,9 @@ class FaceIDAlgorithmImpl : IFaceIDAlgorithm {
         mContinuousSavedIndex.set(0)
         mContinuousActive = true
         onResultContinuous = onResult   // finish 时消费一次
-        Log.i(TAG, "startContinuousDump: dir=$dir total=$totalFrames interval=${intervalMs}ms")
+
+        // VIDEO 模式：不在此处初始化编码器（帧尺寸未知，见 encodeVideoFrame 首帧延迟初始化）
+        Log.i(TAG, "startContinuousDump: dir=$dir total=$totalFrames interval=${intervalMs}ms mode=$mode")
 
         // 保存驱动采样（保帧率）：采一帧 → 保存一帧 → 完成后再调度下一次采样。
         // 实际节奏 = max(保存耗时, intervalMs)，保证每帧都能成功写盘、不丢帧，最终存满 totalFrames。
@@ -800,7 +813,14 @@ class FaceIDAlgorithmImpl : IFaceIDAlgorithm {
                 if (dir != null) {
                     // 同步保存本帧（保存多快就多快，不丢帧），成功后才 +index 并调度下一帧
                     val idx = mContinuousSavedIndex.get()
-                    savePngScaled(File(dir, "dumpOrigin%03d.png".format(Locale.US, idx)), copy, w, h)
+                    when (mContinuousMode) {
+                        ContinuousDumpMode.PNG ->
+                            savePngScaled(File(dir, "dumpOrigin%03d.png".format(Locale.US, idx)), copy, w, h)
+                        ContinuousDumpMode.JPEG ->
+                            saveJpegScaled(File(dir, "dumpOrigin%03d.jpg".format(Locale.US, idx)), copy, w, h)
+                        ContinuousDumpMode.VIDEO ->
+                            encodeVideoFrame(copy, w, h)
+                    }
                     mContinuousSavedIndex.incrementAndGet()
                 }
             }
@@ -839,6 +859,13 @@ class FaceIDAlgorithmImpl : IFaceIDAlgorithm {
         mContinuousFuture = null
         val count = sampledCount.get()
         mContinuousActive = false
+        // VIDEO 模式：结束编码并封装 MP4
+        if (mContinuousMode == ContinuousDumpMode.VIDEO) {
+            finishVideoRecorder()
+        }
+        // 置空自动完成回调，避免持有已销毁 Activity 的引用造成泄漏
+        // （手动停止后不会再走 finishContinuousDump 消费该回调）
+        onResultContinuous = null
         Log.i(TAG, "stopContinuousDump: stopped, sampled $count frames")
         mMainHandler.post { onResult?.invoke(count) }
     }
@@ -848,6 +875,10 @@ class FaceIDAlgorithmImpl : IFaceIDAlgorithm {
         mContinuousFuture?.cancel(false)
         mContinuousFuture = null
         mContinuousActive = false
+        // VIDEO 模式：结束编码并封装 MP4（同步完成后再回调）
+        if (mContinuousMode == ContinuousDumpMode.VIDEO) {
+            finishVideoRecorder()
+        }
         // 回调的是"采样完成帧数"（按钮准时恢复）；后台保存队列可能仍在写，属正常。
         Log.i(TAG, "finishContinuousDump: sampling done, sampled $sampled frames")
         // 关键：先取出回调到局部变量，再置 null。若 post 的 lambda 直接捕获字段，
@@ -859,6 +890,24 @@ class FaceIDAlgorithmImpl : IFaceIDAlgorithm {
 
     /** 连续 dump 完成回调（finish 时消费一次）。 */
     private var onResultContinuous: ((Int) -> Unit)? = null
+
+    // ---------- 连续 dump 视频录制（ContinuousDumpMode.VIDEO） ----------
+    private var mVideoEncoder: MediaCodec? = null
+    private var mVideoMuxer: MediaMuxer? = null
+    private var mVideoMuxerStarted = false
+    private var mVideoTrackIndex = -1
+    /** 视频起始真实时间（elapsedRealtimeNanos），PTS 用真实经过时间，避免快进。 */
+    private var mVideoStartNanos = 0L
+    private var mVideoPtsUs = 0L
+    /** 视频帧转换复用缓冲（仅尺寸变化时分配，避免每帧 5.4MB 数组引发 GC）。 */
+    private var mVideoRgbBuf: ByteArray? = null
+    private var mVideoRgbSize = 0
+    private var mVideoNv12Buf: ByteArray? = null
+    private var mVideoNv12Size = 0
+    /** 视频输出 MP4 文件。 */
+    private var mVideoOutputFile: File? = null
+    /** 当前连续 dump 模式（默认 PNG，保持向后兼容）。 */
+    @Volatile private var mContinuousMode = ContinuousDumpMode.PNG
 
     /**
      * 解析 dump 源目录（filesDir/debugDump）。
@@ -1074,9 +1123,10 @@ class FaceIDAlgorithmImpl : IFaceIDAlgorithm {
 
     /**
      * UYVY 帧数据 → RGB888（参照 FrameProcessor.cropFrame 的转换公式）。
+     * 可传入 [dst] 复用缓冲（大小须 ≥ width*height*3），避免高频路径每帧分配大数组。
      */
-    private fun uyvyToRgb(data: ByteArray, width: Int, height: Int): ByteArray {
-        val rgb = ByteArray(width * height * 3)
+    private fun uyvyToRgb(data: ByteArray, width: Int, height: Int, dst: ByteArray? = null): ByteArray {
+        val rgb = dst ?: ByteArray(width * height * 3)
         var dstIdx = 0
         for (row in 0 until height) {
             var srcCol = 0
@@ -1152,6 +1202,228 @@ class FaceIDAlgorithmImpl : IFaceIDAlgorithm {
         } catch (e: Exception) {
             Log.e(TAG, "savePngScaled: failed", e)
         }
+    }
+
+    /**
+     * 连续 dump JPEG 模式：UYVY → RGB → JPEG（原尺寸）。
+     * 用 Bitmap.compress(JPEG, 90) 压缩，文件比 PNG 小、编码更快。
+     */
+    private fun saveJpegScaled(file: File, data: ByteArray, w: Int, h: Int) {
+        try {
+            if (w <= 0 || h <= 0) return
+            val rgb = uyvyToRgb(data, w, h)
+            val bmp = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
+            val pixels = IntArray(w * h)
+            var i = 0
+            for (p in 0 until w * h) {
+                val r = rgb[i].toInt() and 0xFF
+                val g = rgb[i + 1].toInt() and 0xFF
+                val b = rgb[i + 2].toInt() and 0xFF
+                pixels[p] = (0xFF shl 24) or (r shl 16) or (g shl 8) or b
+                i += 3
+            }
+            bmp.setPixels(pixels, 0, w, 0, 0, w, h)
+            file.parentFile?.mkdirs()
+            if (file.exists() && !file.delete()) {
+                Log.w(TAG, "saveJpegScaled: failed to delete existing ${file.name}")
+            }
+            val os = file.outputStream()
+            try {
+                bmp.compress(Bitmap.CompressFormat.JPEG, 90, os)
+            } finally {
+                os.close()
+            }
+            bmp.recycle()
+        } catch (e: Exception) {
+            Log.e(TAG, "saveJpegScaled: failed", e)
+        }
+    }
+
+    // ============================================================
+    // 连续 dump 视频录制（ContinuousDumpMode.VIDEO）：MediaCodec H.264 + MediaMuxer MP4
+    // ============================================================
+
+    /**
+     * 初始化 H.264 编码器与 MediaMuxer，输出 [dir]/continuous.mp4。
+     * 在 continuousExecutor 线程调用。
+     *
+     * 宽高用**实际帧尺寸**（[encodeVideoFrame] 首帧时初始化），
+     * 避免与 DMS 分辨率不同（1600×1300）的其他摄像头输入尺寸不匹配导致全绿/花屏。
+     */
+    private fun initVideoRecorder(dir: File, width: Int, height: Int): Boolean {
+        try {
+            val file = File(dir, "continuous.mp4")
+            val codec = MediaCodec.createEncoderByType(MediaFormat.MIMETYPE_VIDEO_AVC)
+            val format = MediaFormat.createVideoFormat(MediaFormat.MIMETYPE_VIDEO_AVC, width, height)
+            format.setInteger(MediaFormat.KEY_COLOR_FORMAT,
+                MediaCodecInfo.CodecCapabilities.COLOR_FormatYUV420SemiPlanar)
+            format.setInteger(MediaFormat.KEY_BIT_RATE, 4_000_000)
+            format.setInteger(MediaFormat.KEY_FRAME_RATE, 10)
+            format.setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, 1)
+            codec.configure(format, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
+            codec.start()
+
+            val muxer = MediaMuxer(file.absolutePath, MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4)
+            mVideoEncoder = codec
+            mVideoMuxer = muxer
+            mVideoMuxerStarted = false
+            mVideoTrackIndex = -1
+            mVideoStartNanos = SystemClock.elapsedRealtimeNanos()
+            mVideoPtsUs = 0L
+            mVideoOutputFile = file
+            Log.i(TAG, "initVideoRecorder: $file ${width}x$height")
+            return true
+        } catch (e: Exception) {
+            Log.e(TAG, "initVideoRecorder: failed", e)
+            releaseVideoRecorder()
+            return false
+        }
+    }
+
+    /**
+     * 视频模式：把一帧 UYVY 编码进 MP4。
+     * 流程：UYVY→RGB→NV12 → encoder 输入 → 编码 → muxer 写采样。
+     * 编码器在**首帧**用实际帧尺寸初始化（不同摄像头分辨率不同）。
+     */
+    private fun encodeVideoFrame(uyvy: ByteArray, w: Int, h: Int) {
+        // 首帧延迟初始化编码器：用实际帧尺寸，避免尺寸不匹配导致全绿
+        if (mVideoEncoder == null) {
+            val dir = mContinuousSaveDir
+            if (dir == null || !initVideoRecorder(dir, w, h)) {
+                Log.e(TAG, "encodeVideoFrame: recorder init failed (${w}x$h)")
+                return
+            }
+        }
+        val encoder = mVideoEncoder ?: return
+        val muxer = mVideoMuxer ?: return
+        try {
+            // 复用转换缓冲（仅尺寸变化时分配），避免每帧 5.4MB 数组引发 GC 卡顿
+            val rgb = obtainVideoRgb(w, h)
+            uyvyToRgb(uyvy, w, h, rgb)
+            val nv12 = rgbToNv12(rgb, w, h, obtainVideoNv12(w, h))
+            // PTS 用真实经过时间（单调时钟），播放时长与实际采集一致，避免快进
+            val pts = ((SystemClock.elapsedRealtimeNanos() - mVideoStartNanos) / 1_000).coerceAtLeast(mVideoPtsUs)
+            mVideoPtsUs = pts
+
+            val inputIndex = encoder.dequeueInputBuffer(10_000)
+            if (inputIndex >= 0) {
+                val inputBuf = encoder.getInputBuffer(inputIndex) ?: return
+                inputBuf.clear()
+                inputBuf.put(nv12)
+                encoder.queueInputBuffer(inputIndex, 0, nv12.size, pts, 0)
+            }
+            drainVideoEncoder(encoder, muxer, false)
+        } catch (e: Exception) {
+            Log.e(TAG, "encodeVideoFrame: failed", e)
+        }
+    }
+
+    /** 获取复用的 RGB 缓冲（写入并返回；仅尺寸变化时重新分配）。 */
+    private fun obtainVideoRgb(w: Int, h: Int): ByteArray {
+        val need = w * h * 3
+        return if (mVideoRgbBuf == null || mVideoRgbSize != need) {
+            ByteArray(need).also { mVideoRgbBuf = it; mVideoRgbSize = need }
+        } else mVideoRgbBuf!!
+    }
+
+    /** 获取复用的 NV12 缓冲（仅尺寸变化时重新分配）。 */
+    private fun obtainVideoNv12(w: Int, h: Int): ByteArray {
+        val need = w * h * 3 / 2
+        return if (mVideoNv12Buf == null || mVideoNv12Size != need) {
+            ByteArray(need).also { mVideoNv12Buf = it; mVideoNv12Size = need }
+        } else mVideoNv12Buf!!
+    }
+
+    /** 结束视频录制：发送 EOS，编码剩余帧，停止 muxer，释放资源。 */
+    private fun finishVideoRecorder() {
+        val encoder = mVideoEncoder ?: return
+        val muxer = mVideoMuxer ?: return
+        try {
+            val inputIndex = encoder.dequeueInputBuffer(10_000)
+            if (inputIndex >= 0) {
+                encoder.queueInputBuffer(inputIndex, 0, 0,
+                    mVideoPtsUs, MediaCodec.BUFFER_FLAG_END_OF_STREAM)
+            }
+            drainVideoEncoder(encoder, muxer, true)
+            if (mVideoMuxerStarted) {
+                try { muxer.stop() } catch (e: Exception) { Log.w(TAG, "muxer.stop", e) }
+            }
+            Log.i(TAG, "finishVideoRecorder: ${mVideoOutputFile?.absolutePath} pts=${mVideoPtsUs}us")
+        } catch (e: Exception) {
+            Log.e(TAG, "finishVideoRecorder: failed", e)
+        } finally {
+            releaseVideoRecorder()
+        }
+    }
+
+    /** 从编码器取输出并写入 muxer。 */
+    private fun drainVideoEncoder(encoder: MediaCodec, muxer: MediaMuxer, endOfStream: Boolean) {
+        val info = MediaCodec.BufferInfo()
+        while (true) {
+            val outIndex = encoder.dequeueOutputBuffer(info, if (endOfStream) 10_000 else 0)
+            when {
+                outIndex == MediaCodec.INFO_TRY_AGAIN_LATER -> if (!endOfStream) return
+                outIndex == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED -> {
+                    if (!mVideoMuxerStarted) {
+                        mVideoTrackIndex = muxer.addTrack(encoder.outputFormat)
+                        muxer.start()
+                        mVideoMuxerStarted = true
+                    }
+                }
+                outIndex >= 0 -> {
+                    val outBuf = encoder.getOutputBuffer(outIndex) ?: continue
+                    if (info.flags and MediaCodec.BUFFER_FLAG_CODEC_CONFIG != 0) {
+                        info.size = 0  // CSD 数据已随 format 传递
+                    }
+                    if (info.size > 0 && mVideoMuxerStarted) {
+                        outBuf.position(info.offset)
+                        outBuf.limit(info.offset + info.size)
+                        muxer.writeSampleData(mVideoTrackIndex, outBuf, info)
+                    }
+                    encoder.releaseOutputBuffer(outIndex, false)
+                    if (info.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM != 0) return
+                }
+            }
+        }
+    }
+
+    /** 释放编码器与 muxer。 */
+    private fun releaseVideoRecorder() {
+        try {
+            mVideoEncoder?.let { runCatching { it.stop() }; runCatching { it.release() } }
+        } catch (e: Exception) { Log.w(TAG, "releaseVideoRecorder: encoder", e) }
+        try {
+            mVideoMuxer?.let { runCatching { it.release() } }
+        } catch (e: Exception) { Log.w(TAG, "releaseVideoRecorder: muxer", e) }
+        mVideoEncoder = null
+        mVideoMuxer = null
+        mVideoMuxerStarted = false
+        mVideoTrackIndex = -1
+        mVideoPtsUs = 0L
+    }
+
+    /** RGB888 → NV12（YUV420 半平面），供 H.264 编码器输入。可传入 [dst] 复用缓冲。 */
+    private fun rgbToNv12(rgb: ByteArray, w: Int, h: Int, dst: ByteArray? = null): ByteArray {
+        val yuv = dst ?: ByteArray(w * h * 3 / 2)
+        var yIdx = 0
+        var uvIdx = w * h
+        for (j in 0 until h) {
+            var rowBase = j * w * 3
+            for (i in 0 until w) {
+                val r = rgb[rowBase].toInt() and 0xFF
+                val g = rgb[rowBase + 1].toInt() and 0xFF
+                val b = rgb[rowBase + 2].toInt() and 0xFF
+                rowBase += 3
+                yuv[yIdx++] = clamp8(((66 * r + 129 * g + 25 * b + 128) shr 8) + 16).toByte()
+                if (j % 2 == 0 && i % 2 == 0) {
+                    val u = clamp8(((-38 * r - 74 * g + 112 * b + 128) shr 8) + 128)
+                    val v = clamp8(((112 * r - 94 * g - 18 * b + 128) shr 8) + 128)
+                    yuv[uvIdx++] = u.toByte()
+                    yuv[uvIdx++] = v.toByte()
+                }
+            }
+        }
+        return yuv
     }
 
     /** 0~255 截断。 */

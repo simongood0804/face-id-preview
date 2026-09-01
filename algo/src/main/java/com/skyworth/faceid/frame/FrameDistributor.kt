@@ -68,11 +68,16 @@ class FrameDistributor(
 
     /**
      * 解除绑定。
+     *
+     * 只清空帧数据回调 [FrameSource.onFrameData]；**保留 onFrameSizeChanged**——
+     * 该回调是渲染层（FrameSession.configureSurface）注册的按实际帧尺寸适配逻辑，
+     * 属配置层而非分发器自身逻辑，不应随分发器解绑清除。
+     * 否则 FrameSession 单例复用时（模块切换 refCount 归 0 再 acquire）会丢失适配回调，
+     * 导致下次模块进入时预览不按实际帧尺寸等比缩放。
      */
     fun detach() {
         frameSource.onFrameData = null
-        frameSource.onFrameSizeChanged = null
-        Log.i(TAG, "detach: unbound frame source")
+        Log.i(TAG, "detach: unbound frame source (keep size callback)")
     }
 
     /**

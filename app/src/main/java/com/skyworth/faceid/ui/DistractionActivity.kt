@@ -102,13 +102,16 @@ class DistractionActivity : AppCompatActivity() {
             mAlgoSession = algo
 
             val frame = FrameSession.get(::readFrame)
-                .acquire(algo.frameProcessor()) { mAlgorithmEnabled }
-            mFrameSession = frame
 
+            // 顺序要求：configureSurface 须在 acquire（attach FrameDistributor）之前，
+            // 以便 attach 链式保留 onFrameSizeChanged（更新 frameWidth + 触发按实际帧尺寸适配）。
             if (!mRendererSet) {
                 frame.configureSurface(mSurface, findViewById(R.id.face_overlay))
                 mRendererSet = true
             }
+
+            frame.acquire(algo.frameProcessor()) { mAlgorithmEnabled }
+            mFrameSession = frame
             mBridge = FaceOverlayBridge(findViewById(R.id.face_overlay))
 
             // 分心信号链路（直接路径：算法结果 → processAlgorithmResult）

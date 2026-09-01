@@ -112,13 +112,16 @@ class FatigueActivity : AppCompatActivity() {
             mAlgoSession = algo
 
             val frame = FrameSession.get(::readFrame)
-                .acquire(algo.frameProcessor()) { mAlgorithmEnabled }
-            mFrameSession = frame
 
+            // 顺序要求：configureSurface 须在 acquire（attach FrameDistributor）之前，
+            // 以便 attach 链式保留 onFrameSizeChanged（更新 frameWidth + 触发按实际帧尺寸适配）。
             if (!mRendererSet) {
                 frame.configureSurface(mSurface, findViewById(R.id.face_overlay))
                 mRendererSet = true
             }
+
+            frame.acquire(algo.frameProcessor()) { mAlgorithmEnabled }
+            mFrameSession = frame
             mBridge = FaceOverlayBridge(findViewById(R.id.face_overlay))
 
             // 门信号：门开 → 眼/嘴校准复位 + 疲劳统计复位（换驾驶员重校，§4.6-B 全局事件；
