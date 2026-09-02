@@ -155,13 +155,14 @@ class FaceIDAlgorithmImpl : IFaceIDAlgorithm {
     private val SDCARD_DUMP_DIR = "/sdcard/debugDmsDump"
 
     /** 模型文件清单（必须与 manifest.json 中引用的模型一致）。 */
+    // 注：face-sdk 1.0.2 已改用 facialPoints(68点) 内部处理眼部，不再需要外部 pfld_eye 模型，
+    // 故从清单移除 pfld_eye_int8.dlc（manifest.json 与该 dlc 已同步删除）。
     private val REQUIRED_MODEL_FILES = listOf(
         "det_500m_int8.dlc",
         "face_antispoof_int8.dlc",
         "pipnet68_int8.dlc",
         "w600k_mbf_int8.dlc",
         "hopenet_mbv2_int8.dlc",
-        "pfld_eye_int8.dlc",
         "manifest.json",
         "dms_calibration.json"
     )
@@ -332,8 +333,8 @@ class FaceIDAlgorithmImpl : IFaceIDAlgorithm {
                         }
                     }
                     // 68 密集地标
-                    if (r.landmarks != null) {
-                        val lm = r.landmarks
+                    if (r.facialPoints != null) {
+                        val lm = r.facialPoints
                         for (p in 0 until 68) {
                             lm[p] = floatArrayOf(lm[p][0] + mCropOffsetX, lm[p][1] + mCropOffsetY)
                         }
@@ -391,7 +392,7 @@ class FaceIDAlgorithmImpl : IFaceIDAlgorithm {
                 }
 
                 // 转换 68 密集地标（float[68][2] → List<PointF>）
-                val lmList = r.landmarks?.let { arr ->
+                val lmList = r.facialPoints?.let { arr ->
                     if (arr.size >= 68) {
                         (0 until 68).map { PointF(arr[it][0], arr[it][1]) }
                     } else null
@@ -400,7 +401,7 @@ class FaceIDAlgorithmImpl : IFaceIDAlgorithm {
                 // 眼睛睁闭 / 嘴巴开合判定（阶段四接入）：
                 // 68 点（Array<FloatArray>[68][2]）展平为 FloatArray(136) 供 Estimator 使用，
                 // 得到连续开合度后喂给状态防抖器，输出稳定基础状态。
-                val flatLandmarks: FloatArray? = r.landmarks?.let { arr ->
+                val flatLandmarks: FloatArray? = r.facialPoints?.let { arr ->
                     if (arr.size >= 68) {
                         val flat = FloatArray(68 * 2)
                         for (p in 0 until 68) {
