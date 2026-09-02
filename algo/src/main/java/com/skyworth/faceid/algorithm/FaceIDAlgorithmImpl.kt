@@ -181,6 +181,9 @@ class FaceIDAlgorithmImpl : IFaceIDAlgorithm {
     /** 眼睛滞回状态：上一帧是否睁眼（滞回区间内维持上一状态，防半开合抖动）。 */
     private var mEyeWasOpen = true
 
+    /** 最近一次打印的 faceId 状态键（减少刷屏：仅状态变化时打印）。 */
+    private var mLastLoggedFaceKey: String? = null
+
     init {
         for (i in 0 until MAX_FACES) {
             mAARResults[i] = FaceResult()
@@ -372,8 +375,13 @@ class FaceIDAlgorithmImpl : IFaceIDAlgorithm {
                     }
                 }
 
-                Log.i(TAG, "faceId=$faceId, conf=${String.format("%.1f", confidence * 100)}%" +
-                        if (isNewEnroll) " [NEW]" else "")
+                // 减少刷屏：仅在 faceId 状态变化时打印（连续多帧同一状态不再刷）
+                val logKey = "$faceId|${if (isNewEnroll) "NEW" else ""}"
+                if (logKey != mLastLoggedFaceKey) {
+                    mLastLoggedFaceKey = logKey
+                    Log.i(TAG, "faceId=$faceId, conf=${String.format("%.1f", confidence * 100)}%" +
+                            if (isNewEnroll) " [NEW]" else "")
+                }
 
                 // 转换 5 关键点（float[5][2] → List<PointF>）
                 val kpsList = r.keypoints?.let { arr ->
@@ -481,10 +489,17 @@ class FaceIDAlgorithmImpl : IFaceIDAlgorithm {
                     headDir = r.headDir,
                     headDirYaw = r.headDirYaw,
                     headDirPitch = r.headDirPitch,
-                    headDirValid = r.headDirValid
+                    headDirValid = r.headDirValid,
+                    // 行为监测（需 flags&BEHAVIOR）：行为类别 + 概率分布
+                    behaviorClass = r.behaviorClass,
+                    behaviorProbs = r.behaviorProbs
                 )
             } else {
-                if (n == 0) Log.i(TAG, "  no face detected")
+                // 减少刷屏：无人脸仅在状态转换时打印一次（连续无人脸不刷）
+                if (n == 0 && mLastLoggedFaceKey != "NO_FACE") {
+                    mLastLoggedFaceKey = "NO_FACE"
+                    Log.i(TAG, "  no face detected")
+                }
                 // 无人脸：输出默认（睁眼/闭嘴），眼睛滞回状态复位为睁眼
                 mEyeWasOpen = true
                 IFaceIDAlgorithm.FaceIDResult()

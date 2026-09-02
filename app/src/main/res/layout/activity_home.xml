@@ -25,13 +25,13 @@
         android:textSize="14sp"
         android:textColor="#AAAAAA" />
 
-    <!-- 三个功能入口（横向排列，适配横屏） -->
+    <!-- 四个功能入口（2×2 田字型，适配横屏） -->
+    <!-- 第 1 行：人脸识别 | 疲劳监测 -->
     <LinearLayout
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:layout_marginTop="48dp"
-        android:orientation="horizontal"
-        android:gravity="center">
+        android:layout_marginTop="40dp"
+        android:orientation="horizontal">
 
         <Button
             android:id="@+id/btn_recognition"
@@ -39,7 +39,7 @@
             android:layout_height="wrap_content"
             android:layout_weight="1"
             android:layout_marginEnd="12dp"
-            android:minHeight="120dp"
+            android:minHeight="110dp"
             android:padding="16dp"
             android:text="@string/home_btn_recognition"
             android:textSize="18sp" />
@@ -49,20 +49,38 @@
             android:layout_width="0dp"
             android:layout_height="wrap_content"
             android:layout_weight="1"
-            android:layout_marginEnd="12dp"
-            android:minHeight="120dp"
+            android:minHeight="110dp"
             android:padding="16dp"
             android:text="@string/home_btn_fatigue"
             android:textSize="18sp" />
+    </LinearLayout>
+
+    <!-- 第 2 行：分心监测 | 行为监测 -->
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="12dp"
+        android:orientation="horizontal">
 
         <Button
             android:id="@+id/btn_distraction"
             android:layout_width="0dp"
             android:layout_height="wrap_content"
             android:layout_weight="1"
-            android:minHeight="120dp"
+            android:layout_marginEnd="12dp"
+            android:minHeight="110dp"
             android:padding="16dp"
             android:text="@string/home_btn_distraction"
+            android:textSize="18sp" />
+
+        <Button
+            android:id="@+id/btn_behavior"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:minHeight="110dp"
+            android:padding="16dp"
+            android:text="@string/home_btn_behavior"
             android:textSize="18sp" />
     </LinearLayout>
 

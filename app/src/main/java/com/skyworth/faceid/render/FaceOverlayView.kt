@@ -212,6 +212,12 @@ class FaceOverlayView @JvmOverloads constructor(
             val bottom = face.rect.bottom * scaleY
 
             when (drawMode) {
+                DRAW_MODE_BEHAVIOR -> {
+                    // 行为监测：仅画人脸框（绿=有效人脸，红=spoof），不含文字/关键点/箭头
+                    val boxPaint = if (face.type == FaceType.DETECTED) mGreenPaint else mRedPaint
+                    canvas.drawRect(left, top, right, bottom, boxPaint)
+                }
+
                 DRAW_MODE_RECOGNITION -> {
                     // 人脸识别：仅人脸框 + 名称 + 置信度
                     val boxPaint = if (face.type == FaceType.DETECTED) mGreenPaint else mRedPaint
@@ -538,6 +544,8 @@ class FaceOverlayView @JvmOverloads constructor(
         const val DRAW_MODE_RECOGNITION = 1
         /** 绘制模式：疲劳（人脸框/名称/置信度 + 眼嘴状态）。 */
         const val DRAW_MODE_FATIGUE = 2
+        /** 绘制模式：行为监测（仅人脸框，无文字/关键点/箭头）。 */
+        const val DRAW_MODE_BEHAVIOR = 3
 
         /** DMS 分区 ID → 名称映射（与 C 侧 InitDefaultZones 对齐）。 */
         private val ZONE_NAMES = arrayOf(

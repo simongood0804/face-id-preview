@@ -41,6 +41,12 @@
             android:exported="false"
             android:screenOrientation="landscape" />
 
+        <!-- 行为监测页（FACEP-017：阶段一只预览取流，后续加吸烟/打电话监测） -->
+        <activity
+            android:name=".ui.BehaviorMonitorActivity"
+            android:exported="false"
+            android:screenOrientation="landscape" />
+
         <!-- 疲劳监测模块 -->
         <activity
             android:name=".ui.FatigueActivity"

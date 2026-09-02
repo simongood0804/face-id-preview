@@ -28,7 +28,7 @@ class FaceOverlayBridge(
     private val TAG = "FaceOverlayBridge"
 
     /** 功能模块分区。 */
-    enum class Module { RECOGNITION, FATIGUE, DISTRACTION }
+    enum class Module { RECOGNITION, FATIGUE, DISTRACTION, BEHAVIOR }
 
     /**
      * 更新裁剪窗口（黄色采样框）。
@@ -79,6 +79,7 @@ class FaceOverlayBridge(
             Module.RECOGNITION -> FaceOverlayView.DRAW_MODE_RECOGNITION
             Module.FATIGUE -> FaceOverlayView.DRAW_MODE_FATIGUE
             Module.DISTRACTION -> FaceOverlayView.DRAW_MODE_DISTRACTION
+            Module.BEHAVIOR -> FaceOverlayView.DRAW_MODE_BEHAVIOR
         }
 
         val box = buildFaceBox(rect, result, distractActive, module)
@@ -144,6 +145,13 @@ class FaceOverlayBridge(
                 gazeCalibrated = result.gazeCalibrated,
                 gazeDistracted = if (distractActive) 1f else 0f,
                 zoneId = result.zoneId
+            )
+
+            // 行为监测：仅画框，只需 rect/type/confidence，其余默认
+            Module.BEHAVIOR -> FaceOverlayView.FaceBox(
+                rect = rect,
+                type = overlayType,
+                confidence = result.confidence
             )
         }
     }

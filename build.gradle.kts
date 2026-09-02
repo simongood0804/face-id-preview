@@ -91,7 +91,7 @@ val compileSdkVersion: Int by extra(31)
 val minSdkVersion: Int by extra(29)
 val targetSdkVersion: Int by extra(29)
 // face-sdk 本地 maven 仓库坐标版本（发布在 ~/.m2，坐标 atlas.sdk.face:face-sdk）
-val faceSdkVersion: String by extra("1.0.0")
+val faceSdkVersion: String by extra("1.0.1")
 val aosp_car_lib: String by extra("com.android.car:lib")
 val aosp_car_lib_version: String by extra("1.0.6")
 val aosp_framework: String by extra("com.android:framework")

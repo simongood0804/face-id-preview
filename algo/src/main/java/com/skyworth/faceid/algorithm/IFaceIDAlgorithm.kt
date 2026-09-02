@@ -111,7 +111,11 @@ interface IFaceIDAlgorithm {
         /** 车辆系头朝向俯仰角（AAR FaceResult.headDirPitch，度；0=水平，低头-）。 */
         val headDirPitch: Float = 0f,
         /** 头朝向有效性（AAR FaceResult.headDirValid，1=有效，需底层 cam_transform_enabled）。 */
-        val headDirValid: Float = 0f
+        val headDirValid: Float = 0f,
+        /** 行为类别（AAR FaceResult.behaviorClass=reserved[19]，需 flags&BEHAVIOR；算法定义：0=normal、1=smoking、2=phone）。 */
+        val behaviorClass: Float = 0f,
+        /** 行为类别概率分布（AAR FaceResult.behaviorProbs=reserved[20..22]：P(normal)/P(smoking)/P(phone)）。 */
+        val behaviorProbs: FloatArray? = null
     ) {
         /** 头部姿态 6D 旋转（防御性拷贝，null 保持 null）。 */
         val headPose6dSafe: FloatArray? = headPose6d?.copyOf()
@@ -127,6 +131,8 @@ interface IFaceIDAlgorithm {
         val headHwTSafe: FloatArray? = headHwT?.copyOf()
         /** 车辆系头朝向单位向量（防御性拷贝）。 */
         val headDirSafe: FloatArray? = headDir?.copyOf()
+        /** 行为类别概率分布（防御性拷贝）。 */
+        val behaviorProbsSafe: FloatArray? = behaviorProbs?.copyOf()
 
         /** Face ID 唯一标识，不为 null。 */
         val faceId: String = faceId ?: ""

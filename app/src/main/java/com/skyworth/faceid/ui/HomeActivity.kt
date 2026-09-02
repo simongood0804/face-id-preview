@@ -45,6 +45,10 @@ class HomeActivity : AppCompatActivity() {
             Log.i(TAG, "entry: distraction")
             startActivity(Intent(this, DistractionActivity::class.java))
         }
+        findViewById<Button>(R.id.btn_behavior).setOnClickListener {
+            Log.i(TAG, "entry: behavior")
+            startActivity(Intent(this, BehaviorMonitorActivity::class.java))
+        }
 
         // 摄像头选择
         mCameraBtn = findViewById(R.id.btn_camera_select)
