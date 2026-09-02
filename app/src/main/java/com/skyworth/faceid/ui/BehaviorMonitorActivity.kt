@@ -94,8 +94,10 @@ class BehaviorMonitorActivity : AppCompatActivity() {
             val frame = FrameSession.get(::readFrame)
 
             // 3. GL 渲染预览（按实际帧尺寸等比适配；仅配置一次）
+            // 必须传入 face_overlay，使 overlay 随 surface 等比缩放，
+            // 否则人脸框 View 保持 match_parent 全屏尺寸，与实际画面比例不符导致画框错位。
             if (!mRendererSet) {
-                frame.configureSurface(mSurface, null)
+                frame.configureSurface(mSurface, findViewById(R.id.face_overlay))
                 mRendererSet = true
             }
 
