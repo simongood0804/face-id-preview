@@ -26,30 +26,37 @@
 
 ### 坐标轴
 
-| 轴 | 颜色 | 含义 | 控制角度 |
+> **绘制方向调整（复用 2D 三角函数方案）**：以下按**画面颜色**描述当前实现——红 = 脸部朝向、蓝 = 竖直向上、绿 = 水平。代码里画笔名（mAxisX 红 / mAxisY 绿 / mAxisZ 蓝）与"画哪根轴"解耦：蓝色画笔(mAxisZ)用于竖直轴，绿色画笔(mAxisY)用于水平轴，红色画笔(mAxisX)用于朝向轴。
+
+| 画面颜色 | 画笔 | 含义/方向 | 控制角度 |
 |----|------|------|----------|
-| X | 红色 | 脸部朝向 | Yaw（偏航）+ Pitch（俯仰） |
-| Y | 绿色 | 面部上方（鼻梁方向） | Roll（翻滚） |
-| Z | 蓝色 | 面部正前方（垂直于面部平面） | Roll（翻滚） |
+| 红 | `mAxisXPaint` | 脸部朝向（正直时近似指向镜头/短） | Yaw（偏航）+ Pitch（俯仰） |
+| 蓝 | `mAxisZPaint` | 竖直向上（鼻梁→头顶） | Roll（翻滚） |
+| 绿 | `mAxisYPaint` | 水平（原"面部正前方"的水平向） | Roll（翻滚） |
 
 ### 方向计算（三角函数方案，最终采用）
 
-- **X 轴（红）**：`dx = sin(yaw) × axisLen`, `dy = sin(-pitch) × axisLen`。前置摄像头 yaw 取反以匹配镜像画面。
-- **Y 轴（绿）**：基准角 -90°（垂直向上），叠加 `roll` 旋转：`angle = -90° + roll`，`ex = cos(angle)`, `ey = sin(angle)`。
-- **Z 轴（蓝）**：基准角 180°（水平向左），叠加 `roll` 旋转，长度 = X/Y 的 0.7 倍。
+- **红（脸部朝向）**：`dx = sin(yawRad) × axisLen`, `dy = sin(-pitchRad) × axisLen`。前置摄像头 `yaw` 取负匹配镜像。
+- **蓝（竖直向上）**：基准角 -90°（垂直向上），叠加 `roll`：`angle = Y_BASE_RAD + rollRad`，`ex = cos(angle)`, `ey = sin(angle)`。
+- **绿（水平）**：基准角 180° 并取反（加 π → 默认朝右），叠加 `roll`：`angle = Z_BASE_RAD + PI_RAD + rollRad`，长度 = axisLen 的 0.7 倍。
+- **角度特殊处理**（见代码 `drawHeadPoseArrow` 顶部）：`yawRad = (-face.yaw)*DEG2RAD`（镜像取反）、`pitchRad = face.pitch*DEG2RAD`（原值，竖直投影 `sin(-pitch)` 再取一次负）、`rollRad = (-face.roll)*DEG2RAD`（**roll 取反**，修正歪头旋转方向）。
+
+### 绘制顺序 / 图层
+
+Canvas 2D 无深度缓冲，后画的盖先画的。当前顺序（底层→顶层）：**绿 → 蓝 → 红**，把红色（脸部朝向）放最顶层，保证红/绿、红/蓝交叉处露出红线、不被横向/竖向轴遮挡。
 
 ### 性能优化
 
 - 预计算 `DEG2RAD` 常量，避免每帧重复调用 `Math.toRadians`
-- `Y_BASE_RAD` 和 `Z_BASE_RAD` 在类加载时计算一次
+- `Y_BASE_RAD`、`Z_BASE_RAD`、`PI_RAD`（π 弧度，供绿轴取反）在类加载时计算一次
 
 ### 绘制样式
 
-| 属性 | X 轴 | Y 轴 | Z 轴 |
+| 属性 | 红（脸部朝向） | 蓝（竖直向上） | 绿（水平） |
 |------|------|------|------|
-| 颜色 | 红色 | 绿色 | 蓝色 |
+| 画笔 | `mAxisXPaint` | `mAxisZPaint` | `mAxisYPaint` |
 | 线宽 | 3px | 3px | 3px |
-| 长度 | faceW × 1.2 | faceW × 1.2 | faceW × 0.84 |
+| 长度 | faceW × 1.2 | faceW × 1.2 | faceW × 1.2 × 0.7 ≈ faceW × 0.84 |
 | 箭头 | 有（10px 三角） | 有 | 有 |
 
 ### 其他绘制调整
@@ -79,7 +86,8 @@ FaceResult.headYaw/headPitch/headRoll
 1. 仅当 `keypoints` 非空且 ≥ 2 个点时计算两眼中间点，否则 fallback 人脸框中心
 2. 仅当人脸被检测到（`FaceType.DETECTED`）时绘制坐标系
 3. 所有坐标基于原图空间，绘制时缩放至 View 空间
-4. Y/Z 轴仅由 roll 控制，不受 yaw/pitch 影响，保持稳定
+4. 蓝（竖直）、绿（水平）两轴仅由 roll 控制，不受 yaw/pitch 影响，保持稳定；红（脸部朝向）由 yaw/pitch 控制
+5. 绘制顺序固定为 绿 → 蓝 → 红（红最顶层），保证红轴不被遮挡
 
 ## 方案调研
 

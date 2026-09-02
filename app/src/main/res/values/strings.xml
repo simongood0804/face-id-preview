@@ -88,6 +88,27 @@
     <string name="home_btn_fatigue">疲劳监测</string>
     <string name="home_btn_distraction">分心监测</string>
     <string name="home_btn_behavior">行为监测</string>
+    <string name="home_btn_fusion">融合监测</string>
+
+    <!-- 融合监测（FACEP-018） -->
+    <string name="fusion_title">融合监测</string>
+    <string name="fusion_panel_recognition">人脸识别</string>
+    <string name="fusion_panel_fatigue">疲劳检测</string>
+    <string name="fusion_panel_distraction">分心监测</string>
+    <string name="fusion_panel_behavior">行为监测</string>
+    <string name="fusion_rec_face">识别结果：%1$s</string>
+    <string name="fusion_rec_conf">置信度：%1$s</string>
+    <string name="fusion_rec_enrolled">已录入：%1$d</string>
+    <string name="fusion_fatigue_level">疲劳等级：%1$s</string>
+    <string name="fusion_fatigue_eye">眼睛：%1$s  开合度 %2$.2f</string>
+    <string name="fusion_fatigue_mouth">嘴巴：%1$s  开合度 %2$.2f</string>
+    <string name="fusion_behavior_class">行为：%1$s</string>
+    <string name="fusion_zone_hint">分心区域：%1$s</string>
+    <string name="fusion_no_face">未检测到人脸</string>
+    <string name="fusion_eye_open">睁眼</string>
+    <string name="fusion_eye_closed">闭眼</string>
+    <string name="fusion_mouth_open">张嘴</string>
+    <string name="fusion_mouth_closed">闭嘴</string>
     <string name="behavior_preview_only">预览中（吸烟/打电话监测待算法更新）</string>
     <string name="behavior_smoking">吸烟中！</string>
     <string name="behavior_calling">打电话中</string>

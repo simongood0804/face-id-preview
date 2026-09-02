@@ -84,6 +84,17 @@
             android:textSize="18sp" />
     </LinearLayout>
 
+    <!-- 第 3 行：融合监测（FACEP-018，独占一行，展示算法完整功能） -->
+    <Button
+        android:id="@+id/btn_fusion"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="12dp"
+        android:minHeight="110dp"
+        android:padding="16dp"
+        android:text="@string/home_btn_fusion"
+        android:textSize="18sp" />
+
     <!-- 摄像头选择（FACEP：主页选择取流摄像头） -->
     <Button
         android:id="@+id/btn_camera_select"

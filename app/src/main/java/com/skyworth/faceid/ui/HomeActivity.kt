@@ -49,6 +49,10 @@ class HomeActivity : AppCompatActivity() {
             Log.i(TAG, "entry: behavior")
             startActivity(Intent(this, BehaviorMonitorActivity::class.java))
         }
+        findViewById<Button>(R.id.btn_fusion).setOnClickListener {
+            Log.i(TAG, "entry: fusion")
+            startActivity(Intent(this, FusionMonitorActivity::class.java))
+        }
 
         // 摄像头选择
         mCameraBtn = findViewById(R.id.btn_camera_select)

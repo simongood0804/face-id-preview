@@ -47,6 +47,12 @@
             android:exported="false"
             android:screenOrientation="landscape" />
 
+        <!-- 融合监测页（FACEP-018：聚合识别/疲劳/分心/行为完整功能） -->
+        <activity
+            android:name=".ui.FusionMonitorActivity"
+            android:exported="false"
+            android:screenOrientation="landscape" />
+
         <!-- 疲劳监测模块 -->
         <activity
             android:name=".ui.FatigueActivity"

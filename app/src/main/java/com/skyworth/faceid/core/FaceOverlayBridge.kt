@@ -28,7 +28,7 @@ class FaceOverlayBridge(
     private val TAG = "FaceOverlayBridge"
 
     /** 功能模块分区。 */
-    enum class Module { RECOGNITION, FATIGUE, DISTRACTION, BEHAVIOR }
+    enum class Module { RECOGNITION, FATIGUE, DISTRACTION, BEHAVIOR, FUSION }
 
     /**
      * 更新裁剪窗口（黄色采样框）。
@@ -80,6 +80,7 @@ class FaceOverlayBridge(
             Module.FATIGUE -> FaceOverlayView.DRAW_MODE_FATIGUE
             Module.DISTRACTION -> FaceOverlayView.DRAW_MODE_DISTRACTION
             Module.BEHAVIOR -> FaceOverlayView.DRAW_MODE_BEHAVIOR
+            Module.FUSION -> FaceOverlayView.DRAW_MODE_FUSION
         }
 
         val box = buildFaceBox(rect, result, distractActive, module)
@@ -152,6 +153,21 @@ class FaceOverlayBridge(
                 rect = rect,
                 type = overlayType,
                 confidence = result.confidence
+            )
+
+            // 融合监测（FACEP-018）：预览仅绘制 68 点密集地标 + 头姿坐标轴 + zone 面板。
+            // 填充 denseLandmarks(68点)、keypoints(头姿起点)、headpose、zoneId。
+            Module.FUSION -> FaceOverlayView.FaceBox(
+                rect = rect,
+                type = overlayType,
+                confidence = result.confidence,
+                keypoints = result.keypoints,
+                denseLandmarks = result.landmarks,
+                pitch = result.headposePitch,
+                yaw = result.headposeYaw,
+                roll = result.headposeRoll,
+                gazeDistracted = if (distractActive) 1f else 0f,
+                zoneId = result.zoneId
             )
         }
     }

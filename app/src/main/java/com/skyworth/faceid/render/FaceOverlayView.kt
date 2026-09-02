@@ -11,6 +11,7 @@ import android.graphics.RectF
 import android.util.AttributeSet
 import android.view.View
 import kotlin.math.cos
+import kotlin.math.hypot
 import kotlin.math.sin
 
 /**
@@ -143,6 +144,10 @@ class FaceOverlayView @JvmOverloads constructor(
     private val DEG2RAD = (Math.PI / 180.0).toFloat()
     private val Y_BASE_RAD = (-90f * DEG2RAD)  // Y 轴默认垂直向上
     private val Z_BASE_RAD = (180f * DEG2RAD)   // Z 轴默认水平向左
+    /** π 弧度，用于轴的 180° 反向。 */
+    private val PI_RAD = (Math.PI).toFloat()
+    /** 轴端点到原点最小 View 长度(px)：过短时视为退化，不画箭头，避免 atan2(0,0) 异常。 */
+    private val MIN_ARROW_LEN = 6f
 
     /**
      * 更新人脸列表并重绘。
@@ -283,6 +288,16 @@ class FaceOverlayView @JvmOverloads constructor(
                         drawGaze(canvas, face, scaleX, scaleY)
                     }
                 }
+
+                DRAW_MODE_FUSION -> {
+                    // 融合监测（FACEP-018）：仅绘制 68 点密集地标 + 头姿坐标轴。
+                    // 不画人脸框/名称/5点/视线线/眼嘴文字，避免遮挡画面。
+                    // 头姿坐标轴无条件绘制（不论 detected/spoof/未录入），供分心/头姿判定持续参考。
+                    face.denseLandmarks?.forEach { pt ->
+                        canvas.drawCircle(pt.x * scaleX, pt.y * scaleY, 3f, mLandmarkPaint)
+                    }
+                    drawHeadPoseArrow(canvas, face, scaleX, scaleY)
+                }
             }
         }
 
@@ -421,10 +436,15 @@ class FaceOverlayView @JvmOverloads constructor(
     // ============================================================
 
     /**
-     * 绘制头姿坐标系：X=红色(脸部朝向)，Y=绿色，Z=蓝色。
+     * 绘制头姿三维坐标轴（2D 三角函数方案，FACEP-007）。
      *
-     * 原点为两眼中间点（从 5 关键点中取左眼/右眼），
-     * fallback 到人脸框中心。X 轴方向由 yaw/pitch 决定。
+     * 画面配色与方向（画笔颜色：mAxisX=红 / mAxisY=绿 / mAxisZ=蓝，绘制时按角色重排）：
+     *   - 红(mAxisX) = 脸部朝向，由 yaw/pitch 决定；
+     *   - 蓝(mAxisZ) = 竖直向上，由 roll 控制（位于原 Y 逻辑位置）；
+     *   - 绿(mAxisY) = 水平，由 roll 控制，基准取反默认朝右，长度为红/蓝的 0.7。
+     * 角度处理：yaw 取负(前置镜像)、roll 取负；绘制顺序 绿→蓝→红(红最顶层，避免被遮挡)。
+     *
+     * 原点为两眼中间点（从 5 关键点中取左眼/右眼），fallback 到人脸框中心。
      * 所有坐标在原图空间，需乘以 scaleX/scaleY 缩放至 View 空间。
      */
     private fun drawHeadPoseArrow(canvas: Canvas, face: FaceBox, scaleX: Float, scaleY: Float) {
@@ -443,9 +463,17 @@ class FaceOverlayView @JvmOverloads constructor(
         val faceW = face.rect.right - face.rect.left
         val axisLen = faceW * 1.2f
 
+        // ---- 头姿角极性说明（勿随意改动，方向均经真机校准）----
+        // face.yaw/pitch/roll 为 SDK 原始角度(度)；此处仅做方向/镜像处理：
+        //  - yawRad = -face.yaw  ：前置摄像头画面为镜像，转头方向取反；
+        //  - pitchRad = face.pitch：原值；下方红轴竖直投影 sin(-pitchRad) 等于 -sin(pitch)，
+        //    即 pitch 方向在竖直上又反了一次（点头方向如反，改这里而非下面公式）；
+        //  - rollRad = -face.roll ：roll 取反，翻转歪头旋转方向（歪头方向如反，改这里）。
+        // 注意：若未来 SDK 侧 headYaw/headPitch/headRoll 已按 DMS/镜像约定输出过方向，
+        //       上面这些取负会造成"双重反转"、方向反掉——需在升级 SDK 后整体复核。
         val yawRad = (-face.yaw) * DEG2RAD
         val pitchRad = face.pitch * DEG2RAD
-        val rollRad = face.roll * DEG2RAD
+        val rollRad = (-face.roll) * DEG2RAD
 
         // 缩放至 View 空间
         val sx = startX * scaleX
@@ -457,28 +485,38 @@ class FaceOverlayView @JvmOverloads constructor(
         }
         canvas.drawCircle(sx, sy, 5f, originPaint)
 
-        // --- X 轴（红色）：脸部朝向，由 yaw/pitch 决定 ---
+        // 绘制顺序（底层→顶层）＝ 绿 → 蓝 → 红：红(朝向)最后画在最顶层，
+        // 这样红绿/红蓝交叉处露出红线，不被横向/竖向轴遮挡。
+        // --- 水平轴（绿色）：原蓝色(Z)位置的水平向，仅 roll 控制旋转。
+        //    取反：基准角 Z_BASE_RAD(180°朝左) 加 π(180°) 反向 → 默认朝右。
+        //    修复隐患：与红/蓝一致补乘 scaleX/scaleY，避免非 1:1 缩放下长度/位置错位。 ---
+        val zAngle = Z_BASE_RAD + PI_RAD + rollRad
+        val zAxisLen = axisLen * 0.7f
+        val zEx = sx + cos(zAngle) * zAxisLen * scaleX
+        val zEy = sy + sin(zAngle) * zAxisLen * scaleY
+        canvas.drawLine(sx, sy, zEx, zEy, mAxisYPaint)
+        drawArrowHead(canvas, zEx, zEy, sx, sy, mAxisYPaint)
+
+        // --- 竖直轴（蓝色）：始终指向上方，仅 roll 控制旋转。
+        //    注：蓝色移到原本绿色(Y)所在的位置（竖直向上），相对三轴布局不变。 ---
+        val yAngle = Y_BASE_RAD + rollRad
+        val yEx = sx + cos(yAngle) * axisLen * scaleX
+        val yEy = sy + sin(yAngle) * axisLen * scaleY
+        canvas.drawLine(sx, sy, yEx, yEy, mAxisZPaint)
+        drawArrowHead(canvas, yEx, yEy, sx, sy, mAxisZPaint)
+
+        // --- X 轴（红色）：脸部朝向，由 yaw/pitch 决定（最后绘制=最顶层） ---
+        // 修复隐患：正直(yaw/pitch≈0)时该轴端点≈原点，长度过小会画出方向固定的异常
+        // 小三角(atan2(0,0))；故先算 View 空间长度，过小则只画短线、跳过箭头。
         val dx = sin(yawRad) * axisLen
         val dy = sin(-pitchRad) * axisLen
         val xEx = sx + dx * scaleX
         val xEy = sy + dy * scaleY
         canvas.drawLine(sx, sy, xEx, xEy, mAxisXPaint)
-        drawArrowHead(canvas, xEx, xEy, sx, sy, mAxisXPaint)
-
-        // --- Y 轴（绿色）：始终指向上方（鼻梁方向），仅 roll 控制旋转 ---
-        val yAngle = Y_BASE_RAD + rollRad
-        val yEx = sx + cos(yAngle) * axisLen * scaleX
-        val yEy = sy + sin(yAngle) * axisLen * scaleY
-        canvas.drawLine(sx, sy, yEx, yEy, mAxisYPaint)
-        drawArrowHead(canvas, yEx, yEy, sx, sy, mAxisYPaint)
-
-        // --- Z 轴（蓝色）：垂直于面部平面（人脸正前方），仅 roll 控制 ---
-        val zAngle = Z_BASE_RAD + rollRad
-        val zAxisLen = axisLen * 0.7f
-        val zEx = sx + cos(zAngle) * zAxisLen
-        val zEy = sy + sin(zAngle) * zAxisLen
-        canvas.drawLine(sx, sy, zEx, zEy, mAxisZPaint)
-        drawArrowHead(canvas, zEx, zEy, sx, sy, mAxisZPaint)
+        val redLenV = hypot(xEx - sx, xEy - sy)
+        if (redLenV >= MIN_ARROW_LEN) {
+            drawArrowHead(canvas, xEx, xEy, sx, sy, mAxisXPaint)
+        }
     }
 
     /**
@@ -546,6 +584,8 @@ class FaceOverlayView @JvmOverloads constructor(
         const val DRAW_MODE_FATIGUE = 2
         /** 绘制模式：行为监测（仅人脸框，无文字/关键点/箭头）。 */
         const val DRAW_MODE_BEHAVIOR = 3
+        /** 绘制模式：融合监测（FACEP-018，仅 68 点密集地标 + 头姿坐标轴 + zone 面板）。 */
+        const val DRAW_MODE_FUSION = 4
 
         /** DMS 分区 ID → 名称映射（与 C 侧 InitDefaultZones 对齐）。 */
         private val ZONE_NAMES = arrayOf(
