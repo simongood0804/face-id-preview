@@ -9,8 +9,26 @@
     <!-- 手动 dump -->
     <string name="btn_dump">Dump</string>
     <string name="btn_dump_origin">dump原图</string>
+    <string name="btn_dump_continuous">连续dump</string>
+    <string name="btn_dump_continuous_active">连续dump中…</string>
+    <string name="dump_timer_format">剩余 %1$d 张：%2$s</string>
+
+    <!-- 连续 dump 输出格式选择 -->
+    <string name="dump_mode_title">连续 Dump 格式</string>
+    <string name="dump_mode_png">PNG 图片序列</string>
+    <string name="dump_mode_jpeg">JPEG 图片序列</string>
+    <string name="dump_mode_video">录制视频 (MP4)</string>
+
+    <!-- 主页摄像头选择 -->
+    <string name="camera_select_title">选择摄像头</string>
+    <string name="camera_select_format">摄像头：%1$s</string>
+    <string name="camera_select_ok">确定</string>
+    <string name="dump_action_sit">请坐好</string>
+    <string name="dump_action_call">请做出打电话动作</string>
+    <string name="dump_action_smoke">请做出抽烟动作</string>
     <string name="btn_clear_dump">清除dump</string>
     <string name="btn_move_dump">导出dump</string>
+    <string name="btn_move_dump_active">导出中…</string>
 
     <!-- 状态 -->
     <string name="status_idle">Idle</string>
@@ -23,6 +41,31 @@
     <!-- 人脸识别 -->
     <string name="face_id_label">Face ID:</string>
     <string name="face_id_none">—</string>
+    <string name="enrolled_count_zero">已导入：0 人</string>
+    <string name="enrolled_count_format">已导入：%1$d 人</string>
+
+    <!-- FACEP-012 人脸识别细化 -->
+    <string name="btn_start_enroll">开始录入</string>
+    <string name="btn_manage_faces">管理已录入人脸</string>
+    <string name="enroll_prompt">正在录入人脸，请正视镜头…</string>
+    <string name="enroll_captured">人脸录入成功</string>
+    <string name="enroll_name_hint">请输入人脸名称</string>
+    <string name="enroll_name_empty">名称不能为空</string>
+    <string name="enroll_name_duplicate">该名称已存在</string>
+    <string name="enroll_confirm">确认</string>
+    <string name="enroll_cancel">取消</string>
+    <string name="enroll_delete_confirm">确定删除「%1$s」？</string>
+    <string name="enroll_delete_title">删除人脸</string>
+    <string name="enroll_list_empty">暂未录入任何人脸</string>
+    <string name="enroll_manage_title">已录入人脸</string>
+    <string name="enroll_delete_success">已删除：%1$s</string>
+    <string name="unregistered_face">未录入人脸</string>
+    <string name="manage_done">完成</string>
+    <string name="manage_delete_selected">删除选中</string>
+    <string name="manage_title_format">已录入人脸（%1$d）</string>
+    <string name="manage_select_prompt">请选择要删除的人脸</string>
+    <string name="manage_delete_batch_confirm">确定删除选中的 %1$d 张人脸？</string>
+    <string name="manage_no_selection">请先选择要删除的人脸</string>
     <string name="face_confidence_label">Confidence:</string>
     <string name="face_id_detected">Face Detected</string>
     <string name="face_id_not_detected">No Face</string>
@@ -37,4 +80,42 @@
     <!-- 提示 -->
     <string name="tap_to_toggle">Tap to start / stop preview</string>
     <string name="camera_permission_denied">Camera permission denied</string>
+
+    <!-- 主页（FACEP-011） -->
+    <string name="home_title">DMS 功能选择</string>
+    <string name="home_subtitle">请选择要进入的功能模块</string>
+    <string name="home_btn_recognition">人脸识别</string>
+    <string name="home_btn_fatigue">疲劳监测</string>
+    <string name="home_btn_distraction">分心监测</string>
+    <string name="home_btn_behavior">行为监测</string>
+    <string name="behavior_preview_only">预览中（吸烟/打电话监测待算法更新）</string>
+    <string name="behavior_smoking">吸烟中！</string>
+    <string name="behavior_calling">打电话中</string>
+    <string name="behavior_normal">正常</string>
+    <string name="behavior_unknown">未知行为</string>
+    <string name="home_version">版本</string>
+    <string name="btn_back_home">返回主页</string>
+
+    <!-- 疲劳监测（FACEP-011 阶段三 / FACEP-015 配置化分级） -->
+    <string name="fatigue_status_ok">正常</string>
+    <string name="fatigue_status_light">轻度疲劳</string>
+    <string name="fatigue_status_moderate">中度疲劳</string>
+    <string name="fatigue_status_severe">重度疲劳</string>
+    <string name="fatigue_status_eye_closed">⚠ 疲劳：持续闭眼</string>
+    <string name="fatigue_status_yawn">⚠ 疲劳：打哈欠</string>
+
+    <!-- 疲劳渲染页（FACEP-015 §4.3） -->
+    <string name="fatigue_label_state">疲劳状态</string>
+    <string name="fatigue_desc_eye_open">闭眼状态：睁眼</string>
+    <string name="fatigue_desc_eye_closed">闭眼状态：闭眼 已持续 %1$d ms</string>
+    <string name="fatigue_desc_mouth_closed">哈欠状态：无</string>
+    <string name="fatigue_desc_mouth_open">哈欠状态：哈欠 嘴开合 %1$.2f 已持续 %2$d ms</string>
+    <string name="fatigue_diag_level">疲劳等级：%1$s  命中条件：%2$s</string>
+    <string name="fatigue_diag_stats">[统计] 60s闭眼 %1$d次  20s闭眼 %2$d次  60s哈欠 %3$d次</string>
+    <string name="fatigue_diag_cont">[统计] 连续闭眼 %1$dms  持续张嘴 %2$dms  无人脸 %3$dms</string>
+
+    <!-- 分心监测（FACEP-011 阶段四） -->
+    <string name="distraction_status_ok">分心状态：正常</string>
+    <string name="distraction_status_active">⚠ 分心！</string>
+    <string name="distraction_speed_na">车速：N/A</string>
 </resources>

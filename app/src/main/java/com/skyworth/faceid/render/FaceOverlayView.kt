@@ -26,6 +26,12 @@ class FaceOverlayView @JvmOverloads constructor(
     /** 当前帧的人脸列表。 */
     @Volatile private var mFaces: List<FaceBox> = emptyList()
 
+    /**
+     * 绘制模式（FACEP-011 功能划分，按模块分区绘制）：
+     * 0=DISTRACTION（全部），1=RECOGNITION（仅框/名称/置信度），2=FATIGUE（+眼嘴状态）。
+     */
+    @Volatile var drawMode: Int = DRAW_MODE_DISTRACTION
+
     /** 当前裁剪窗口（原图坐标，null 表示不绘制）。 */
     @Volatile private var mCropRect: RectF? = null
 
@@ -72,9 +78,9 @@ class FaceOverlayView @JvmOverloads constructor(
         style = Paint.Style.FILL
     }
 
-    /** 黄色密集地标画笔（106 点）。 */
+    /** 粉色 68 密集地标画笔（疲劳模块绘制眼嘴点位）。 */
     private val mLandmarkPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        color = Color.YELLOW
+        color = Color.rgb(255, 105, 180)  // HotPink
         style = Paint.Style.FILL
     }
 
@@ -205,60 +211,86 @@ class FaceOverlayView @JvmOverloads constructor(
             val right = face.rect.right * scaleX
             val bottom = face.rect.bottom * scaleY
 
-            val label = buildString {
-                append(face.label ?: when (face.type) {
-                    FaceType.DETECTED -> "detected"
-                    FaceType.SPOOF -> "spoof"
-                })
-                append(" ${(face.confidence * 100).toInt()}%")
-            }
+            when (drawMode) {
+                DRAW_MODE_BEHAVIOR -> {
+                    // 行为监测：仅画人脸框（绿=有效人脸，红=spoof），不含文字/关键点/箭头
+                    val boxPaint = if (face.type == FaceType.DETECTED) mGreenPaint else mRedPaint
+                    canvas.drawRect(left, top, right, bottom, boxPaint)
+                }
 
-            // 标签背景 + 文字（名称 + 置信度）
-            val labelWidth = mLabelPaint.measureText(label)
-            val labelHeight = mLabelPaint.textSize
-            canvas.drawRect(left, top - labelHeight - 8, left + labelWidth + 12, top, mBgPaint)
-            canvas.drawText(label, left + 6, top - 6, mLabelPaint)
+                DRAW_MODE_RECOGNITION -> {
+                    // 人脸识别：仅人脸框 + 名称 + 置信度
+                    val boxPaint = if (face.type == FaceType.DETECTED) mGreenPaint else mRedPaint
+                    canvas.drawRect(left, top, right, bottom, boxPaint)
 
-            // 头姿信息（小字，框下方）
-            val poseText = "P:%.0f Y:%.0f R:%.0f".format(face.pitch, face.yaw, face.roll)
-            val poseWidth = mPosePaint.measureText(poseText)
-            val poseHeight = mPosePaint.textSize
-            canvas.drawRect(left, bottom + 2, left + poseWidth + 8, bottom + poseHeight + 6, mBgPaint)
-            canvas.drawText(poseText, left + 4, bottom + poseHeight + 1, mPosePaint)
+                    val label = buildString {
+                        append(face.label ?: when (face.type) {
+                            FaceType.DETECTED -> "detected"
+                            FaceType.SPOOF -> "spoof"
+                        })
+                        append(" ${(face.confidence * 100).toInt()}%")
+                    }
+                    val labelWidth = mLabelPaint.measureText(label)
+                    val labelHeight = mLabelPaint.textSize
+                    canvas.drawRect(left, top - labelHeight - 8, left + labelWidth + 12, top, mBgPaint)
+                    canvas.drawText(label, left + 6, top - 6, mLabelPaint)
+                }
 
-            // 视线信息（小字，头姿下方）
-            val gazeText = "G:yaw%.0f pit%.0f v%d c%d d%d".format(
-                face.gazeYaw, face.gazePitch,
-                if (face.gazeValid > 0f) 1 else 0,
-                if (face.gazeCalibrated > 0f) 1 else 0,
-                if (face.gazeDistracted > 0f) 1 else 0)
-            val gazeWidth = mPosePaint.measureText(gazeText)
-            canvas.drawRect(left, bottom + poseHeight + 8, left + gazeWidth + 8,
-                bottom + poseHeight * 2 + 12, mBgPaint)
-            canvas.drawText(gazeText, left + 4, bottom + poseHeight * 2 + 7, mPosePaint)
+                DRAW_MODE_FATIGUE -> {
+                    // 疲劳监测：68 眼嘴点位 + 眼睛/嘴巴开合状态（不画人脸框/名称/置信度）
+                    face.denseLandmarks?.forEach { pt ->
+                        canvas.drawCircle(pt.x * scaleX, pt.y * scaleY, 2f, mLandmarkPaint)
+                    }
+                    // 眼睛/嘴巴开合状态（小字，画面上方）
+                    val poseHeight = mPosePaint.textSize
+                    val emText = "E:${if (face.eyeOpen) "OPEN" else "CLOSED"}  " +
+                            "M:${if (face.mouthOpen) "OPEN" else "CLOSED"}"
+                    val emWidth = mPosePaint.measureText(emText)
+                    canvas.drawRect(left, top - poseHeight - 8, left + emWidth + 8, top, mBgPaint)
+                    canvas.drawText(emText, left + 4, top - poseHeight - 3, mPosePaint)
+                }
 
-            // 绘制 106 密集地标（黄色小点）
-            face.denseLandmarks?.forEach { pt ->
-                canvas.drawCircle(pt.x * scaleX, pt.y * scaleY, 1f, mLandmarkPaint)
-            }
+                DRAW_MODE_DISTRACTION -> {
+                    // 分心监测：头姿 + 视线 + 关键 5 点 + 头姿/视线箭头
+                    // （不画人脸框/名称/置信度/眼嘴状态）
+                    val poseHeight = mPosePaint.textSize
 
-            // 绘制 5 关键点（紫色）
-            face.keypoints?.forEach { pt ->
-                canvas.drawCircle(pt.x * scaleX, pt.y * scaleY, 3f, mKeypointPaint)
-            }
+                    // 头姿信息（小字，画面上方）
+                    val poseText = "P:%.0f Y:%.0f R:%.0f".format(face.pitch, face.yaw, face.roll)
+                    val poseWidth = mPosePaint.measureText(poseText)
+                    canvas.drawRect(left, top - poseHeight * 2 - 12, left + poseWidth + 8,
+                        top - poseHeight - 6, mBgPaint)
+                    canvas.drawText(poseText, left + 4, top - poseHeight - 1, mPosePaint)
 
-            // 头姿坐标轴 + 视线（仅 DETECTED）
-            if (face.type == FaceType.DETECTED) {
-                drawHeadPoseArrow(canvas, face, scaleX, scaleY)
-                drawGaze(canvas, face, scaleX, scaleY)
+                    // 视线信息（小字，头姿下方）
+                    val gazeText = "G:yaw%.0f pit%.0f v%d c%d d%d".format(
+                        face.gazeYaw, face.gazePitch,
+                        if (face.gazeValid > 0f) 1 else 0,
+                        if (face.gazeCalibrated > 0f) 1 else 0,
+                        if (face.gazeDistracted > 0f) 1 else 0)
+                    val gazeWidth = mPosePaint.measureText(gazeText)
+                    canvas.drawRect(left, top - poseHeight - 8, left + gazeWidth + 8, top, mBgPaint)
+                    canvas.drawText(gazeText, left + 4, top - poseHeight - 3, mPosePaint)
+
+                    // 绘制 5 关键点（紫色，瞳孔/鼻尖/嘴角）
+                    face.keypoints?.forEach { pt ->
+                        canvas.drawCircle(pt.x * scaleX, pt.y * scaleY, 4f, mKeypointPaint)
+                    }
+
+                    // 头姿坐标轴 + 视线（仅 DETECTED）
+                    if (face.type == FaceType.DETECTED) {
+                        drawHeadPoseArrow(canvas, face, scaleX, scaleY)
+                        drawGaze(canvas, face, scaleX, scaleY)
+                    }
+                }
             }
         }
 
-        // 左侧输出当前朝向 zone 信息
-        drawZonePanel(canvas, faces)
-
-        // 固定位置的分心提示（右侧中部，不随人脸移动，避开视线/头姿区）
-        drawDistracted(canvas)
+        // 分心模式：左侧 zone 面板 + 固定分心提示
+        if (drawMode == DRAW_MODE_DISTRACTION) {
+            drawZonePanel(canvas, faces)
+            drawDistracted(canvas)
+        }
     }
 
     /**
@@ -334,7 +366,7 @@ class FaceOverlayView @JvmOverloads constructor(
 
     /**
      * 绘制左右眼两条视线方向线 + 分心状态提示。
-     * 左眼起点 = 106 点地标 index 88（左瞳），右眼起点 = index 89（右瞳），
+     * 左眼起点 = 5 关键点 index 0（左眼中心），右眼起点 = index 1（右眼中心），
      * 各自以同一 gazeYaw/gazePitch 方向延伸（橙色线）。
      * 分心时显示红色 "DISTRACTED" 提示。
      */
@@ -479,7 +511,7 @@ class FaceOverlayView @JvmOverloads constructor(
         val label: String? = null,
         /** 5 个面部关键点（蓝色）。 */
         val keypoints: List<PointF>? = null,
-        /** 106 个密集地标（黄色）。 */
+        /** 68 个密集地标（疲劳模式粉色绘制）。 */
         val denseLandmarks: List<PointF>? = null,
         /** 头部姿态角（度）。 */
         val pitch: Float = 0f,
@@ -496,12 +528,25 @@ class FaceOverlayView @JvmOverloads constructor(
         /** 是否分心（1=分心）。 */
         val gazeDistracted: Float = 0f,
         /** DMS 分区 ID。 */
-        val zoneId: Float = 0f
+        val zoneId: Float = 0f,
+        /** 眼睛是否睁开（true=睁眼，false=闭眼）。 */
+        val eyeOpen: Boolean = true,
+        /** 嘴巴是否张开（true=张嘴，false=闭嘴）。 */
+        val mouthOpen: Boolean = false
     )
 
     enum class FaceType { DETECTED, SPOOF }
 
     companion object {
+        /** 绘制模式：分心（全部，头姿/视线/分区/分心提示）。 */
+        const val DRAW_MODE_DISTRACTION = 0
+        /** 绘制模式：人脸识别（仅人脸框/名称/置信度）。 */
+        const val DRAW_MODE_RECOGNITION = 1
+        /** 绘制模式：疲劳（人脸框/名称/置信度 + 眼嘴状态）。 */
+        const val DRAW_MODE_FATIGUE = 2
+        /** 绘制模式：行为监测（仅人脸框，无文字/关键点/箭头）。 */
+        const val DRAW_MODE_BEHAVIOR = 3
+
         /** DMS 分区 ID → 名称映射（与 C 侧 InitDefaultZones 对齐）。 */
         private val ZONE_NAMES = arrayOf(
             "FORWARD",                    // 0

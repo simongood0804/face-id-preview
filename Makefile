@@ -20,8 +20,11 @@
 # =============================================================================
 
 # ------ 项目配置 ------
+# JDK 路径：优先环境变量/命令行参数（make JAVA_HOME=/path）；
+# macOS 自动探测 JDK 11，其他平台需显式指定（如 make JAVA_HOME=/usr/lib/jvm/java-11）
+JAVA_HOME ?= $(shell /usr/libexec/java_home -v 11 2>/dev/null)
 PACKAGE_NAME    := com.skyworth.faceid
-ACTIVITY_NAME   := .ui.PreviewActivity
+ACTIVITY_NAME   := .ui.HomeActivity
 APK_PATH        := app/build/outputs/apk/release/app-release.apk
 SYSTEM_APP_DIR  := /system/app/DmsFace
 APK_NAME        := DmsFace.apk
@@ -45,18 +48,15 @@ NC     := \033[0m
 ## 编译 Release APK（增量，不清缓存）
 build:
 	@echo "$(GREEN)[BUILD] compiling...$(NC)"
-	JAVA_HOME=/home/simon/jdks/jdk-11.0.32+9 \
-	./gradlew assembleRelease --no-daemon --no-build-cache
+	JAVA_HOME="$(JAVA_HOME)" ./gradlew assembleRelease --no-daemon --no-build-cache
 	@echo "$(GREEN)[BUILD] done: $(APK_PATH)$(NC)"
 
 ## 先 clean 再编译 Release APK（清除 Gradle 缓存，确保 native 库等是最新 AAR）
 clean-build:
 	@echo "$(GREEN)[CLEAN-BUILD] cleaning...$(NC)"
-	JAVA_HOME=/home/simon/jdks/jdk-11.0.32+9 \
-	./gradlew clean --no-daemon
+	JAVA_HOME="$(JAVA_HOME)" ./gradlew clean --no-daemon
 	@echo "$(GREEN)[CLEAN-BUILD] compiling...$(NC)"
-	JAVA_HOME=/home/simon/jdks/jdk-11.0.32+9 \
-	./gradlew assembleRelease --no-daemon --no-build-cache
+	JAVA_HOME="$(JAVA_HOME)" ./gradlew assembleRelease --no-daemon --no-build-cache
 	@echo "$(GREEN)[CLEAN-BUILD] done: $(APK_PATH)$(NC)"
 
 # =============================================================================
@@ -210,8 +210,7 @@ pid:
 ## 运行所有单元测试
 test:
 	@echo "$(GREEN)[TEST] running all unit tests...$(NC)"
-	JAVA_HOME=/home/simon/jdks/jdk-11.0.32+9 \
-	./gradlew app:testDebugUnitTest --no-daemon
+	JAVA_HOME="$(JAVA_HOME)" ./gradlew app:testDebugUnitTest --no-daemon
 	@echo "$(GREEN)[TEST] done$(NC)"
 
 ## 运行指定测试类
@@ -224,16 +223,14 @@ test-class:
 		exit 1; \
 	fi
 	@echo "$(GREEN)[TEST-CLASS] running $(CLASS)...$(NC)"
-	JAVA_HOME=/home/simon/jdks/jdk-11.0.32+9 \
-	./gradlew app:testDebugUnitTest --no-daemon --tests "com.skyworth.faceid.pipeline.$(CLASS)" \
+	JAVA_HOME="$(JAVA_HOME)" ./gradlew app:testDebugUnitTest --no-daemon --tests "com.skyworth.faceid.pipeline.$(CLASS)" \
 		--tests "com.skyworth.faceid.algorithm.$(CLASS)"
 	@echo "$(GREEN)[TEST-CLASS] done$(NC)"
 
 ## 运行测试套件
 test-suite:
 	@echo "$(GREEN)[TEST-SUITE] running test suite...$(NC)"
-	JAVA_HOME=/home/simon/jdks/jdk-11.0.32+9 \
-	./gradlew app:testDebugUnitTest --no-daemon --tests "com.skyworth.faceid.FaceIDPreviewTestSuite"
+	JAVA_HOME="$(JAVA_HOME)" ./gradlew app:testDebugUnitTest --no-daemon --tests "com.skyworth.faceid.FaceIDPreviewTestSuite"
 	@echo "$(GREEN)[TEST-SUITE] done$(NC)"
 
 ## 查看测试报告

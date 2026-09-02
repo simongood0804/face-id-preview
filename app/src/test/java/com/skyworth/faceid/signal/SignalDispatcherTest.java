@@ -18,7 +18,7 @@ import static org.junit.Assert.*;
  *
  * 结合消息总线，验证：
  * - 轮询车速 + 算法结果 → 分心防抖 → 发布 FRAME_OVERLAY
- * - 无人脸重置分心
+ * - 无人脸延时复位分心（防算法短暂漏检误消除信号）
  * - 车速分档影响 overlay 阈值
  * - 车速 topic 断流不影响算法结果处理（故障隔离）
  */
@@ -34,7 +34,8 @@ public class SignalDispatcherTest {
         mHub = new BusHub();
         mPublisher = new BusPublisher(mHub);
         mClock = new AtomicLong(0L);
-        DistractionStateMachine machine = new DistractionStateMachine(() -> mClock.get());
+        DistractionStateMachine machine = new DistractionStateMachine(
+                () -> mClock.get(), DistractionStateMachine.NO_FACE_RESET_MS);
         mDispatcher = new SignalDispatcher(mHub, mPublisher,
                 r -> new SignalTypes.AlgoDistractionInput(r.getFaceId().length() > 0, r.getGazeDistracted()),
                 machine);
@@ -48,15 +49,19 @@ public class SignalDispatcherTest {
         return new IFaceIDAlgorithm.FaceIDResult(
                 hasFace ? "detected" : "",
                 0.9f,
-                null,
-                null,
-                null,
-                false,
-                null,
-                0f, 0f, 0f,
-                0f, 0f, 0f,
-                hasFace ? 1f : 0f,  // gazeDistracted
-                0f, 0f, 0f, 0f, 0f, 0f
+                null,                       // faceRect
+                null,                       // processedData
+                null,                       // landmarks
+                false,                      // isNewEnrollment
+                false,                      // enrollmentReady
+                null,                       // keypoints
+                0f, 0f, 0f,                 // headposePitch/Yaw/Roll
+                0f, 0f, 0f,                 // gazeValid/Yaw/Pitch
+                hasFace ? 1f : 0f,          // gazeDistracted
+                0f,                         // gazeCalibrated
+                0f, 0f, 0f,                 // distractionScore/HpScore/GazeScore
+                0f, 0f,                     // zoneId/zoneConfidence
+                false, false                // eyeOpen/mouthOpen
         );
     }
 
@@ -105,7 +110,7 @@ public class SignalDispatcherTest {
     }
 
     @Test
-    public void testNoFaceResetsDistraction() {
+    public void testNoFaceResetsDistractionAfterConfirm() {
         mPublisher.publish(ServiceRegistry.Topic.VEHICLE_SPEED,
                 new SignalTypes.VehicleSpeed(-1f, false));
         mDispatcher.poll();
@@ -118,10 +123,16 @@ public class SignalDispatcherTest {
         mDispatcher.poll();
         assertTrue(mDispatcher.getLastDistraction().getDistracted());
 
-        // 无人脸 → 重置
+        // 无人脸：未达确认时长 → 保持分心（防算法短暂漏检误消除信号）
         mPublisher.publish(ServiceRegistry.Topic.ALGO_RESULT, distractedResult(false));
         mDispatcher.poll();
-        assertFalse("无人脸应重置分心", mDispatcher.getLastDistraction().getDistracted());
+        assertTrue("无人脸未达确认时长应保持分心", mDispatcher.getLastDistraction().getDistracted());
+
+        // 持续无人脸达确认时长 → 复位
+        advance(DistractionStateMachine.NO_FACE_RESET_MS);
+        mPublisher.publish(ServiceRegistry.Topic.ALGO_RESULT, distractedResult(false));
+        mDispatcher.poll();
+        assertFalse("持续无人脸达确认时长应复位", mDispatcher.getLastDistraction().getDistracted());
     }
 
     @Test

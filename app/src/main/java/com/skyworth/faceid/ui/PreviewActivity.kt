@@ -28,12 +28,16 @@ import com.skyworth.faceid.bus.BusHub
 import com.skyworth.faceid.bus.BusPublisher
 import com.skyworth.faceid.bus.ServiceRegistry
 import com.skyworth.faceid.camera.CameraManager
+import com.skyworth.faceid.core.NativeFrameReader
 import com.skyworth.faceid.camera.FaceIDCameraController
 import com.skyworth.faceid.frame.FrameDistributor
 import com.skyworth.faceid.render.FaceOverlayView
+import com.skyworth.faceid.signal.DistractionSourceStore
 import com.skyworth.faceid.signal.DistractionStateMachine
 import com.skyworth.faceid.signal.SignalDispatcher
 import com.skyworth.faceid.signal.VehicleSignalSource
+import com.skyworth.faceid.zone.GazeFallpointDetector
+import com.skyworth.faceid.zone.RegionConfigLoader
 import java.util.concurrent.Executors
 
 /**
@@ -228,7 +232,16 @@ class PreviewActivity : AppCompatActivity() {
         mBusHub = hub
         val publisher = BusPublisher(hub)
         mBusPublisher = publisher
-        mSignalDispatcher = SignalDispatcher(hub, publisher)
+        // FACEP-016：自研视线落点判定器（SELF 源）+ 数据源开关（默认 SDK，持久化读取）
+        // 区域配置从 assets 的 zone_regions.json 解析（4 点四边形，后续可改）。
+        val regions = RegionConfigLoader.loadFromAssets(this)
+        val fallpointDetector = GazeFallpointDetector(regions)
+        mSignalDispatcher = SignalDispatcher(
+            hub = hub,
+            publisher = publisher,
+            fallpointDetector = fallpointDetector,
+            initialSource = DistractionSourceStore.load(this)
+        )
 
         mVehicleSignal = VehicleSignalSource(this).also { vs ->
             vs.onSpeedChanged = { speed ->
@@ -532,14 +545,15 @@ class PreviewActivity : AppCompatActivity() {
                 Toast.makeText(this, "录入成功: $displayText", Toast.LENGTH_SHORT).show()
             }
 
-            if (result.faceRect != null) {
+            val faceRect = result.faceRect
+            if (faceRect != null) {
                 val isNamed = faceId != "detected" && faceId != "spoof"
                 val overlayType = if (isNamed || faceId == "detected")
                     FaceOverlayView.FaceType.DETECTED
                 else FaceOverlayView.FaceType.SPOOF
                 mFaceOverlay.setFaces(
                     listOf(FaceOverlayView.FaceBox(
-                        rect = result.faceRect,
+                        rect = faceRect,
                         type = overlayType,
                         confidence = result.confidence,
                         label = if (isNamed) faceId else null,
@@ -553,7 +567,9 @@ class PreviewActivity : AppCompatActivity() {
                         gazePitch = result.gazePitch,
                         gazeCalibrated = result.gazeCalibrated,
                         gazeDistracted = if (distractActive) 1f else 0f,
-                        zoneId = result.zoneId
+                        zoneId = result.zoneId,
+                        eyeOpen = result.eyeOpen,
+                        mouthOpen = result.mouthOpen
                     )),
                     frameW, frameH
                 )
@@ -632,22 +648,15 @@ class PreviewActivity : AppCompatActivity() {
         private const val SIGNAL_POLL_INTERVAL_MS = 50L
 
         init {
-            try {
-                System.loadLibrary("hardware_buffer_reader")
-            } catch (_: UnsatisfiedLinkError) { }
+            // native 库加载移交 NativeFrameReader（FACEP-011 公共化）
         }
     }
 
     /**
      * JNI 调用读取 HardwareBuffer UYVY 数据到 ByteArray（快速 memcpy）。
-     * UYVY→RGB 转换在 FrameProcessor 算法线程上异步完成。
-     * 黑帧检测在 JNI 侧完成。
+     * 帧读取能力公共化为 NativeFrameReader（FACEP-011）。
      */
     private fun readHardwareBuffer(hwBuffer: HardwareBuffer, width: Int, height: Int): ByteArray? {
-        return nativeReadHardwareBuffer(hwBuffer, width, height)
+        return NativeFrameReader.readHardwareBuffer(hwBuffer, width, height)
     }
-
-    private external fun nativeReadHardwareBuffer(
-        hwBuffer: HardwareBuffer, width: Int, height: Int
-    ): ByteArray?
 }

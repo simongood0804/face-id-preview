@@ -28,3 +28,6 @@ keystore/
 
 # Logs
 *.log
+
+# 调试 dump 目录（设备调试生成的调试图，不入库）
+debugDmsDump/

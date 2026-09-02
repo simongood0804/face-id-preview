@@ -80,6 +80,58 @@ public class MockFaceIDAlgorithm implements IFaceIDAlgorithm {
         // 测试桩：空实现
     }
 
+    // ---- FACEP-012：手动录入 / 人脸管理（测试桩默认行为） ----
+
+    @Override
+    public int getEnrolledCount() {
+        return 0;
+    }
+
+    @Override
+    public boolean isEnrolling() {
+        return false;
+    }
+
+    @Override
+    public void startManualEnrollment() {
+        // 测试桩：空实现
+    }
+
+    @Override
+    public void stopManualEnrollment() {
+        // 测试桩：空实现
+    }
+
+    @Override
+    public boolean onEnrollmentFrame(float[] emb, float score) {
+        return false;
+    }
+
+    @Override
+    public float[] pendingEmbedding() {
+        return null;
+    }
+
+    @Override
+    public boolean addEnrolledFace(String name, float[] emb) {
+        return false;
+    }
+
+    @Override
+    public boolean deleteFace(String name) {
+        return false;
+    }
+
+    @Override
+    public java.util.Set<String> getEnrolledNames() {
+        return java.util.Collections.emptySet();
+    }
+
+    @Override
+    public List<String> defaultNameCandidates() {
+        return java.util.Collections.emptyList();
+    }
+
     public boolean isInitialized() { return mInitialized; }
     public void setShouldThrowException(boolean shouldThrow) { mShouldThrowException = shouldThrow; }
     public void setDetectFace(boolean detectFace) { mDetectFace = detectFace; }

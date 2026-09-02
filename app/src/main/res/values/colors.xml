@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- 疲劳状态指示灯（FACEP-015 §4.3.2） -->
+    <color name="fatigue_normal">#00FF00</color>
+    <color name="fatigue_light">#FFFF00</color>
+    <color name="fatigue_moderate">#FFA500</color>
+    <color name="fatigue_severe">#FF0000</color>
+</resources>
