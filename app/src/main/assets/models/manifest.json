@@ -1,7 +1,7 @@
 {
   "version": "1.0",
   "name": "faceid-pipeline",
-  "description": "Phase 2 (uint8 Pipeline) + HeadPose (hopenet_mbv2) integration",
+  "description": "Phase 2 (uint8 Pipeline) + HeadPose (hopenet_mbv2) + MPIIGaze (ptgaze_mpiigaze) integration",
   "profile": {
     "enabled": "true",
     "output_path": "/data/logs",
@@ -176,30 +176,35 @@
         }
     },
     {
-      "id": "pfld_eye",
-      "name": "PFLD Eye Keypoints",
+      "id": "ptgaze_mpiigaze",
+      "name": "MPIIGaze Gaze Estimator (ptgaze_mpiigaze)",
       "backend": "snpe",
-      "model_path": "/vendor/etc/faceid/pfld_eye_int8.dlc",
+      "model_path": "/vendor/etc/faceid/ptgaze_mpiigaze_int8.dlc",
       "load_strategy": "lazy",
       "inputs": [
         {
-          "name": "input",
-          "shape": [2, 56, 56, 1],
-          "dtype": "float32",
+          "name": "head_pose",
+          "shape": [1, 2],
+          "layout": "NC",
+          "pipeline": [
+            {"name": "face::mpiigaze_warp", "params": {"output": "head_pose", "quant_scale": "0.010729658417", "quant_offset": "-128", "equalize": "true"}}
+          ]
+        },
+        {
+          "name": "image",
+          "shape": [1, 36, 60, 1],
           "layout": "NHWC",
           "pipeline": [
-            {"name": "face::eye_warp", "params": {"output_size": "56", "margin_scale": "2.6"}}
+            {"name": "face::mpiigaze_warp", "params": {"output": "image", "quant_scale": "0.003914599773", "quant_offset": "0", "equalize": "true"}}
           ]
         }
       ],
       "outputs": [
         {
-          "name": "landmarks",
-          "shape": [2, 10],
+          "name": "gaze_angles",
+          "shape": [1, 2],
           "dtype": "float32",
-          "pipeline": [
-            {"name": "face::gaze_decode", "params": {"output_size": "56", "margin_scale": "2.6"}}
-          ]
+          "pipeline": []
         }
       ],
       "config":
