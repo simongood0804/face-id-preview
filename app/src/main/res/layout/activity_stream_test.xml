@@ -1,0 +1,98 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 推流测试校验页：左侧控制/日志面板 + 右侧相机预览 -->
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:orientation="horizontal"
+    android:background="@android:color/black">
+
+    <!-- ==================== 左侧控制面板 ==================== -->
+    <LinearLayout
+        android:layout_width="0dp"
+        android:layout_height="match_parent"
+        android:layout_weight="0.34"
+        android:orientation="vertical"
+        android:padding="12dp"
+        android:background="#1A1A1A">
+
+        <TextView
+            android:id="@+id/tv_stream_test_title"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="@string/stream_test_title"
+            android:textColor="#00FF00"
+            android:textSize="24sp"
+            android:textStyle="bold" />
+
+        <!-- 状态/日志区（可滚动查看多行） -->
+        <ScrollView
+            android:layout_width="match_parent"
+            android:layout_height="0dp"
+            android:layout_weight="1"
+            android:layout_marginTop="10dp">
+
+            <TextView
+                android:id="@+id/tv_status"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="@string/stream_test_hint"
+                android:textColor="#CCCCCC"
+                android:textSize="13sp"
+                android:typeface="monospace" />
+        </ScrollView>
+
+        <Button
+            android:id="@+id/btn_record"
+            android:layout_width="match_parent"
+            android:layout_height="44dp"
+            android:layout_marginTop="8dp"
+            android:text="@string/stream_test_btn_record"
+            android:textSize="14sp" />
+
+        <Button
+            android:id="@+id/btn_push"
+            android:layout_width="match_parent"
+            android:layout_height="44dp"
+            android:layout_marginTop="6dp"
+            android:text="@string/stream_test_btn_push"
+            android:textSize="14sp" />
+
+        <Button
+            android:id="@+id/btn_push_surface"
+            android:layout_width="match_parent"
+            android:layout_height="44dp"
+            android:layout_marginTop="6dp"
+            android:text="@string/stream_test_btn_push_surface"
+            android:textSize="14sp" />
+
+        <Button
+            android:id="@+id/btn_stop"
+            android:layout_width="match_parent"
+            android:layout_height="44dp"
+            android:layout_marginTop="6dp"
+            android:text="@string/stream_test_btn_stop"
+            android:textSize="14sp" />
+
+        <Button
+            android:id="@+id/btn_back_home"
+            android:layout_width="match_parent"
+            android:layout_height="40dp"
+            android:layout_marginTop="10dp"
+            android:text="@string/btn_back_home"
+            android:textSize="13sp" />
+    </LinearLayout>
+
+    <!-- ==================== 右侧预览区 ==================== -->
+    <!-- 父容器必须为 FrameLayout：FrameSession 等比适配会设置 layoutParams/gravity -->
+    <FrameLayout
+        android:id="@+id/preview_container"
+        android:layout_width="0dp"
+        android:layout_height="match_parent"
+        android:layout_weight="0.66">
+
+        <android.opengl.GLSurfaceView
+            android:id="@+id/preview_surface"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent" />
+    </FrameLayout>
+</LinearLayout>

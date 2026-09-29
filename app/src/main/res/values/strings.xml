@@ -89,6 +89,15 @@
     <string name="home_btn_distraction">分心监测</string>
     <string name="home_btn_behavior">行为监测</string>
     <string name="home_btn_fusion">融合监测</string>
+    <string name="home_btn_stream_test">推流测试校验</string>
+
+    <!-- 推流测试校验（对接 media_record：预览 + 录制/推流接口调用） -->
+    <string name="stream_test_title">推流测试校验</string>
+    <string name="stream_test_hint">等待相机预览…</string>
+    <string name="stream_test_btn_record">开始录制</string>
+    <string name="stream_test_btn_push">开始推流</string>
+    <string name="stream_test_btn_push_surface">开始推流（surface）</string>
+    <string name="stream_test_btn_stop">停止并保存</string>
 
     <!-- 融合监测（FACEP-018） -->
     <string name="fusion_title">融合监测</string>

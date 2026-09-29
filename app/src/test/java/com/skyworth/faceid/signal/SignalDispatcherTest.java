@@ -38,7 +38,9 @@ public class SignalDispatcherTest {
                 () -> mClock.get(), DistractionStateMachine.NO_FACE_RESET_MS);
         mDispatcher = new SignalDispatcher(mHub, mPublisher,
                 r -> new SignalTypes.AlgoDistractionInput(r.getFaceId().length() > 0, r.getGazeDistracted()),
-                machine);
+                machine,
+                null,                       // fallpointDetector（SELF 源用，测试不涉及）
+                DistractionSource.SDK);     // initialSource
     }
 
     private void advance(long ms) {

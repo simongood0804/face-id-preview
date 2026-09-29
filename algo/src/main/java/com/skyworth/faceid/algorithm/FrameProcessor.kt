@@ -156,7 +156,7 @@ class FrameProcessor(
  *
  * 提取为顶层函数以便单元测试直接测量转换吞吐。
  *
- * @param data UYVY 原始帧（每像素 2 字节，Y0 U Y1 V）
+ * @param data UYVY 原始帧（每像素 2 字节，字节序 **[U][Y0][V][Y1]**，U 在第 0 字节）
  * @param imgW 帧宽
  * @param imgH 帧高
  * @param reuse 可复用的 RGB 缓冲（尺寸匹配时直接复用，否则新分配），可为 null

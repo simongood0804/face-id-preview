@@ -83,6 +83,15 @@ android {
         }
     }
 
+    // media_record 预编译库（app/libs/arm64-v8a/*.so）通过 jniLibs 打包进 APK。
+    // CMake 侧改用 link_directories + `-l` 链接（不用 IMPORTED target），
+    // 避免"IMPORTED 与 jniLibs 重复打包"冲突，也避免 release 下 IMPORTED 库未被稳定打包。
+    sourceSets {
+        getByName("main") {
+            jniLibs.srcDirs("libs")
+        }
+    }
+
     packagingOptions {
         // hardware_buffer_reader 与 face-sdk 均链接 libc++_shared，取一份即可
         jniLibs.pickFirsts.add("**/libc++_shared.so")

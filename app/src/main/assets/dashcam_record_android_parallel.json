@@ -1,0 +1,59 @@
+{
+  "executors": [
+    {"name": "source", "type": "ThreadPoolExecutor", "num_threads": 1},
+    {"name": "encode", "type": "ThreadPoolExecutor", "num_threads": 2},
+    {"name": "sink", "type": "ThreadPoolExecutor", "num_threads": 1}
+  ],
+  "nodes": [
+    {
+      "name": "render",
+      "type": "DashcamRenderNode",
+      "executor": "source",
+      "options": {
+        "background": "/data/local/tmp/media_record/src/examples/assets/dashcam_road.png",
+        "car": "/data/local/tmp/media_record/src/examples/assets/flydog.png",
+        "font": "/data/local/tmp/media_record/src/examples/assets/Roboto-Regular.ttf",
+        "width": 1280,
+        "height": 720,
+        "fps": 30,
+        "frame_count": 300,
+        "format": "%Y-%m-%d %H:%M:%S",
+        "input_surface": false
+      },
+      "output_streams": ["output:frames"]
+    },
+    {
+      "name": "encoder",
+      "type": "VideoEncoderNode",
+      "executor": "encode",
+      "options": {
+        "fps": 30,
+        "bitrate": 4000000,
+        "input_surface": false,
+        "width": 1280,
+        "height": 720
+      },
+      "input_streams": ["input:frames"],
+      "output_streams": ["output:es_packets"]
+    },
+    {
+      "name": "recorder",
+      "type": "RecorderNode",
+      "executor": "encode",
+      "input_streams": ["input:es_packets"],
+      "output_streams": ["output:clips"]
+    },
+    {
+      "name": "muxer",
+      "type": "MuxerSinkNode",
+      "executor": "sink",
+      "options": {
+        "output": "/data/local/tmp/media_record/out/dashcam.mp4",
+        "width": 1280,
+        "height": 720,
+        "fps": 30
+      },
+      "input_streams": ["input:clips"]
+    }
+  ]
+}

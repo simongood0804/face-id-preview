@@ -53,6 +53,12 @@
             android:exported="false"
             android:screenOrientation="landscape" />
 
+        <!-- 推流测试校验页（占位，仅入口与页面骨架） -->
+        <activity
+            android:name=".ui.StreamTestActivity"
+            android:exported="false"
+            android:screenOrientation="landscape" />
+
         <!-- 疲劳监测模块 -->
         <activity
             android:name=".ui.FatigueActivity"

@@ -53,6 +53,10 @@ class HomeActivity : AppCompatActivity() {
             Log.i(TAG, "entry: fusion")
             startActivity(Intent(this, FusionMonitorActivity::class.java))
         }
+        findViewById<Button>(R.id.btn_stream_test).setOnClickListener {
+            Log.i(TAG, "entry: stream_test")
+            startActivity(Intent(this, StreamTestActivity::class.java))
+        }
 
         // 摄像头选择
         mCameraBtn = findViewById(R.id.btn_camera_select)

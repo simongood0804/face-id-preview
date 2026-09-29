@@ -95,6 +95,17 @@
         android:text="@string/home_btn_fusion"
         android:textSize="18sp" />
 
+    <!-- 推流测试校验入口（占位，仅入口与页面骨架） -->
+    <Button
+        android:id="@+id/btn_stream_test"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="12dp"
+        android:minHeight="110dp"
+        android:padding="16dp"
+        android:text="@string/home_btn_stream_test"
+        android:textSize="18sp" />
+
     <!-- 摄像头选择（FACEP：主页选择取流摄像头） -->
     <Button
         android:id="@+id/btn_camera_select"
