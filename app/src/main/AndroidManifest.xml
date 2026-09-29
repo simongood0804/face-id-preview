@@ -10,13 +10,21 @@
     <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" />
     <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" android:maxSdkVersion="28" />
 
+    <!-- 网络：WebRTC 推流（http/https whip）与摄像头切换中继轮询 -->
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+
     <!-- 硬件特性声明 -->
     <uses-feature android:name="android.hardware.camera" android:required="false" />
 
+    <!-- usesCleartextTraffic：targetSdk >= 28 起系统默认禁止明文 http。
+         我们的推流地址（http://192.168.6.233:8889/test/whip）与切换中继
+         （http://192.168.6.233:8081）都是明文 http，不放行会被系统直接拦掉。 -->
     <application
         android:allowBackup="true"
         android:label="@string/app_name"
-        android:theme="@style/Theme.FaceIDPreview">
+        android:theme="@style/Theme.FaceIDPreview"
+        android:usesCleartextTraffic="true">
 
         <!-- 主页（LAUNCHER，三入口） -->
         <activity
@@ -53,7 +61,7 @@
             android:exported="false"
             android:screenOrientation="landscape" />
 
-        <!-- 推流测试校验页（占位，仅入口与页面骨架） -->
+        <!-- 推流测试校验页（media_record 录制/推流：CPU 与 surface 两条通路） -->
         <activity
             android:name=".ui.StreamTestActivity"
             android:exported="false"

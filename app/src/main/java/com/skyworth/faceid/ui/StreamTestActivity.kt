@@ -7,7 +7,10 @@ import android.util.Log
 import android.widget.Button
 import android.widget.TextView
 import androidx.appcompat.app.AppCompatActivity
+import com.android.car.evs.CameraIds
 import com.skyworth.faceid.R
+import com.skyworth.faceid.camera.CameraSwitchClient
+import com.skyworth.faceid.core.CameraPreference
 import com.skyworth.faceid.core.FrameSession
 import com.skyworth.faceid.core.NativeFrameReader
 import com.skyworth.faceid.media.MediaRecordSession
@@ -98,6 +101,17 @@ class StreamTestActivity : AppCompatActivity() {
     /** 面板日志（环形保留最近 N 行）。 */
     private val mLogLines = ArrayDeque<String>()
 
+    /** 摄像头切换中继客户端（仅本页存活期间轮询）。 */
+    private var mSwitcher: CameraSwitchClient? = null
+
+    /** 当前摄像头编号（1..N，对应 [CameraPreference.selectableCameraIds] 下标+1）。 */
+    @Volatile
+    private var mCurrentCameraIndex = 0
+
+    /** 上一次切换状态文本，用于抑制重复的状态刷屏（如中继不可达）。 */
+    @Volatile
+    private var mLastSwitchStatus: String? = null
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_stream_test)
@@ -136,9 +150,11 @@ class StreamTestActivity : AppCompatActivity() {
     override fun onStart() {
         super.onStart()
         startPreview()
+        startSwitcher()
     }
 
     override fun onStop() {
+        stopSwitcher()
         stopPreview()
         super.onStop()
     }
@@ -192,6 +208,86 @@ class StreamTestActivity : AppCompatActivity() {
             mFrameSession = null
         }
         stopSessionAsync()
+    }
+
+    // ============================================================
+    // 摄像头切换（中继指令）
+    // ============================================================
+
+    /**
+     * 启动中继轮询，接收「切换到摄像头 N」指令。
+     *
+     * 指令链路：浏览器 → 控制中继 server.py → 本页。切换只换**帧来源**，
+     * media_record 的 surface 会话与编码器不受影响，推流不中断。
+     */
+    private fun startSwitcher() {
+        if (mSwitcher != null) return
+        // 与当前偏好对齐，避免中继下发同一路时重复重开相机
+        mCurrentCameraIndex = SWITCH_CAMERA_ORDER
+            .indexOf(CameraPreference.selectedCameraId)
+            .let { if (it >= 0) it + 1 else 0 }
+        mSwitcher = CameraSwitchClient(
+            relayBase = CAMERA_SWITCH_RELAY,
+            onSwitch = { cam -> runOnUiThread { switchCamera(cam) } },
+            onStatus = { msg -> onSwitchStatus(msg) }
+        ).also { it.startPolling() }
+        appendLog("切换中继轮询已启动：$CAMERA_SWITCH_RELAY（当前 $mCurrentCameraIndex 路）")
+    }
+
+    /** 停止中继轮询。 */
+    private fun stopSwitcher() {
+        mSwitcher?.stop()
+        mSwitcher = null
+        mLastSwitchStatus = null
+    }
+
+    /** 状态回调（轮询线程）。仅在状态**变化**时上屏，避免"中继不可达"反复刷屏。 */
+    private fun onSwitchStatus(msg: String) {
+        if (msg == mLastSwitchStatus) return
+        mLastSwitchStatus = msg
+        appendLog("中继：$msg")
+    }
+
+    /**
+     * 切换摄像头：停掉当前 EVS 摄像头、按编号重开另一个。
+     *
+     * 编号映射见 [SWITCH_CAMERA_ORDER]（1=AVMF … 6=DMS），与观看端
+     * `index.html` 的 `DEFAULT_NAMES`、中继 `server.py` 的 `CSWITCH_CAMS` 三处必须一致。
+     *
+     * 约束：各路**分辨率需一致**（库会校验送帧尺寸）。本页 surface 通路由 GL 缩放到
+     * 编码器固定尺寸，但预览与算法仍按实际帧尺寸工作，切换后会自动适配。
+     */
+    private fun switchCamera(index: Int) {
+        if (index < 1 || index > SWITCH_CAMERA_ORDER.size) {
+            appendLog("忽略切换指令：cam=$index（有效 1..${SWITCH_CAMERA_ORDER.size}）")
+            return
+        }
+        if (index == mCurrentCameraIndex) {
+            Log.i(TAG, "switchCamera: cam=$index 已是当前路，忽略")
+            return
+        }
+        val id = SWITCH_CAMERA_ORDER[index - 1]
+        appendLog("切换摄像头 → [$index] $id")
+        try {
+            val frame = mFrameSession ?: run {
+                appendLog("切换失败：相机会话未就绪")
+                return
+            }
+            // 只做「停流 → 换 id → 开流」，**不释放 EVS 服务**：
+            // CameraManager.stopCamera() 会额外 controller.release()（断开 CarEvsService），
+            // 紧接着再重连一次，中间那个带 500ms 超时的执行器任务有被取消的风险，
+            // 容易把相机留在半开状态。同一次连接内换摄像头不需要走这一步。
+            // media_record 的 surface 会话与编码器完全不受影响，推流不中断。
+            frame.cameraManager().cameraId = id     // 同步管理器状态，避免后续 open/stop 判断失配
+            val controller = frame.controller()
+            controller.stopCamera()
+            CameraPreference.setSelected(this, id)
+            controller.startCamera(id)
+            mCurrentCameraIndex = index
+        } catch (e: Exception) {
+            Log.e(TAG, "switchCamera($index) failed", e)
+            appendLog("切换失败：${e.message}")
+        }
     }
 
     // ============================================================
@@ -541,5 +637,32 @@ class StreamTestActivity : AppCompatActivity() {
 
         /** 面板最多保留日志行数。 */
         private const val MAX_LOG_LINES = 40
+
+        /**
+         * 摄像头切换中继地址（跑在 PC 上的 `tools/camera-switch-demo/server.py`）。
+         * 端口与 server.py 的 `CSWITCH_PORT` 保持一致；改地址只需改这里。
+         */
+        private const val CAMERA_SWITCH_RELAY = "http://192.168.6.233:8081"
+
+        /**
+         * 中继/观看端约定的摄像头编号顺序（**第 i 个按钮 = 第 i 路**）。
+         *
+         * 三处必须一致，改动时一起改：
+         * 1) 观看端 `index.html` 的 `DEFAULT_NAMES`；
+         * 2) 中继 `server.py` 的 `CSWITCH_CAMS`（默认 5，**要含 DMS 必须设为 6**，
+         *    否则第 6 路的指令会被它按 `1 <= cam <= NUM_CAMS` 静默丢弃）；
+         * 3) 本列表。
+         *
+         * 刻意与 [CameraPreference.selectableCameraIds] 解耦：那是主页下拉框的展示顺序，
+         * 为 UI 需要调整时不应连带把中继的编号映射改错。
+         */
+        private val SWITCH_CAMERA_ORDER = listOf(
+            CameraIds.AVMF,  // 1
+            CameraIds.AVMR,  // 2
+            CameraIds.AVMB,  // 3
+            CameraIds.AVML,  // 4
+            CameraIds.RVC,   // 5
+            CameraIds.DMS    // 6
+        )
     }
 }
