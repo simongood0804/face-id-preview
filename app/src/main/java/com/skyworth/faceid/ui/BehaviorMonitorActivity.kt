@@ -9,6 +9,7 @@ import android.widget.Button
 import android.widget.TextView
 import androidx.appcompat.app.AppCompatActivity
 import com.skyworth.faceid.algorithm.IFaceIDAlgorithm
+import com.skyworth.faceid.behavior.BehaviorStateMachine
 import com.skyworth.faceid.core.AlgoSession
 import com.skyworth.faceid.core.FaceOverlayBridge
 import com.skyworth.faceid.core.FrameSession
@@ -18,12 +19,16 @@ import com.skyworth.faceid.R
 /**
  * 行为监测页（FACEP-017）。
  *
- * **阶段一：仅预览**——摄像头取流 + 画面显示（已打通）。
+ * 解析 face-sdk 的行为识别结果（`FaceResult.behaviorClass`），在预览上叠加
+ * **吸烟 / 打电话**状态提示。
  *
- * **阶段二（当前）**：acquire **BEHAVIOR** flag，解析 face-sdk 1.0.1 的行为识别结果
- * （`FaceResult.behaviorClass`），在预览上叠加**吸烟 / 打电话**状态提示。
+ * 行为类别语义（算法头文件定义）：0=normal、1=smoking、2=phone；SDK 只输出**逐帧**结果，
+ * **不做时序逻辑**（头文件明确"持续时长/报警由 app 侧做"）。
  *
- * 行为类别语义（算法头文件定义）：0=normal、1=smoking、2=phone。
+ * 时序确认（GB/T 标准）**不在本页实现**，统一由共享层 [AlgoSession] 承担
+ * （FACEP-019：行为状态机挂在算法结果入口，谁用都调同一份）：
+ * - 抽烟连续 **≥2s**、打电话连续 **≥3s** 才判为对应行为；
+ * - 持续时长不足（含逐帧类别抖动/断续）一律判为**正常**。
  */
 class BehaviorMonitorActivity : AppCompatActivity() {
 
@@ -41,8 +46,8 @@ class BehaviorMonitorActivity : AppCompatActivity() {
     /** 渲染器是否已设置（GLSurfaceView.setRenderer 仅能调用一次）。 */
     private var mRendererSet = false
 
-    /** 最近一次行为类别（仅变化时更新 UI，避免每帧刷）。 */
-    private var mLastBehaviorClass = -1f
+    /** 最近一次**确认后**的行为类别（仅变化时更新 UI，避免每帧刷；-1=未初始化）。 */
+    private var mLastBehaviorClass = -1
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -122,27 +127,49 @@ class BehaviorMonitorActivity : AppCompatActivity() {
         }
     }
 
-    /** 解析行为监测结果，更新状态提示（仅行为类别变化时刷新，避免每帧刷 UI）。 */
+    /**
+     * 解析行为监测结果，更新状态提示。
+     *
+     * **时序判定来自共享层**（FACEP-019）：[AlgoSession] 在算法结果入口已用统一的行为
+     * 状态机完成确认（抽烟 ≥2s / 打电话 ≥3s + 防抖），本页只读取
+     * [AlgoSession.lastBehaviorClass] 展示，**不再自持状态机**，因此与融合监测等页面
+     * 判定口径天然一致。
+     *
+     * UI 仅在**确认后**的类别变化时刷新（避免每帧刷）。
+     */
     private fun onAlgorithmResult(result: IFaceIDAlgorithm.FaceIDResult) {
         // 画人脸框（仅框，不依赖行为类别）
         drawFaceBox(result)
 
-        val behaviorClass = result.behaviorClass
-        if (behaviorClass == mLastBehaviorClass) return
-        mLastBehaviorClass = behaviorClass
+        val rawClass = result.behaviorClass
+        if (rawClass < 0f) {
+            // 无人脸/行为无效：共享状态机内部已复位，这里仅同步 UI 为"正常"
+            if (mLastBehaviorClass != -1) {
+                mLastBehaviorClass = -1
+                mStatusText.text = getString(R.string.behavior_normal)
+            }
+            return
+        }
 
-        // 状态变化时打印完整行为结果（含概率分布），确认算法返回是否正确对接
+        // 读取共享层时序确认结果
+        val confirmed = mAlgoSession?.lastBehaviorClass ?: BehaviorStateMachine.CLASS_NORMAL
+        if (confirmed == mLastBehaviorClass) return
+        mLastBehaviorClass = confirmed
+
+        // 类别变化时打印完整行为结果（含概率分布），便于核对算法与实际判定
         val probs = result.behaviorProbsSafe
-        Log.i(TAG, "behavior: class=$behaviorClass " +
+        Log.i(TAG, "behavior: raw=${rawClass.toInt()} confirmed=$confirmed " +
+                "holdMs=${BehaviorStateMachine.holdMsOf(rawClass.toInt())} " +
+                "source=AlgoSession " +
                 (probs?.let {
                     "probs=[normal=%.2f smoking=%.2f phone=%.2f]".format(
                         it.getOrElse(0) { 0f }, it.getOrElse(1) { 0f }, it.getOrElse(2) { 0f })
                 } ?: "probs=null"))
 
-        val text = when (behaviorClass.toInt()) {
-            1 -> getString(R.string.behavior_smoking)
-            2 -> getString(R.string.behavior_calling)
-            0, -1 -> getString(R.string.behavior_normal)
+        val text = when (confirmed) {
+            BehaviorStateMachine.CLASS_SMOKING -> getString(R.string.behavior_smoking)
+            BehaviorStateMachine.CLASS_PHONE -> getString(R.string.behavior_calling)
+            BehaviorStateMachine.CLASS_NORMAL -> getString(R.string.behavior_normal)
             else -> getString(R.string.behavior_unknown)
         }
         mStatusText.text = text

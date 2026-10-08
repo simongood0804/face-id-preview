@@ -9,6 +9,7 @@ import android.widget.Button
 import android.widget.TextView
 import androidx.appcompat.app.AppCompatActivity
 import com.skyworth.faceid.algorithm.IFaceIDAlgorithm
+import com.skyworth.faceid.behavior.BehaviorStateMachine
 import com.skyworth.faceid.core.AlgoSession
 import com.skyworth.faceid.core.FaceOverlayBridge
 import com.skyworth.faceid.core.FrameSession
@@ -16,6 +17,11 @@ import com.skyworth.faceid.core.NativeFrameReader
 import com.skyworth.faceid.fatigue.FatigueRule
 import com.skyworth.faceid.fatigue.FatigueRuleLoader
 import com.skyworth.faceid.fatigue.FatigueStateMachine
+import com.skyworth.faceid.bus.BusHub
+import com.skyworth.faceid.bus.BusPublisher
+import com.skyworth.faceid.signal.DistractionSourceStore
+import com.skyworth.faceid.signal.SignalDispatcher
+import com.skyworth.faceid.zone.HeadRayZoneDetector
 import com.skyworth.faceid.R
 
 /**
@@ -23,8 +29,10 @@ import com.skyworth.faceid.R
  *
  * 聚合展示算法完整功能：人脸识别 / 疲劳检测 / 分心监测 / 行为监测。
  * - 使用**融合 flag** 一次推理同时获得全部能力；
- * - 右侧预览只绘制 **68 点密集地标 + 头姿坐标轴 + 分心注意列表（zone 面板）**；
- * - 左侧面板分别展示识别 / 疲劳 / 行为 / 分心结果。
+ * - 右侧预览只绘制 **Y/P 两个头朝向罗盘**；
+ * - 左侧面板分别展示识别 / 疲劳 / 行为 / 分心结果；
+ * - **分心判定与分心监测页保持一致**：统一走 [SignalDispatcher] 的头姿射线
+ *   （`HeadRayZoneDetector`：Y=680 平面判分心 + Z=750 平面取注意点位）。
  */
 class FusionMonitorActivity : AppCompatActivity() {
 
@@ -46,17 +54,22 @@ class FusionMonitorActivity : AppCompatActivity() {
     private var mFrameSession: FrameSession? = null
     private var mBridge: FaceOverlayBridge? = null
 
-    /** 疲劳判定引擎（复用 :algo 外部状态机；规则从 assets/fatigue_rules.json 加载）。 */
-    private var mFatigueMachine: FatigueStateMachine? = null
+    /**
+     * 分心信号链路（与分心监测页一致）：头姿射线判定，非 SDK 的 `gazeDistracted`。
+     */
+    private var mDispatcher: SignalDispatcher? = null
 
     private var mAlgorithmEnabled = true
     private var mRendererSet = false
 
-    /** 最近一次行为类别（仅变化时刷新 UI，避免每帧刷）。 */
-    private var mLastBehaviorClass = -1f
+    /** 最近一次**确认后**的行为类别（仅变化时刷新 UI；-1=未初始化）。 */
+    private var mLastBehaviorClass = -1
 
-    /** 最近一次分心 zone（仅变化时刷新）。 */
+    /** 最近一次分心点位编号（仅变化时刷新；-1=未命中）。 */
     private var mLastZone = -1
+
+    /** 最近一次分心标志（仅变化时刷新）。 */
+    private var mLastDistracted = false
 
     /** 最近一次已录入数量（仅数量变化时刷新，避免每帧刷 UI）。 */
     private var mLastEnrolledCount = -1
@@ -83,11 +96,12 @@ class FusionMonitorActivity : AppCompatActivity() {
             finish()
         }
 
-        // 复用外部疲劳判定引擎（FACEP-015）：规则从 assets/fatigue_rules.json 加载，
-        // 与独立疲劳模块(FatigueActivity)一致，支持轻度/中度/重度三级判定。
+        // FACEP-019：疲劳/行为时序引擎统一挂在共享层 AlgoSession（不再本页自持实例）。
+        // 本页只提供规则来源（assets/fatigue_rules.json），首次 acquire 时由共享层拉取，
+        // 与独立疲劳/行为模块判定口径一致。
         val rule = FatigueRuleLoader.loadFromAssets(this)
-        mFatigueMachine = FatigueStateMachine(rule)
-        Log.i(TAG, "onCreate: fatigue machine created (levels=${rule.levels.size})")
+        AlgoSession.get().fatigueRuleProvider = { rule }
+        Log.i(TAG, "onCreate: fatigue rule provider set (levels=${rule.levels.size})")
 
         Log.i(TAG, "onCreate: done")
     }
@@ -138,11 +152,22 @@ class FusionMonitorActivity : AppCompatActivity() {
             frame.acquire(algo.frameProcessor()) { mAlgorithmEnabled }
             mFrameSession = frame
 
-            // 渲染桥接（融合：仅 68 点 + 头姿 + zone 面板）
+            // 渲染桥接（融合：仅 Y/P 两个头朝向罗盘）
             mBridge = FaceOverlayBridge(findViewById(R.id.face_overlay))
+
+            // 分心信号链路：与分心监测页保持完全一致（头姿射线判定，不用 SDK gazeDistracted）
+            val hub = BusHub()
+            val publisher = BusPublisher(hub)
+            mDispatcher = SignalDispatcher(
+                hub = hub,
+                publisher = publisher,
+                headRayDetector = HeadRayZoneDetector(),
+                initialSource = DistractionSourceStore.load(this)
+            )
 
             // 5. 算法结果回调 → 聚合展示识别/疲劳/分心/行为
             algo.setResultCallback { result ->
+                mDispatcher?.processAlgorithmResult(result)
                 runOnUiThread { onAlgorithmResult(result) }
             }
 
@@ -160,20 +185,18 @@ class FusionMonitorActivity : AppCompatActivity() {
         val frameW = mFrameSession?.frameDistributor()?.frameWidth ?: 1600
         val frameH = mFrameSession?.frameDistributor()?.frameHeight ?: 1300
 
-        // 1. 预览 overlay（融合：68 点 + 头姿 + zone 面板）
-        val distractNow = result.gazeDistracted > 0f
-        mBridge?.setFaces(result, distractNow, FaceOverlayBridge.Module.FUSION, frameW, frameH)
+        // 分心判定与分心监测页一致：取 SignalDispatcher（头姿射线）的结果，
+        // 而非算法返回的 gazeDistracted。
+        val dispatch = mDispatcher
+        val distractActive = dispatch?.lastDistraction?.distracted ?: false
 
-        // 疲劳判定：无人脸/有人脸都喂给状态机（hasFace 驱动复位 / 累积闭眼/哈欠统计）。
-        // 复用外部引擎（FACEP-015），使用单调时钟避免校时回拨导致时长异常。
-        val machine = mFatigueMachine
+        // 1. 预览 overlay（融合：仅 Y/P 头朝向罗盘）
+        mBridge?.setFaces(result, distractActive, FaceOverlayBridge.Module.FUSION, frameW, frameH)
+
+        // 疲劳判定：由共享层 AlgoSession 在算法结果入口统一喂入（FACEP-019），
+        // 本页只读取输出，不再自己 update；hasFace 用于面板展示与无人脸防抖。
         val hasFace = result.faceRect != null
-        val fatigueOut = machine?.update(
-            result.eyeOpenRatio,
-            result.mouthOpenRatio,
-            hasFace,
-            System.nanoTime() / 1_000_000
-        )
+        val fatigueOut = mAlgoSession?.lastFatigueOutput
 
         if (!hasFace) {
             // 无人脸：清空 overlay（setFaces 内部已 clearFaces）；各面板防抖置为"未检测到"
@@ -186,9 +209,9 @@ class FusionMonitorActivity : AppCompatActivity() {
                 mFatigueMouth.text = ""
                 mBehaviorResult.text = ""
                 mDistractionZone.text = ""
-                // 重置各"仅变化刷新"的缓存，避免重检测到人脸但值相同时不刷新
+                // 重置"仅变化刷新"的缓存，避免重检测到人脸但值相同时不刷新
                 mLastZone = -1
-                mLastBehaviorClass = -1f
+                mLastBehaviorClass = -1
             }
             return
         }
@@ -200,8 +223,8 @@ class FusionMonitorActivity : AppCompatActivity() {
         // 3. 疲劳结果（外部状态机判定的多级疲劳等级 + 实时开合度）
         updateFatiguePanel(result, fatigueOut)
 
-        // 4. 分心 zone（仅变化刷新）
-        updateDistractionPanel(result)
+        // 4. 分心面板（与分心监测页同源：头姿射线判定）
+        updateDistractionPanel()
 
         // 5. 行为结果（仅变化刷新）
         updateBehaviorPanel(result)
@@ -258,33 +281,63 @@ class FusionMonitorActivity : AppCompatActivity() {
         FatigueRule.Level.SEVERE -> "重度疲劳"
     }
 
-    /** 分心 zone 面板（仅变化刷新）。 */
-    private fun updateDistractionPanel(result: IFaceIDAlgorithm.FaceIDResult) {
-        val zoneId = result.zoneId.toInt()
-        if (zoneId == mLastZone) return
-        mLastZone = zoneId
+    /**
+     * 分心面板（仅变化刷新）。
+     *
+     * 判定与分心监测页保持一致：使用 [SignalDispatcher] 头姿射线的结果
+     * （`lastDistraction.distracted` + `lastPointId`），不再使用 SDK 的
+     * `gazeDistracted` / `zoneId`。
+     */
+    private fun updateDistractionPanel() {
+        val dispatch = mDispatcher ?: return
+        val distracted = dispatch.lastDistraction?.distracted ?: false
+        val pointId = dispatch.lastPointId
+        val zHeight = dispatch.lastGazeZHeight
 
-        val zoneName = if (zoneId in 0..14) ZONE_NAMES[zoneId] else "UNKNOWN($zoneId)"
-        val zoneCn = if (zoneId in 0..14) ZONE_NAMES_CN[zoneId] else ""
-        val distracted = if (result.gazeDistracted > 0f) "⚠ 分心" else "专注"
+        if (distracted == mLastDistracted && pointId == mLastZone) return
+        mLastDistracted = distracted
+        mLastZone = pointId
+
+        val distText = if (distracted) "⚠ 分心" else "专注"
+        val pointText = if (pointId > 0) "点$pointId" else "-"
+        val zText = if (zHeight.isNaN()) "--" else "%.0fmm".format(zHeight)
         mDistractionZone.text = getString(R.string.fusion_zone_hint,
-            "$distracted | Zone:$zoneName $zoneCn")
+            "$distText | 点位:$pointText | gazeZ:$zText")
     }
 
-    /** 行为结果面板（仅变化刷新）。 */
+    /**
+     * 行为结果面板（仅确认类别变化时刷新）。
+     *
+     * **时序判定与行为监测页同源**（FACEP-019）：状态机在共享层 [AlgoSession] 的算法
+     * 结果入口统一喂入，本页只读取 [AlgoSession.lastBehaviorClass]，**逻辑天然一致**，
+     * 不存在"两处各持实例导致判定漂移"的问题。
+     */
     private fun updateBehaviorPanel(result: IFaceIDAlgorithm.FaceIDResult) {
-        val behaviorClass = result.behaviorClass
-        if (behaviorClass == mLastBehaviorClass) return
-        mLastBehaviorClass = behaviorClass
+        val rawClass = result.behaviorClass
 
-        val text = when (behaviorClass.toInt()) {
-            1 -> getString(R.string.behavior_smoking)
-            2 -> getString(R.string.behavior_calling)
-            0, -1 -> getString(R.string.behavior_normal)
+        // 无人脸/行为无效：共享状态机内部已复位，这里仅同步 UI 为"正常"
+        if (rawClass < 0f) {
+            if (mLastBehaviorClass != -1) {
+                mLastBehaviorClass = -1
+                mBehaviorResult.text = getString(R.string.fusion_behavior_class,
+                    getString(R.string.behavior_normal))
+            }
+            return
+        }
+
+        // 读取共享层时序确认结果（与行为监测页同源）
+        val confirmed = mAlgoSession?.lastBehaviorClass ?: BehaviorStateMachine.CLASS_NORMAL
+        if (confirmed == mLastBehaviorClass) return
+        mLastBehaviorClass = confirmed
+
+        val text = when (confirmed) {
+            BehaviorStateMachine.CLASS_SMOKING -> getString(R.string.behavior_smoking)
+            BehaviorStateMachine.CLASS_PHONE -> getString(R.string.behavior_calling)
+            BehaviorStateMachine.CLASS_NORMAL -> getString(R.string.behavior_normal)
             else -> getString(R.string.behavior_unknown)
         }
         mBehaviorResult.text = getString(R.string.fusion_behavior_class, text)
-        Log.i(TAG, "behavior: class=$behaviorClass text=$text")
+        Log.i(TAG, "behavior: raw=${rawClass.toInt()} confirmed=$confirmed text=$text")
     }
 
     /** 停止预览并释放引用计数。 */
@@ -292,12 +345,14 @@ class FusionMonitorActivity : AppCompatActivity() {
         try {
             mBridge?.clearFaces()
             mBridge = null
+            mDispatcher?.close()
             mFrameSession?.release()
             mAlgoSession?.setResultCallback(null)
             mAlgoSession?.release()
         } catch (e: Exception) {
             Log.e(TAG, "stopPreview: error", e)
         } finally {
+            mDispatcher = null
             mFrameSession = null
             mAlgoSession = null
         }
