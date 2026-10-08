@@ -610,18 +610,20 @@ class StreamTestActivity : AppCompatActivity() {
                 mLastPushSentAtMs = nowMs
             }
             // 判据一（权威口径）：active=0（库已放弃），或状态既不是 streaming(3) 也不是
-            // reconnecting(4) —— 这样 5(disconnected) 以及**未在文档中定义的 6** 都能覆盖
-            // （实测服务端 terminated 后库报 state=6，而 active 仍为 1，只认 5 会漏）。
+            // reconnecting(4)/ice-connected(7) —— 这样 5(disconnected) 以及**未在文档中定义的
+            // 6** 都能覆盖（实测服务端 terminated 后库报 state=6，而 active 仍为 1，只认 5 会漏）。
+            // 库 v1.0.3 新增 7=ice-connected：ICE 通道已通（恢复中），**不能判死**，否则会误杀。
             // 加“曾经进过 3”这道闩，避免启动初期的 0/1/2 被误判为断开。
             if (pushState == 3L) mPushEverStreamed = true
             val stateDead = (pushActive == 0L) ||
-                (mPushEverStreamed && pushState != 3L && pushState != 4L)
-            // 判据二（兜底）：frames_sent 连续 10s 不增长——**仅当该计数器确实在工作时才用**。
-            // ⚠️ 当前库版本 push_frames_sent/push_bytes_sent 恒为 0（与 rtt/loss 同属“上游未回填”），
-            // 若不加 pushSent > 0 这个门槛，判据二会恒真，导致每 30s 误杀一条**健康**会话
+                (mPushEverStreamed && pushState != 3L && pushState != 4L && pushState != 7L)
+            // 判据二（兜底）：frames_sent 连续 15s 不增长——**仅当该计数器确实在工作时才用**。
+            // ⚠️ 若库版本里 push_frames_sent/push_bytes_sent 恒为 0（与 rtt/loss 同属“上游未回填”），
+            // 不加 pushSent > 0 这个门槛，判据二会恒真，导致每 30s 误杀一条**健康**会话
             // （实测：mediamtx 侧明明 is publishing，却被反复拆重建）。
+            // 阈值取 15s：这条无线链路有秒级卡顿，10s 容易踩线。
             val stagnated =
-                pushSent > 0 && mLastPushSentAtMs > 0 && nowMs - mLastPushSentAtMs > 10_000
+                pushSent > 0 && mLastPushSentAtMs > 0 && nowMs - mLastPushSentAtMs > 15_000
             if ((stateDead || stagnated) && nowMs - mLastPushRebuildMs > 30_000) {
                 mLastPushRebuildMs = nowMs
                 mPushEverStreamed = false  // 新会话重新计一次“曾经 streaming”

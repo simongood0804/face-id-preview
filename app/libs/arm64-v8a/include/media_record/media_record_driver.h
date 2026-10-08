@@ -297,7 +297,7 @@ typedef struct mr_stats {
   // session is down and should be rebuilt.
   int64_t push_present;              ///< 1 when the graph has a StreamPushNode
   int64_t push_active;               ///< 1 while the node still feeds the session
-  int64_t push_state;                ///< StreamState: 3=streaming, 4=reconnecting, 5=disconnected
+  int64_t push_state;                ///< StreamState: 3=streaming, 4=reconnecting, 5=disconnected, 7=ice-connected (v1.0.3)
   int64_t push_frames_sent;          ///< packets accepted by the push session
   int64_t push_frames_dropped;       ///< packets the session dropped
   int64_t push_bytes_sent;           ///< payload bytes accepted by the session
