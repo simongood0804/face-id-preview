@@ -94,8 +94,73 @@ interface IFaceIDAlgorithm {
         val area3Hit: Float = 0f,
         /** 球面视线-有效性（AAR FaceResult.sphereValid）。 */
         val sphereValid: Float = 0f,
-        /** 视线关键点（AAR FaceResult.gazeKps，每行 [x,y]）。 */
-        val gazeKps: Array<FloatArray>? = null,
+        // ===== face-sdk 1.0.3 新增字段（当前仅透传备用，业务逻辑尚未消费）=====
+        /**
+         * MPIIGaze 每眼视线单位向量-相机系（AAR FaceResult.gazeCamDir）。
+         * 形状 [2][3]，[0]=左眼、[1]=右眼；+x 右 / +y 下 / +z 前。
+         * 有效性：flags&FACE_FLAG_GAZE 且 eyePatchValid 对应位为 1；
+         * 模型失效时该眼全 0（无回退值）。
+         */
+        val gazeCamDir: Array<FloatArray>? = null,
+        /**
+         * 头朝向相对**正视基准**的偏差角 `[pitch, yaw, roll]`（度）。
+         *
+         * 依据文档：正视图时 `R_hw = R_wcᵀ·R_hc_fwd = I`，即"端正朝前"对应 F→W 旋转
+         * 为单位阵（欧拉角 0）。故取 `head_hw_rot` 本身即为相对正前方的偏差。
+         *
+         * 语义（车辆系 X右/Y前/Z上）：
+         * - `[0] pitch`：**抬头为正 / 低头为负**
+         * - `[1] yaw`：**右转为正 / 左转为负**
+         * - `[2] roll`：**头部向右侧倾为正**
+         *
+         * 供 UI 绘制"俯视小罗盘"（头朝向正向示意）。缺 F→W 头姿时为 null。
+         */
+        val headDeviation: FloatArray? = null,
+        /**
+         * MPIIGaze 每眼视线单位向量-世界（车辆）系（AAR FaceResult.gazeWorldDir）。
+         * 形状 [2][3]，[0]=左眼、[1]=右眼；世界系 X 右 / Y 前 / Z 上。
+         * 仅旋转无平移：v_w = R_wc^T · v_c。
+         * 有效性：需 gazeWorldValid == 1（相机→世界外参已设置）。
+         */
+        val gazeWorldDir: Array<FloatArray>? = null,
+        /** 相机→世界外参是否已设置（AAR FaceResult.gazeWorldValid，1=已设置，world 系字段才有效）。 */
+        val gazeWorldValid: Int = 0,
+        /**
+         * MPIIGaze 每眼眼中心 3D 坐标-相机系（AAR FaceResult.eyeCenterCam），单位毫米。
+         * 形状 [2][3]，[0]=左眼、[1]=右眼；XY 来自 68 点眼角中点反投影射线（含去畸变迭代），
+         * Z 来自 solvePnP 深度。有效性同 eyePatchValid 对应位。
+         */
+        val eyeCenterCam: Array<FloatArray>? = null,
+        /**
+         * 每眼眼中心 3D 坐标-世界（车辆）系（AAR FaceResult.eyeCenterWorld），单位毫米。
+         * 形状 [2][3]，P_w = R_wc^T·(P_c - t_wc)（含平移）。需 gazeWorldValid == 1。
+         */
+        val eyeCenterWorld: Array<FloatArray>? = null,
+        /**
+         * MPIIGaze 归一化眼部灰度 patch（AAR FaceResult.eyePatch），模型输入原样（含直方图均衡，
+         * 不镜像、不放大）。每眼 36×60 = 2160 字节；[0]=左眼、[1]=右眼。
+         * 有效性：flags&FACE_FLAG_GAZE 且 eyePatchValid 对应位为 1。
+         */
+        val eyePatch: Array<ByteArray>? = null,
+        /**
+         * 眼图有效性位标志（AAR FaceResult.eyePatchValid）：bit0=左眼有效，bit1=右眼有效。
+         * 注意是位标志而非单一开关，判断单眼需按位与。
+         */
+        val eyePatchValid: Int = 0,
+        /**
+         * 标准 3D 人脸模型（MEANSHAPE_68）经 solvePnP 位姿投影回原图的像素坐标
+         * （AAR FaceResult.facialPointsProj），形状 [68][2]。
+         * 与 facialPoints（检测所得 68 点）同像素域，供叠加对比展示。
+         * 有效性：flags&FACE_FLAG_LANDMARK 且相机内参已设置且 solvePnP 成功；否则全 0。
+         */
+        val facialPointsProj: Array<FloatArray>? = null,
+        /**
+         * 同上，但姿态仅保留 roll（yaw=pitch=0），平移/深度不变，
+         * 即"纯 roll 摆正"的标准模型（AAR FaceResult.facialPointsProjRoll），形状 [68][2]。
+         * 有效性同 facialPointsProj。
+         */
+        val facialPointsProjRoll: Array<FloatArray>? = null,
+        // ===== face-sdk 1.0.3 新增字段结束 =====
         /** 头姿-头心旋转矩阵（AAR FaceResult.headHcRot）。 */
         val headHcRot: FloatArray? = null,
         /** 头姿-头心平移向量（AAR FaceResult.headHcT）。 */
@@ -119,8 +184,32 @@ interface IFaceIDAlgorithm {
     ) {
         /** 头部姿态 6D 旋转（防御性拷贝，null 保持 null）。 */
         val headPose6dSafe: FloatArray? = headPose6d?.copyOf()
-        /** 视线关键点（防御性拷贝，null 保持 null）。 */
-        val gazeKpsSafe: Array<FloatArray>? = gazeKps?.map { it.copyOf() }?.toTypedArray()
+        // ===== face-sdk 1.0.3 新增字段的防御性拷贝（null 保持 null）=====
+        /** 视线方向-相机系（防御性拷贝）。 */
+        val gazeCamDirSafe: Array<FloatArray>? = gazeCamDir?.map { it.copyOf() }?.toTypedArray()
+        /** 视线方向-世界系（防御性拷贝）。 */
+        val gazeWorldDirSafe: Array<FloatArray>? = gazeWorldDir?.map { it.copyOf() }?.toTypedArray()
+        /** 眼球中心-相机系（防御性拷贝）。 */
+        val eyeCenterCamSafe: Array<FloatArray>? = eyeCenterCam?.map { it.copyOf() }?.toTypedArray()
+        /** 眼球中心-世界系（防御性拷贝）。 */
+        val eyeCenterWorldSafe: Array<FloatArray>? = eyeCenterWorld?.map { it.copyOf() }?.toTypedArray()
+        /** 眼部图像 patch（防御性拷贝）。 */
+        val eyePatchSafe: Array<ByteArray>? = eyePatch?.map { it.copyOf() }?.toTypedArray()
+        /** 面部点-投影结果（防御性拷贝）。 */
+        val facialPointsProjSafe: Array<FloatArray>? = facialPointsProj?.map { it.copyOf() }?.toTypedArray()
+        /** 面部点-投影结果去 roll（防御性拷贝）。 */
+        val facialPointsProjRollSafe: Array<FloatArray>? = facialPointsProjRoll?.map { it.copyOf() }?.toTypedArray()
+        // ===== face-sdk 1.0.3 新增字段的防御性拷贝结束 =====
+
+        // ===== 以下为依据 SDK 有效性规则计算的便捷判断（避免上层误用全 0 数据）=====
+        /** 左眼有效（eyePatchValid bit0）。眼图/视线/眼中心三者共用此位。 */
+        val leftEyeValid: Boolean = (eyePatchValid and 0x1) != 0
+        /** 右眼有效（eyePatchValid bit1）。眼图/视线/眼中心三者共用此位。 */
+        val rightEyeValid: Boolean = (eyePatchValid and 0x2) != 0
+        /** 世界系视线可用：外参已设置且有任一眼有效（gazeWorldDir/eyeCenterWorld 才有意义）。 */
+        val gazeWorldUsable: Boolean = gazeWorldValid == 1 && (leftEyeValid || rightEyeValid)
+        /** 面部投影点可用：需相机内参且 solvePnP 成功（facialPointsProj 非空且为 68 点）。 */
+        val facialPointsProjUsable: Boolean = (facialPointsProj?.size ?: 0) >= 68
         /** 头姿-头心旋转矩阵（防御性拷贝）。 */
         val headHcRotSafe: FloatArray? = headHcRot?.copyOf()
         /** 头姿-头心平移向量（防御性拷贝）。 */
@@ -196,6 +285,34 @@ interface IFaceIDAlgorithm {
     fun setCropOffset(x: Int, y: Int) {
         // 默认无操作，由具体算法实现处理坐标修正
     }
+
+    /**
+     * 设置当前车速（km/h），供算法侧按法规分档设置分心判定时长阈值。
+     *
+     * 对齐 face-sdk `setDistractThresholdMs` 的法规口径：
+     * ADDW（车速 ≥50 → 3500ms，≥20 → 6000ms）、GB/T 41797（头姿异常持续 3000ms）。
+     * 负值表示车速未知。
+     *
+     * 默认实现为空操作；算法实现若需转发给 SDK 应重写此方法。
+     */
+    fun setVehicleSpeed(speedKmh: Float) {
+        // 默认无操作
+    }
+
+    /**
+     * 头姿 solvePnP 使用的固定对应点数（face-sdk `headposeCorrPairNum`，当前为 12）。
+     *
+     * 默认返回 0；算法实现应转发 SDK 的静态接口。供展示层凸显参与头姿解算的关键点。
+     */
+    fun headposeCorrPairNum(): Int = 0
+
+    /**
+     * 第 k 对头姿对应点的 2D landmark 索引（iBUG 68 点序，face-sdk
+     * `headposeCorr2dIndex`）。k 取值 `0..headposeCorrPairNum()-1`。
+     *
+     * 默认返回 -1；算法实现应转发 SDK 的静态接口。
+     */
+    fun headposeCorr2dIndex(k: Int): Int = -1
 
     /**
      * 缓存一帧原始 UYVY 数据（供手动 dump 调试用）。

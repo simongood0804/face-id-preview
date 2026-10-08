@@ -50,14 +50,16 @@ object SignalTypes {
      *
      * @property hasFace 是否检测到人脸
      * @property gazeDistracted 单帧分心标志（>0 表示分心）
+     * @property pointId 命中的注意点位编号（2~6）；无/-1 表示未命中或非本方案
      */
     data class AlgoDistractionInput(
         val hasFace: Boolean,
-        val gazeDistracted: Float
+        val gazeDistracted: Float,
+        val pointId: Int = -1
     ) {
         companion object {
             /** 无算法结果（无人脸）时的输入。 */
-            val NO_FACE = AlgoDistractionInput(hasFace = false, gazeDistracted = 0f)
+            val NO_FACE = AlgoDistractionInput(hasFace = false, gazeDistracted = 0f, pointId = -1)
         }
     }
 

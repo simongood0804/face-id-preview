@@ -69,6 +69,56 @@ class FaceIDAlgorithmImpl : IFaceIDAlgorithm {
         mCropOffsetY = y
     }
 
+    /** 最近一次下发的法规分心时长阈值（ms），避免重复 set。 */
+    @Volatile
+    private var mDistractThresholdMs = -1
+
+    /**
+     * 设置当前车速，并按法规分档下发分心时长阈值给 SDK（`setDistractThresholdMs`）。
+     *
+     * 分档口径（`DISTRACT_MS_*`，对齐 ADDW / GB/T 41797）：
+     * - 车速 ≥ 50 km/h → 3500ms（ADDW 高速档）
+     * - 20 ≤ 车速 < 50 → 6000ms（ADDW 低速档）
+     * - 车速 < 20 或未知 → 3000ms（GB/T 41797 头姿异常持续时长）
+     *
+     * 阈值未变化时不重复调用（SDK 侧为时间累计，帧率无关）。
+     */
+    override fun setVehicleSpeed(speedKmh: Float) {
+        val target = regulateDistractMs(speedKmh)
+        if (target == mDistractThresholdMs) return
+        val sdk = mFaceSDK ?: return
+        try {
+            val ok = sdk.setDistractThresholdMs(target)
+            mDistractThresholdMs = target
+            Log.i(TAG, "setDistractThresholdMs($target)=$ok (speed=$speedKmh km/h)")
+        } catch (e: Throwable) {
+            Log.w(TAG, "setDistractThresholdMs($target) failed", e)
+        }
+    }
+
+    /** 按车速返回法规要求的分心时长阈值（ms）。 */
+    private fun regulateDistractMs(speedKmh: Float): Int = when {
+        speedKmh >= 50f -> DISTRACT_MS_HIGH_SPEED
+        speedKmh >= 20f -> DISTRACT_MS_MID_SPEED
+        else -> DISTRACT_MS_LOW_SPEED
+    }
+
+    /** 头姿 solvePnP 固定对应点数（转发 SDK 静态接口；异常/不可用时返回 0）。 */
+    override fun headposeCorrPairNum(): Int = try {
+        FaceSDK.headposeCorrPairNum()
+    } catch (e: Throwable) {
+        Log.w(TAG, "headposeCorrPairNum failed", e)
+        0
+    }
+
+    /** 第 k 对头姿对应点的 2D landmark 索引（转发 SDK 静态接口；不可用时返回 -1）。 */
+    override fun headposeCorr2dIndex(k: Int): Int = try {
+        FaceSDK.headposeCorr2dIndex(k)
+    } catch (e: Throwable) {
+        Log.w(TAG, "headposeCorr2dIndex($k) failed", e)
+        -1
+    }
+
     /**
      * 动态配置算法流程（FACEP-011 功能划分）。
      *
@@ -133,6 +183,22 @@ class FaceIDAlgorithmImpl : IFaceIDAlgorithm {
     private var mContinuousFuture: ScheduledFuture<*>? = null
     /** 连续 dump 子目录（debugDump/continuous）。 */
     private var mContinuousDir: File? = null
+
+    /**
+     * 相机内参 [fx, fy, cx, cy]（来自标定文件，单位像素）。
+     * 用于视线射线透视投影绘制（SDK 只有 setCameraIntrinsic，无 get 接口）。
+     * 未设置时视线绘制回退为正交画法（与 C 侧 draw_gaze_ray 行为一致）。
+     */
+    private var mCamIntrinsic: FloatArray? = null
+
+    /**
+     * 相机外参正视基准 [pitch, yaw, roll]（度，来自标定文件 `camera_extrinsic.fwd_*`）。
+     * 用于把车辆系（F→W）数据变换回相机系做投影，以及人脸朝向正向示意。
+     */
+    private var mFwdRot: FloatArray? = null
+
+    /** 相机外参平移 `t_cw`（车辆系，**厘米**，来自标定文件 `camera_extrinsic.t_cw`）。 */
+    private var mTCw: FloatArray? = null
     /** 连续 dump 保存子目录（采集线程写）。 */
     private var mContinuousSaveDir: File? = null
 
@@ -265,6 +331,14 @@ class FaceIDAlgorithmImpl : IFaceIDAlgorithm {
                 Log.e(TAG, "initialize: FaceSDK.init returned null")
                 return false
             }
+            // SDK 版本日志：确认设备实际加载的 libface.so 版本（排查"本地更新但设备未更新"）
+            // 同时打印头姿解算对应点数（headposeCorrPairNum），便于核对算法版本。
+            try {
+                Log.i(TAG, "initialize: FaceSDK.version=${FaceSDK.version()}, " +
+                    "headposeCorrPairNum=${FaceSDK.headposeCorrPairNum()}")
+            } catch (e: Throwable) {
+                Log.w(TAG, "initialize: FaceSDK.version() unavailable", e)
+            }
 
             // 4. 配置启用模型（默认 ALL；可通过 config[KEY_FACE_FLAG] 裁剪，见 FACEP-011 功能划分）
             val t2 = System.currentTimeMillis()
@@ -279,6 +353,10 @@ class FaceIDAlgorithmImpl : IFaceIDAlgorithm {
             Log.i(TAG, "initialize: loadCalibration=$calibOk")
 
             mFaceSDK = sdk
+
+            // 6. 初始分心时长阈值（车速未知 → GB/T 41797 的 3000ms；
+            //    后续 setVehicleSpeed 会按 ADDW 档位更新）
+            setVehicleSpeed(-1f)
             Log.i(TAG, "initialize: success")
             mInitialized = true
             true
@@ -481,7 +559,18 @@ class FaceIDAlgorithmImpl : IFaceIDAlgorithm {
                     spherePitch = r.spherePitch,
                     area3Hit = r.area3Hit,
                     sphereValid = r.sphereValid,
-                    gazeKps = r.gazeKps,
+                    // face-sdk 1.0.3 新增字段透传（视线方向/眼球中心/眼图/投影面部点）
+                    gazeCamDir = r.gazeCamDir,
+                    // 头朝向相对正视基准的偏差角（供俯视小罗盘绘制）
+                    headDeviation = buildHeadDeviation(r),
+                    gazeWorldDir = r.gazeWorldDir,
+                    gazeWorldValid = r.gazeWorldValid,
+                    eyeCenterCam = r.eyeCenterCam,
+                    eyeCenterWorld = r.eyeCenterWorld,
+                    eyePatch = r.eyePatch,
+                    eyePatchValid = r.eyePatchValid,
+                    facialPointsProj = r.facialPointsProj,
+                    facialPointsProjRoll = r.facialPointsProjRoll,
                     headHcRot = r.headHcRot,
                     headHcT = r.headHcT,
                     headHwRot = r.headHwRot,
@@ -652,6 +741,17 @@ class FaceIDAlgorithmImpl : IFaceIDAlgorithm {
         private const val DEFAULT_MODEL_DIR = "/data/faceid/models"
         private const val MODEL_ASSET_PATH = "models"
 
+        /** VIDEO 模式默认累计录制时长：3 分钟。 */
+        const val DEFAULT_VIDEO_DUMP_DURATION_MS = 3 * 60 * 1000L
+
+        // ===== 分心时长阈值（法规口径，单位 ms）=====
+        /** 车速 ≥50 km/h：ADDW 高速档 3500ms。 */
+        private const val DISTRACT_MS_HIGH_SPEED = 3500
+        /** 20 ≤ 车速 <50 km/h：ADDW 低速档 6000ms。 */
+        private const val DISTRACT_MS_MID_SPEED = 6000
+        /** 车速 <20 km/h 或未知：GB/T 41797 头姿异常持续 3000ms。 */
+        private const val DISTRACT_MS_LOW_SPEED = 3000
+
         /** 眼睛滞回阈值：开合度 ≤ 此值判闭眼（与 FatigueRule.EYE_CLOSE_RATIO 一致）。 */
         private const val EYE_CLOSE_RATIO = 0.08f
         /** 眼睛滞回阈值：开合度 > 此值判睁眼；[EYE_CLOSE_RATIO]~此值之间维持上一状态（0.08~0.15 滞回）。 */
@@ -743,21 +843,29 @@ class FaceIDAlgorithmImpl : IFaceIDAlgorithm {
     fun getContinuousSavedCount(): Int = mContinuousSavedIndex.get()
 
     /**
-     * 启动连续 dump：定时（[intervalMs] 间隔）从最近一帧原始 UYVY 采样保存为 PNG，
-     * 共 [totalFrames] 帧，完成后回调（主线程）。
+     * 启动连续 dump。
      *
-     * 目录结构：`debugDump/continuous/dumpOrigin{idx}.png`，
-     * 保存 index 从 0 开始（idx 3 位），以"实际保存成功帧数"为据，编号连续。
+     * **PNG / JPEG 模式**：定时（[intervalMs] 间隔）从最近一帧原始 UYVY 采样保存，
+     * 共 [totalFrames] 帧（保存驱动采样，采满即结束）。目录 `debugDump/continuous/dumpOrigin{idx}.{png,jpg}`。
      *
-     * @param totalFrames 采样帧数上限（默认 300，采满即自然结束，不设固定时长）
-     * @param intervalMs  采样间隔（默认 200ms，最快 5fps）
-     * @param onResult    完成回调（主线程），参数为采样完成帧数
+     * **VIDEO 模式**（2026-09 调整）：不再以帧数为准，改为**累计录制时长** [videoDurationMs]（默认 3 分钟），
+     * 按真实经过时间（`elapsedRealtimeNanos`）判断结束；期间以 [intervalMs] 为采样节拍持续编码，
+     * 每帧均为关键帧（All-Intra）。目录 `debugDump/continuous/continuous.mp4`。
+     *
+     * 保存 index 从 0 开始（idx 3 位），同名覆盖 —— 多次连续 dump 只保留最新一轮，不累积。
+     *
+     * @param totalFrames    采样帧数上限（PNG/JPEG 用；默认 300）
+     * @param intervalMs     采样间隔（默认 200ms，最快 5fps）；VIDEO 模式为编码节拍
+     * @param mode           输出格式（PNG / JPEG / VIDEO）
+     * @param videoDurationMs VIDEO 模式累计录制时长（默认 3 分钟）
+     * @param onResult       完成回调（主线程），参数为采样完成帧数
      * @return 是否成功启动（进行中或 dump 不可用返回 false）
      */
     fun startContinuousDump(
         totalFrames: Int = 300,
         intervalMs: Long = 200,
         mode: ContinuousDumpMode = ContinuousDumpMode.PNG,
+        videoDurationMs: Long = DEFAULT_VIDEO_DUMP_DURATION_MS,
         onResult: ((Int) -> Unit)? = null
     ): Boolean {
         if (mContinuousActive) {
@@ -791,11 +899,18 @@ class FaceIDAlgorithmImpl : IFaceIDAlgorithm {
         mContinuousActive = true
         onResultContinuous = onResult   // finish 时消费一次
 
+        // VIDEO 模式：按累计时长结束（不再按帧数）；起点用单调时钟，结束判定亦用同一时钟。
+        mVideoDurationLimitMs = if (mode == ContinuousDumpMode.VIDEO) videoDurationMs else 0L
+        mVideoDumpStartNanos = if (mode == ContinuousDumpMode.VIDEO) {
+            SystemClock.elapsedRealtimeNanos()
+        } else 0L
+
         // VIDEO 模式：不在此处初始化编码器（帧尺寸未知，见 encodeVideoFrame 首帧延迟初始化）
-        Log.i(TAG, "startContinuousDump: dir=$dir total=$totalFrames interval=${intervalMs}ms mode=$mode")
+        Log.i(TAG, "startContinuousDump: dir=$dir total=$totalFrames interval=${intervalMs}ms mode=$mode " +
+                "videoDurationMs=$videoDurationMs")
 
         // 保存驱动采样（保帧率）：采一帧 → 保存一帧 → 完成后再调度下一次采样。
-        // 实际节奏 = max(保存耗时, intervalMs)，保证每帧都能成功写盘、不丢帧，最终存满 totalFrames。
+        // 实际节奏 = max(保存耗时, intervalMs)，保证每帧都能成功写盘、不丢帧。
         // 保存失败也不中断，单帧异常不终止整轮（否则按钮卡在"连续DUMP中…"无法恢复）。
         mContinuousFuture = mContinuousExecutor.schedule({
             continuousSampleAndSave(totalFrames, intervalMs)
@@ -805,17 +920,28 @@ class FaceIDAlgorithmImpl : IFaceIDAlgorithm {
 
     /**
      * 连续 dump 单次"采样+保存"步骤（在 mContinuousExecutor 线程执行）。
-     * 采满 totalFrames 即结束并回调；否则延迟 [intervalMs] 后再采下一帧，
-     * 保证相邻两帧至少间隔 intervalMs（最快 5fps），且保存完成才继续。
+     *
+     * 结束条件按模式区分：
+     * - PNG/JPEG：采满 [totalFrames] 即结束；
+     * - VIDEO：由 [isVideoDumpTimedOut] 按累计时长判定结束（帧数仅作统计，不限制）；
+     * 否则延迟 [intervalMs] 后再采下一帧，保证相邻两帧至少间隔 intervalMs，且保存完成才继续。
      */
     private fun continuousSampleAndSave(totalFrames: Int, intervalMs: Long) {
         if (!mContinuousActive) return
         try {
-            val seq = sampledCount.getAndIncrement()
-            if (seq >= totalFrames) {
-                // 已采满，停止并回调（按钮恢复）
-                finishContinuousDump(seq)
-                return
+            // VIDEO 模式：以累计时长为准；其余模式以帧数为准
+            if (mContinuousMode == ContinuousDumpMode.VIDEO) {
+                if (isVideoDumpTimedOut()) {
+                    finishContinuousDump(sampledCount.get())
+                    return
+                }
+            } else {
+                val seq = sampledCount.getAndIncrement()
+                if (seq >= totalFrames) {
+                    // 已采满，停止并回调（按钮恢复）
+                    finishContinuousDump(seq)
+                    return
+                }
             }
             // 采样最近一帧（UYVY 拷贝，避免被主线程后续覆盖）
             val frame: ByteArray?; val w: Int; val h: Int
@@ -840,6 +966,10 @@ class FaceIDAlgorithmImpl : IFaceIDAlgorithm {
                     mContinuousSavedIndex.incrementAndGet()
                 }
             }
+            // VIDEO 模式采样计数（仅统计，不参与结束判定）
+            if (mContinuousMode == ContinuousDumpMode.VIDEO) {
+                sampledCount.incrementAndGet()
+            }
             // 保存完成后，延迟 intervalMs 再采下一帧（保证最快不超过 5fps）
             if (mContinuousActive) {
                 mContinuousFuture = mContinuousExecutor.schedule({
@@ -855,6 +985,27 @@ class FaceIDAlgorithmImpl : IFaceIDAlgorithm {
                 }, intervalMs, TimeUnit.MILLISECONDS)
             }
         }
+    }
+
+    /**
+     * VIDEO 模式是否已达累计录制时长（默认 3 分钟）。
+     *
+     * 用**单调时钟**（`elapsedRealtimeNanos`）计算真实经过时间，避免 wall clock 校时回拨影响；
+     * 起点在 [startContinuousDump] 设置，故包含首帧编码器初始化的耗时（口径即"点击到结束的总时长"）。
+     */
+    private fun isVideoDumpTimedOut(): Boolean {
+        val limit = mVideoDurationLimitMs
+        if (limit <= 0L || mVideoDumpStartNanos <= 0L) return false
+        val elapsedMs = (SystemClock.elapsedRealtimeNanos() - mVideoDumpStartNanos) / 1_000_000
+        return elapsedMs >= limit
+    }
+
+    /** VIDEO 模式剩余录制毫秒数（供 UI 倒计时；非视频模式或未启动返回 0）。 */
+    fun getVideoDumpRemainingMs(): Long {
+        if (mContinuousMode != ContinuousDumpMode.VIDEO || mVideoDumpStartNanos <= 0L) return 0L
+        val limit = mVideoDurationLimitMs
+        val elapsedMs = (SystemClock.elapsedRealtimeNanos() - mVideoDumpStartNanos) / 1_000_000
+        return (limit - elapsedMs).coerceAtLeast(0L)
     }
 
     /** 连续 dump 已采样帧数（每次 start 重置）。 */
@@ -878,6 +1029,7 @@ class FaceIDAlgorithmImpl : IFaceIDAlgorithm {
         // VIDEO 模式：结束编码并封装 MP4
         if (mContinuousMode == ContinuousDumpMode.VIDEO) {
             finishVideoRecorder()
+            resetVideoDumpTimer()
         }
         // 置空自动完成回调，避免持有已销毁 Activity 的引用造成泄漏
         // （手动停止后不会再走 finishContinuousDump 消费该回调）
@@ -886,7 +1038,13 @@ class FaceIDAlgorithmImpl : IFaceIDAlgorithm {
         mMainHandler.post { onResult?.invoke(count) }
     }
 
-    /** 完成连续 dump（达到帧数上限自动调用）：停止采样并回调（后台保存继续）。 */
+    /** 复位 VIDEO 模式时长计时（停止/结束后调用，避免下次启动读到上一轮起点）。 */
+    private fun resetVideoDumpTimer() {
+        mVideoDumpStartNanos = 0L
+        mVideoDurationLimitMs = 0L
+    }
+
+    /** 完成连续 dump（达到时长/帧数上限自动调用）：停止采样并回调（后台保存继续）。 */
     private fun finishContinuousDump(sampled: Int) {
         mContinuousFuture?.cancel(false)
         mContinuousFuture = null
@@ -894,6 +1052,7 @@ class FaceIDAlgorithmImpl : IFaceIDAlgorithm {
         // VIDEO 模式：结束编码并封装 MP4（同步完成后再回调）
         if (mContinuousMode == ContinuousDumpMode.VIDEO) {
             finishVideoRecorder()
+            resetVideoDumpTimer()
         }
         // 回调的是"采样完成帧数"（按钮准时恢复）；后台保存队列可能仍在写，属正常。
         Log.i(TAG, "finishContinuousDump: sampling done, sampled $sampled frames")
@@ -914,6 +1073,10 @@ class FaceIDAlgorithmImpl : IFaceIDAlgorithm {
     private var mVideoTrackIndex = -1
     /** 视频起始真实时间（elapsedRealtimeNanos），PTS 用真实经过时间，避免快进。 */
     private var mVideoStartNanos = 0L
+    /** VIDEO 模式**整轮录制**起点（elapsedRealtimeNanos），用于累计时长结束判定。 */
+    private var mVideoDumpStartNanos = 0L
+    /** VIDEO 模式累计录制时长上限（ms）；非视频模式为 0。 */
+    private var mVideoDurationLimitMs = 0L
     private var mVideoPtsUs = 0L
     /** 视频帧转换复用缓冲（仅尺寸变化时分配，避免每帧 5.4MB 数组引发 GC）。 */
     private var mVideoRgbBuf: ByteArray? = null
@@ -984,15 +1147,35 @@ class FaceIDAlgorithmImpl : IFaceIDAlgorithm {
                 val h = intrinsic.optInt("height", 0)
                 val ok = sdk.setCameraIntrinsic(fx, fy, cx, cy, k1, k2, p1, p2, w, h)
                 Log.i(TAG, "setCameraIntrinsic(fx=$fx fy=$fy cx=$cx cy=$cy k1=$k1 k2=$k2 p1=$p1 p2=$p2 ${w}x${h})=$ok")
+
+                // 回读 SDK 实际生效的内参（face-sdk 1.0.3 新增 getCameraIntrinsic），
+                // 数组布局 [fx, fy, cx, cy, width, height]，与标定文件对比可发现未生效问题。
+                val out = FloatArray(6)
+                val got = try { sdk.getCameraIntrinsic(out) } catch (e: Throwable) { false }
+                if (got) {
+                    mCamIntrinsic = floatArrayOf(out[0], out[1], out[2], out[3])
+                    val match = out[0] == fx && out[1] == fy && out[2] == cx && out[3] == cy
+                    Log.i(TAG, "getCameraIntrinsic: fx=${out[0]} fy=${out[1]} cx=${out[2]} cy=${out[3]} " +
+                        "size=${out[4].toInt()}x${out[5].toInt()} matchCalib=$match")
+                } else {
+                    // 回读失败（未设置或接口不可用）时退回标定文件值
+                    mCamIntrinsic = floatArrayOf(fx, fy, cx, cy)
+                    Log.w(TAG, "getCameraIntrinsic failed; fallback to calibration values")
+                }
             }
 
-            // 2. 相机外参（fwd_pitch/yaw/roll，可选 t_cw）
+            // 2. 相机外参（fwd_pitch/yaw/roll + 平移）
+            // 平移键名：当前标定文件用 t_wc（world→camera 平移，单位 cm）；
+            // 旧文件曾用 t_cw，故两者都尝试读取以保持兼容。
+            // 注意：早期仅读 "t_cw" 导致新标定文件读不到平移量，
+            // setCameraExtrinsic 从未生效、且 mFwdRot/mTCw 未缓存（头姿 F→W 投影失效）。
             val extrinsic = json.optJSONObject("camera_extrinsic")
             if (extrinsic != null) {
                 val fwdPitch = extrinsic.optDouble("fwd_pitch", 0.0).toFloat()
                 val fwdYaw = extrinsic.optDouble("fwd_yaw", 0.0).toFloat()
                 val fwdRoll = extrinsic.optDouble("fwd_roll", 0.0).toFloat()
-                val tArr = extrinsic.optJSONArray("t_cw")
+                val tArr = extrinsic.optJSONArray("t_wc")
+                    ?: extrinsic.optJSONArray("t_cw")
                 if (tArr != null && tArr.length() >= 3) {
                     val tCw = floatArrayOf(
                         tArr.getDouble(0).toFloat(),
@@ -1000,10 +1183,14 @@ class FaceIDAlgorithmImpl : IFaceIDAlgorithm {
                         tArr.getDouble(2).toFloat()
                     )
                     val ok = sdk.setCameraExtrinsic(fwdPitch, fwdYaw, fwdRoll, tCw)
+                    // 缓存外参供车辆系(F→W)数据投影回相机系使用（t 单位为 cm）
+                    mFwdRot = floatArrayOf(fwdPitch, fwdYaw, fwdRoll)
+                    mTCw = tCw
                     Log.i(TAG, "setCameraExtrinsic(pitch=$fwdPitch yaw=$fwdYaw roll=$fwdRoll t=$tCw.contentToString())=$ok")
                 } else {
                     val ok = sdk.enableCamTransform(fwdPitch, fwdYaw, fwdRoll)
-                    Log.i(TAG, "enableCamTransform(pitch=$fwdPitch yaw=$fwdYaw roll=$fwdRoll)=$ok")
+                    Log.w(TAG, "enableCamTransform(pitch=$fwdPitch yaw=$fwdYaw roll=$fwdRoll)=$ok " +
+                        "(未找到 t_wc/t_cw 平移量，F→W 投影与罗盘将不可用)")
                 }
             }
 
@@ -1205,6 +1392,41 @@ class FaceIDAlgorithmImpl : IFaceIDAlgorithm {
     }
 
     /**
+     * 头朝向相对**正前方**的偏差角 `[pitch, yaw, roll]`（度），供三个独立罗盘绘制。
+     *
+     * **数据源（`head_hw_rot` 实为世界系下的头朝向单位向量，不是欧拉角）**：
+     * - 世界系约定：`X 右 / Y 前 / Z 上`，**正前方 = (0, 1, 0)**
+     * - `headDirYaw` = `atan2(x, y)`：0=正前，**右转为正**
+     * - `headDirPitch` = `asin(z)`：0=水平，**低头为负**（抬头为正）
+     *
+     * 二者即相对正前方的偏差，直接取 SDK 计算值，无需再变换。
+     *
+     * **roll（横滚）无法从方向向量得到**：方向向量只有 2 个自由度（yaw/pitch），
+     * 绕自身前向轴的旋转信息在单位向量中已丢失。故 `[2]` 恒为 0，
+     * 若需 roll 必须由算法方提供额外字段（如 6D 旋转或欧拉角形式）。
+     *
+     * @return `[pitch, yaw, roll]`（度）：抬头+/低头-、右转+/左转-；roll 暂为 0。
+     *         头姿方向无效（`flags&HEADFRAME==0` 或 `headDirValid!=1`）时为 null。
+     */
+    private fun buildHeadDeviation(r: FaceResult): FloatArray? {
+        if ((r.flags and FaceFlag.HEADFRAME) == 0 || r.headDirValid < 1.0f) {
+            // 诊断日志（节流）：头姿方向无效时罗盘不可用
+            val nowMs = System.currentTimeMillis()
+            if (nowMs - mDeviationLogMs > 5000L) {
+                mDeviationLogMs = nowMs
+                Log.w(TAG, "buildHeadDeviation: headDir invalid " +
+                    "(flags HEADFRAME=${(r.flags and FaceFlag.HEADFRAME) != 0}, headDirValid=${r.headDirValid}); 罗盘不可用")
+            }
+            return null
+        }
+        // Y/P 为 SDK 依据世界系单位向量算好的角度（正前方 (0,1,0) 对应 0/0）。
+        return floatArrayOf(r.headDirPitch, r.headDirYaw, 0f)
+    }
+
+    /** buildHeadDeviation 诊断日志节流时间戳。 */
+    private var mDeviationLogMs = 0L
+
+    /**
      * 连续 dump 保存：UYVY → RGB → PNG，**原尺寸**（1600×1300 等，不缩图）。
      *
      * 由保存驱动采样调用（采一帧存一帧），保存多快采多快，不丢帧，最终存满 totalFrames。
@@ -1275,7 +1497,13 @@ class FaceIDAlgorithmImpl : IFaceIDAlgorithm {
                 MediaCodecInfo.CodecCapabilities.COLOR_FormatYUV420SemiPlanar)
             format.setInteger(MediaFormat.KEY_BIT_RATE, 4_000_000)
             format.setInteger(MediaFormat.KEY_FRAME_RATE, 10)
-            format.setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, 1)
+            // All-Intra：每帧都是关键帧（每帧强制 I 帧），便于逐帧定位/抽帧。
+            // 0 = 每帧 I 帧（KEY_I_FRAME_INTERVAL 单位：秒，0 表示全 I 帧）。
+            format.setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, 0)
+            // 显式声明无 B 帧（保证帧序与输入序一致，配合 All-Intra 逐帧可解）
+            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.Q) {
+                format.setInteger(MediaFormat.KEY_MAX_B_FRAMES, 0)
+            }
             codec.configure(format, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
             codec.start()
 
