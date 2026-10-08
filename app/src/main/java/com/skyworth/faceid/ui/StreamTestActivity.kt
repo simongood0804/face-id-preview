@@ -7,8 +7,10 @@ import android.util.Log
 import android.widget.Button
 import android.widget.EditText
 import android.widget.TextView
+import android.widget.Toast
 import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
+import androidx.appcompat.widget.SwitchCompat
 import com.android.car.evs.CameraIds
 import com.skyworth.faceid.R
 import com.skyworth.faceid.camera.CameraSwitchClient
@@ -55,6 +57,10 @@ class StreamTestActivity : AppCompatActivity() {
     private lateinit var mSurface: GLSurfaceView
     private lateinit var mStatus: TextView
     private lateinit var mState: TextView
+    private lateinit var mRecordSwitch: SwitchCompat
+
+    /** 正在用代码回写控件状态（避免 Switch 监听被自己的同步动作触发）。 */
+    private var mSyncingUi = false
 
     private var mFrameSession: FrameSession? = null
 
@@ -110,9 +116,27 @@ class StreamTestActivity : AppCompatActivity() {
     @Volatile
     private var mSurfaceHeight = 0
 
-    /** 当前会话的名称（"推流"/"录制"），用于顶部状态提示。 */
+    /** 当前会话是否包含推流 / 录制（由启动时选的 config 决定），用于状态行与按钮文案。 */
     @Volatile
-    private var mSessionLabel = "推流"
+    private var mSessionPushing = false
+
+    @Volatile
+    private var mSessionRecording = false
+
+    /** 当前会话用的 assets 名（null = 无会话）；用于判断目标组合是否需要换 config 重启。 */
+    @Volatile
+    private var mSessionAsset: String? = null
+
+    /** 用户期望的组合（两个开关）；会话收尾完成后自动切到这个目标。 */
+    @Volatile
+    private var mWantPush = false
+
+    @Volatile
+    private var mWantRecord = false
+
+    /** 页面已销毁：不再自动拉起会话。 */
+    @Volatile
+    private var mDestroyed = false
 
     /** 当前会话的开始时刻（wall clock ms），用于算实时 fps。 */
     @Volatile
@@ -143,19 +167,22 @@ class StreamTestActivity : AppCompatActivity() {
         // 录制与推流统一走 P4-C「surface」路径：本平台硬件编码器只接受 surface 输入，
         // CPU 内存路径（mr_session_push_frame）拿不到任何输出（encoder_emitted 恒为 0），
         // 因此不再保留 CPU 版的推流入口。
-        findViewById<Button>(R.id.btn_record).setOnClickListener {
-            startSession(ASSET_RECORD, LABEL_RECORD, surfaceMode = SURFACE_MODE_ON)
+        // 录制用 Switch 表示**状态**：打开 = 要录制，关闭 = 不要录制。
+        // 推流与录制可任意组合，切换由 applyDesiredSession() 统一处理（必要时重启一次会话）。
+        mRecordSwitch = findViewById(R.id.sw_record)
+        mRecordSwitch.setOnCheckedChangeListener { _, checked ->
+            if (mSyncingUi) return@setOnCheckedChangeListener
+            mWantRecord = checked
+            applyDesiredSession()
         }
-        // 推流按钮是**可恢复的开关**：空闲时开始推流，推流中点击即停止（回到空闲）。
+        // 清理落盘的输出文件（车机磁盘空间有限）
+        findViewById<Button>(R.id.btn_clean).setOnClickListener {
+            confirmCleanOutputs()
+        }
+        // 推流按钮是**可恢复的开关**：切的是"要不要推流"，与录制开关组合后由状态机落地。
         findViewById<Button>(R.id.btn_push_surface).setOnClickListener {
-            if (mSession != null) {
-                stopSessionAsync()
-            } else {
-                startSession(ASSET_PUSH, LABEL_PUSH, surfaceMode = SURFACE_MODE_ON)
-            }
-        }
-        findViewById<Button>(R.id.btn_stop).setOnClickListener {
-            stopSessionAsync()
+            mWantPush = !mWantPush
+            applyDesiredSession()
         }
         findViewById<Button>(R.id.btn_target).setOnClickListener {
             showTargetDialog()
@@ -180,7 +207,8 @@ class StreamTestActivity : AppCompatActivity() {
             else "media_record 库加载失败（见 logcat）"
         )
 
-        updateStreamUi()  // 初始状态：未推流
+        updateStreamUi()   // 初始状态：未推流
+        refreshOutSize()   // 「清理」按钮上显示当前落盘占用
     }
 
     override fun onStart() {
@@ -209,6 +237,9 @@ class StreamTestActivity : AppCompatActivity() {
         // 离开本页即收尾当前会话：否则 native 侧还在推流/录制，再次进入本页时
         // mSession 已为 null，状态提示会与实际情况不一致。
         // 注意排除配置变更（语言/字号/深色模式等会重建 Activity）——那种情况不该中断推流。
+        mDestroyed = true      // 不再自动拉起会话
+        mWantPush = false
+        mWantRecord = false
         if (mSession != null && !isChangingConfigurations) {
             appendLog("离开页面，停止会话并保存…")
             stopSessionAsync()
@@ -571,22 +602,30 @@ class StreamTestActivity : AppCompatActivity() {
      */
     private fun updateStreamUi(stopping: Boolean = false, detail: String? = null) {
         val live = mSession != null
-        val label = mSessionLabel
+        val pushing = live && mSessionPushing
+        val recording = live && mSessionRecording
+        val name = sessionName()
         runOnUiThread {
             val btn = findViewById<Button>(R.id.btn_push_surface)
-            val recordBtn = findViewById<Button>(R.id.btn_record)
-            recordBtn.isEnabled = !stopping  // 收尾期间禁止开新会话（否则两个 native 会话并存）
+            val cleanBtn = findViewById<Button>(R.id.btn_clean)
+            // 录制开关：勾选状态跟着会话实际情况走（收尾/切换期间置灰）
+            mSyncingUi = true
+            mRecordSwitch.isChecked = recording
+            mRecordSwitch.isEnabled = !stopping
+            mSyncingUi = false
+            // 有会话正在写文件时不允许清理（muxer 正占用那个文件）
+            cleanBtn.isEnabled = !live && !stopping
             when {
                 live -> {
                     btn.isEnabled = true
                     btn.setText(
-                        if (label == LABEL_RECORD) R.string.stream_test_btn_record_stop
-                        else R.string.stream_test_btn_push_stop
+                        if (pushing) R.string.stream_test_btn_push_stop
+                        else R.string.stream_test_btn_record_stop
                     )
-                    mState.setTextColor(0xFF00E676.toInt())  // 绿色 = 正在推流
+                    mState.setTextColor(0xFF00E676.toInt())  // 绿色 = 会话在跑
                     mState.text = getString(
                         R.string.stream_test_state_live,
-                        label,
+                        name,
                         detail ?: "启动中…"
                     )
                 }
@@ -606,25 +645,143 @@ class StreamTestActivity : AppCompatActivity() {
         }
     }
 
+    // ============================================================
+    // 会话组合状态机（推流 / 录制 任意组合，动态切换）
+    // ============================================================
+
+    /** 当前会话的名称（用于状态行）。 */
+    private fun sessionName(): String = when {
+        mSessionPushing && mSessionRecording -> "推流+录制"
+        mSessionPushing -> LABEL_PUSH
+        mSessionRecording -> LABEL_RECORD
+        else -> LABEL_PUSH
+    }
+
+    /** 启动失败时把期望组合归零，避免状态机反复重试。 */
+    private fun resetWantsToIdle() {
+        mWantPush = false
+        mWantRecord = false
+    }
+
+    /**
+     * 把「期望组合」落地成实际会话（推流 / 录制 两个开关的组合）。
+     *
+     * 三种组合对应三套 config：
+     * - 只推流 → [ASSET_PUSH]（纯推流，不落盘）
+     * - 只录制 → [ASSET_RECORD]
+     * - 都要   → [ASSET_PUSH_RECORD]（推流 + MP4 落盘）
+     *
+     * 组合变化时**重启一次会话**：native 侧的 surface 渲染器是全局单槽，两路并发会让
+     * CPU 翻倍（单路 UYVY→RGBA 已 20~30ms/帧），所以宁可重启也不并发。重启期间界面显示
+     * 「正在停止…」，收尾完成后本方法会被再次调用以拉起新组合——用户只需操作开关，
+     * 不需要"停了再点一次"。
+     */
+    private fun applyDesiredSession() {
+        if (mDestroyed) return
+        val want = when {
+            mWantPush && mWantRecord -> ASSET_PUSH_RECORD
+            mWantPush -> ASSET_PUSH
+            mWantRecord -> ASSET_RECORD
+            else -> null
+        }
+        if (want == mSessionAsset) return              // 已经是目标组合
+        if (mSession != null || mStopping) {           // 有会话/正在收尾：先收尾，完成后继续
+            stopSessionAsync()
+            return
+        }
+        if (want == null) {
+            updateStreamUi()                           // 目标也是空闲：刷一次界面即可
+            return
+        }
+        appendLog("切换会话组合 → $want")
+        startSession(want, surfaceMode = SURFACE_MODE_ON)
+    }
+
+    // ============================================================
+    // 输出文件清理（车机磁盘空间有限）
+    // ============================================================
+
+    /** out 目录下的输出文件：MP4 与中途残留的 .tmp。 */
+    private fun outFiles(): List<File> {
+        val dir = File(filesDir, "out")
+        return dir.listFiles()
+            ?.filter { it.isFile && (it.name.endsWith(".mp4") || it.name.endsWith(".tmp")) }
+            ?.sortedBy { it.name }
+            ?: emptyList()
+    }
+
+    /** 人类可读的大小文本。 */
+    private fun formatSize(bytes: Long): String = when {
+        bytes >= 1L shl 30 -> "%.2f GB".format(bytes.toDouble() / (1L shl 30))
+        bytes >= 1L shl 20 -> "%.1f MB".format(bytes.toDouble() / (1L shl 20))
+        bytes >= 1L shl 10 -> "%.0f KB".format(bytes.toDouble() / (1L shl 10))
+        else -> "$bytes B"
+    }
+
+    /** 把 out 目录现状刷到「清理」按钮文案上（有文件时带占用大小）。 */
+    private fun refreshOutSize() {
+        val files = outFiles()
+        val text = if (files.isEmpty()) {
+            getString(R.string.stream_test_btn_clean)
+        } else {
+            getString(R.string.stream_test_btn_clean_size, formatSize(files.sumOf { it.length() }))
+        }
+        runOnUiThread { findViewById<Button>(R.id.btn_clean).text = text }
+    }
+
+    /** 二次确认后删除 out 目录下的输出文件。 */
+    private fun confirmCleanOutputs() {
+        val files = outFiles()
+        if (files.isEmpty()) {
+            Toast.makeText(this, R.string.stream_test_clean_none, Toast.LENGTH_SHORT).show()
+            refreshOutSize()
+            return
+        }
+        val bytes = files.sumOf { it.length() }
+        AlertDialog.Builder(this)
+            .setTitle(R.string.stream_test_clean_title)
+            .setMessage(getString(R.string.stream_test_clean_msg, files.size, formatSize(bytes)))
+            .setNegativeButton(android.R.string.cancel, null)
+            .setPositiveButton(android.R.string.ok) { _, _ ->
+                var removed = 0
+                var freed = 0L
+                for (f in files) {
+                    val len = f.length()
+                    if (f.delete()) {
+                        removed++
+                        freed += len
+                    }
+                }
+                appendLog("清理：删除 $removed 个文件，释放 ${formatSize(freed)}")
+                Toast.makeText(
+                    this,
+                    getString(R.string.stream_test_clean_done, removed, formatSize(freed)),
+                    Toast.LENGTH_SHORT
+                ).show()
+                refreshOutSize()
+            }
+            .show()
+    }
+
     /**
      * 读取 assets config 并打开/启动一个持续运行（resident）的会话。
      *
      * @param surfaceMode 0 = CPU 内存路径（`mr_session_push_frame`）；
      *                    1 = 编码器输入 surface 路径（宿主 GL 直绘 + `notify_frame`）。
      */
-    private fun startSession(assetName: String, label: String, surfaceMode: Int = 0) {
-        // 上一次会话还在收尾时不开新的：否则两个 native 会话并存，抢编码器/输入 surface。
-        if (mStopping) {
-            appendLog("上一次会话正在收尾，请稍候再点…")
-            return
-        }
-        if (stopSessionAsync()) {
-            appendLog("已停止上一次会话，正在收尾——完成后请再点一次「开始」")
-            return
+    private fun startSession(assetName: String, surfaceMode: Int = SURFACE_MODE_ON) {
+        // 由 config 名推导这套管线包含什么（纯推流 / 纯录制 / 推流+录制）
+        val pushing = assetName == ASSET_PUSH || assetName == ASSET_PUSH_RECORD
+        val recording = assetName == ASSET_RECORD || assetName == ASSET_PUSH_RECORD
+        val label = when {
+            pushing && recording -> "推流+录制"
+            pushing -> LABEL_PUSH
+            else -> LABEL_RECORD
         }
         val json = loadConfig(assetName)
         if (json == null) {
             appendLog("读取 $assetName 失败")
+            resetWantsToIdle()
             updateStreamUi()
             return
         }
@@ -649,6 +806,7 @@ class StreamTestActivity : AppCompatActivity() {
         val session = MediaRecordSession.open(json, surfaceMode = surfaceMode, resident = 1)
         if (session == null) {
             appendLog("$label 会话打开失败（见 logcat）")
+            resetWantsToIdle()
             updateStreamUi()
             return
         }
@@ -656,6 +814,7 @@ class StreamTestActivity : AppCompatActivity() {
         if (rc != MediaRecordSession.MR_OK) {
             appendLog("$label 启动失败 rc=$rc：${session.lastError()}")
             session.close()
+            resetWantsToIdle()
             updateStreamUi()
             return
         }
@@ -668,6 +827,7 @@ class StreamTestActivity : AppCompatActivity() {
                 appendLog("$label 取编码器输入 surface 失败（见 logcat）")
                 session.stop()
                 session.close()
+                resetWantsToIdle()
                 updateStreamUi()
                 return
             }
@@ -685,10 +845,12 @@ class StreamTestActivity : AppCompatActivity() {
         mConvSumUs = 0
         mPushSumUs = 0
         mSession = session
-        mSessionLabel = label
+        mSessionAsset = assetName
+        mSessionPushing = pushing
+        mSessionRecording = recording
         mSessionStartMs = System.currentTimeMillis()
         appendLog("$label 已启动（$assetName）")
-        updateStreamUi()  // 立刻显示「● 推流中」，按钮切成「停止推流」
+        updateStreamUi()  // 立刻反映新组合（状态行 + 两个控件）
     }
 
     /**
@@ -699,6 +861,9 @@ class StreamTestActivity : AppCompatActivity() {
     private fun stopSessionAsync(): Boolean {
         val session = mSession ?: return false
         mSession = null
+        mSessionAsset = null
+        mSessionPushing = false
+        mSessionRecording = false
         val wasSurface = mSurfaceMode
         mSurfaceMode = false
         mStopping = true
@@ -748,7 +913,9 @@ class StreamTestActivity : AppCompatActivity() {
                             )
                         }
                     }
-                    updateStreamUi()  // 回到「未推流」，按钮恢复「开始推流」
+                    updateStreamUi()        // 回到「未推流」，按钮恢复「开始推流」
+                    refreshOutSize()        // 收尾后落盘文件大小已变化
+                    applyDesiredSession()   // 若期望组合在此期间变了，这里拉起新会话
                 }
             }
         }.start()
@@ -848,8 +1015,11 @@ class StreamTestActivity : AppCompatActivity() {
         /** 录制 config：外部帧源 → 编码 → 录制 → MP4。 */
         private const val ASSET_RECORD = "external_source_record.json"
 
-        /** 推流 config：外部帧源 → 编码 → WebRTC 推流（+ MP4）。 */
-        private const val ASSET_PUSH = "external_source_record_push.json"
+        /** 纯推流 config：外部帧源 → 编码 → WebRTC（**不落盘**）。 */
+        private const val ASSET_PUSH = "external_source_push.json"
+
+        /** 推流 + 录制 config：外部帧源 → 编码 → 推流 + MP4 落盘。 */
+        private const val ASSET_PUSH_RECORD = "external_source_push_record.json"
 
         /** 停止时等待 finalize 的最长时间（ms）。 */
         private const val WAIT_FINALIZE_MS = 5000

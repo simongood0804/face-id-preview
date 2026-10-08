@@ -53,12 +53,14 @@
                 android:typeface="monospace" />
         </ScrollView>
 
-        <Button
-            android:id="@+id/btn_record"
+        <!-- 录制：用 Switch 表示**状态**（开 = 正在录制，关 = 不在录制），
+             与推流那种"点一下开始、再点一下停止"的重量级开关按钮区分开。 -->
+        <androidx.appcompat.widget.SwitchCompat
+            android:id="@+id/sw_record"
             android:layout_width="match_parent"
             android:layout_height="44dp"
             android:layout_marginTop="8dp"
-            android:text="@string/stream_test_btn_record"
+            android:text="@string/stream_test_record_switch"
             android:textSize="14sp" />
 
         <Button
@@ -69,12 +71,13 @@
             android:text="@string/stream_test_btn_push_surface"
             android:textSize="14sp" />
 
+        <!-- 清理车机上落盘的输出文件（车机空间有限，避免越攒越多） -->
         <Button
-            android:id="@+id/btn_stop"
+            android:id="@+id/btn_clean"
             android:layout_width="match_parent"
             android:layout_height="44dp"
             android:layout_marginTop="6dp"
-            android:text="@string/stream_test_btn_stop"
+            android:text="@string/stream_test_btn_clean"
             android:textSize="14sp" />
 
         <Button

@@ -100,6 +100,13 @@
     <string name="stream_test_btn_target">对端地址（PC）</string>
     <string name="stream_test_btn_push_stop">停止推流</string>
     <string name="stream_test_btn_record_stop">停止录制</string>
+    <string name="stream_test_record_switch">录制</string>
+    <string name="stream_test_btn_clean">清理录制文件</string>
+    <string name="stream_test_btn_clean_size">清理录制文件（%1$s）</string>
+    <string name="stream_test_clean_title">清理录制文件</string>
+    <string name="stream_test_clean_msg">将删除 %1$d 个文件，共 %2$s，删除后不可恢复。</string>
+    <string name="stream_test_clean_done">已删除 %1$d 个文件，释放 %2$s</string>
+    <string name="stream_test_clean_none">没有可清理的录制文件</string>
     <string name="stream_test_btn_stopping">正在停止…</string>
     <string name="stream_test_state_idle">未推流</string>
     <!-- %1$s = 会话名（推流/录制），%2$s = 实时摘要（fps、帧数等） -->

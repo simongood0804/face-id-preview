@@ -191,6 +191,14 @@ typedef struct mr_render mr_render;
 /// already made current, so plain GL calls (glViewport / glDraw* / ...) work.
 typedef void (*mr_render_draw_fn)(void* user);
 
+/// THREADING: the mr_render_* calls may run on DIFFERENT threads (create on a
+/// setup thread, frames from a camera callback, destroy on a teardown path) as
+/// long as no two of them are concurrent. No call leaves the EGL context bound
+/// to the calling thread — it is released before returning — which is what makes
+/// splitting "frame source thread" from "render thread" safe. (A context can be
+/// current on only one thread at a time, so concurrent calls would fail with
+/// EGL_BAD_ACCESS.)
+///
 /// Build the EGL display/config/context and bind `anativewindow` (obtained from
 /// mr_session_get_input_surface) as the render target. width/height are the
 /// encoder's configured geometry. Returns NULL on failure or on host builds.
@@ -223,12 +231,31 @@ MEDIA_RECORD_API int mr_render_frame_clear(mr_render* render, uint32_t rgba,
 /// part must not reach the video. 0 = the buffer's own dimensions. The valid area
 /// is letterboxed into the encoder surface (aspect preserved, black bars).
 ///
-/// Returns MR_OK, or a negative mr_status — MR_ERROR_RUNTIME while the underlying
-/// buffer import only admits R8G8B8A8_UNORM, so a vendor-private format (e.g.
-/// 0x120) needs the corresponding upstream change; the call shape stays the same.
+/// NOTE — a YUV camera buffer (e.g. the EVS vendor format 0x120) is NOT usable on
+/// this path: the buffer import has no YUV->RGB for such formats, and pushing it
+/// through anyway makes the driver silently return wrong colours. MR_ERROR_RUNTIME
+/// is the expected and correct answer for it. Zero-copy for those buffers comes
+/// from mr_render_frame() instead: bind the buffer yourself (eglCreateImageKHR +
+/// glEGLImageTargetTexture2DOES on GL_TEXTURE_EXTERNAL_OES) inside the draw
+/// callback and convert YUV->RGB in your own shader — no CPU copy, full colour.
+///
+/// Returns MR_OK, or a negative mr_status.
 MEDIA_RECORD_API int mr_render_frame_buffer(mr_render* render,
                                             void* ahardwarebuffer, int src_width,
                                             int src_height, int64_t pts_ns);
+
+/// How the source is mapped into the encoder surface when the two aspect ratios
+/// differ (mr_render_frame_buffer; mr_render_frame() draws whatever the caller
+/// draws). Default MR_FILL_FIT.
+typedef enum mr_fill_mode {
+  MR_FILL_FIT = 0,   ///< aspect preserved, letterboxed (black bars at the sides)
+  MR_FILL_CROP = 1,  ///< aspect preserved, centre-cropped to fill (no bars)
+} mr_fill_mode;
+
+/// Select MR_FILL_FIT (default) or MR_FILL_CROP. Returns MR_OK, or
+/// MR_ERROR_INVALID_ARGUMENT for an unknown mode. CROP additionally avoids
+/// touching the pixels the crop removes.
+MEDIA_RECORD_API int mr_render_set_fill_mode(mr_render* render, int mode);
 
 /// Copy the handle's last error message into `buffer` (always NUL-terminated).
 MEDIA_RECORD_API int mr_render_last_error(mr_render* render, char* buffer,

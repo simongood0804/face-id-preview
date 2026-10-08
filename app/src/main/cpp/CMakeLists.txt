@@ -45,14 +45,16 @@ target_include_directories(media_record_jni PRIVATE
     "${MR_INCLUDE_DIR}"
 )
 
-# GLESv2：P4-C surface 路径的 CPU 回退分支仍要自己画（mr_render_frame 里上传纹理+绘制）。
-# EGL 已不再需要：display/config/context/window surface 与 PTS/swap 全部由库的
-# mr_render_create / mr_render_frame* 负责。
+# GLESv2：两条路径都要自己画（路 A 绑外部纹理、CPU 回退上传 RGBA 纹理），都在
+#   mr_render_frame 的 draw 回调里执行（库已 makeCurrent）。
+# EGL：路 A 需要 eglGetCurrentDisplay / eglGetNativeClientBufferANDROID / eglCreateImageKHR。
+#   display/config/context/window surface 与 PTS/swap 仍全部归库，我们只借用它的 context。
 target_link_libraries(media_record_jni
     media_record_core_shared
     datachannel
     android
     nativewindow
+    EGL
     GLESv2
     log
 )
