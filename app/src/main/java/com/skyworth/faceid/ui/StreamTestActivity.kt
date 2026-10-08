@@ -142,6 +142,24 @@ class StreamTestActivity : AppCompatActivity() {
     @Volatile
     private var mSessionStartMs = 0L
 
+    // ---- 推流健康 watchdog ----
+    // 背景：上游 StreamImpl::OnReconnectTick() 没有任何调用者 → ReconnectHandler::Tick()
+    // 永不推进 → **掉线后永不重连**（与 reconnect_max_interval_s 取值无关）；而编码器计数
+    // 照涨，外部无从分辨（“假推流”）。库已透出 push_active/push_state/push_frames_sent，
+    // 因此在这里主动检测并重建会话。
+    /** 上次观测到的 push_frames_sent（-1 = 未知）。 */
+    @Volatile
+    private var mLastPushSent = -1L
+    /** 上次 push_frames_sent 发生变化的时刻（判断停滞用）。 */
+    @Volatile
+    private var mLastPushSentAtMs = 0L
+    /** 上次重建时刻（冷却，避免反复重建）。 */
+    @Volatile
+    private var mLastPushRebuildMs = 0L
+    /** 本会话是否曾经进入过 streaming(3)：用于区分“启动中”与“已断开”。 */
+    @Volatile
+    private var mPushEverStreamed = false
+
     /** 面板日志（环形保留最近 N 行）。 */
     private val mLogLines = ArrayDeque<String>()
 
@@ -565,14 +583,58 @@ class StreamTestActivity : AppCompatActivity() {
         val polls = st?.getOrNull(2) ?: -1L
         val emitted = st?.getOrNull(5) ?: -1L
         val surfaceSrc = st?.getOrNull(11) ?: -1L
+        // 推流侧健康（库 2026-10-08 追加的 mr_stats 字段，索引 12~21）
+        val pushPresent = st?.getOrNull(12) ?: -1L
+        val pushActive = st?.getOrNull(13) ?: -1L
+        val pushState = st?.getOrNull(14) ?: -1L
+        val pushSent = st?.getOrNull(15) ?: -1L
+        val pushBytes = st?.getOrNull(17) ?: -1L
         val line = "surface 投 $mPushedFrames 帧（${width}x$height → " +
             "enc ${mSurfaceWidth}x$mSurfaceHeight）drawn=$drawn drop=$drop " +
             "drawFail=$drawFail notifyFail=$notifyFail | " +
             (if (zeroCopy == 1L) "零拷贝" else "CPU(conv %.2fms)".format(lastConvertUs / 1000.0)) +
             " draw %.2fms".format(lastDrawUs / 1000.0) +
             " | enc beats=$beats notify=$notify polls=$polls " +
-            "emitted=$emitted surfSrc=$surfaceSrc"
+            "emitted=$emitted surfSrc=$surfaceSrc" +
+            " | push present=$pushPresent active=$pushActive state=$pushState " +
+            "sent=$pushSent bytes=$pushBytes"
         runOnUiThread { appendLog(line) }
+
+        // ---- 推流 watchdog：会话死了就重建（上游不重连，只能宿主兜底）----
+        // 判据用「本会话确实在推流」（mSessionPushing，由 startSession 按 asset 设置），
+        // 不能用用户期望开关 mWantPush —— 页面被系统恢复/自动拉起时前者为真、后者可能仍是 false。
+        if (pushPresent == 1L && mSessionPushing) {
+            val nowMs = System.currentTimeMillis()
+            if (pushSent != mLastPushSent) {
+                mLastPushSent = pushSent
+                mLastPushSentAtMs = nowMs
+            }
+            // 判据一（权威口径）：active=0（库已放弃），或状态既不是 streaming(3) 也不是
+            // reconnecting(4) —— 这样 5(disconnected) 以及**未在文档中定义的 6** 都能覆盖
+            // （实测服务端 terminated 后库报 state=6，而 active 仍为 1，只认 5 会漏）。
+            // 加“曾经进过 3”这道闩，避免启动初期的 0/1/2 被误判为断开。
+            if (pushState == 3L) mPushEverStreamed = true
+            val stateDead = (pushActive == 0L) ||
+                (mPushEverStreamed && pushState != 3L && pushState != 4L)
+            // 判据二（兜底）：frames_sent 连续 10s 不增长——**仅当该计数器确实在工作时才用**。
+            // ⚠️ 当前库版本 push_frames_sent/push_bytes_sent 恒为 0（与 rtt/loss 同属“上游未回填”），
+            // 若不加 pushSent > 0 这个门槛，判据二会恒真，导致每 30s 误杀一条**健康**会话
+            // （实测：mediamtx 侧明明 is publishing，却被反复拆重建）。
+            val stagnated =
+                pushSent > 0 && mLastPushSentAtMs > 0 && nowMs - mLastPushSentAtMs > 10_000
+            if ((stateDead || stagnated) && nowMs - mLastPushRebuildMs > 30_000) {
+                mLastPushRebuildMs = nowMs
+                mPushEverStreamed = false  // 新会话重新计一次“曾经 streaming”
+                val why = if (stateDead) "active=$pushActive state=$pushState"
+                          else "frames_sent 连续 10s 未增长（$pushSent）"
+                runOnUiThread {
+                    appendLog("推流会话异常（$why，bytes=$pushBytes）→ 重建会话")
+                    // 清掉“当前组合”标记，applyDesiredSession() 才会走「先收尾、完成后重新拉起」
+                    mSessionAsset = null
+                    applyDesiredSession()
+                }
+            }
+        }
 
         // 顶部状态栏的实时摘要（随进度每 ~2 秒刷新；UI 线程切换由 helper 内部处理）
         val elapsedMs = (System.currentTimeMillis() - mSessionStartMs).coerceAtLeast(1L)
@@ -583,6 +645,12 @@ class StreamTestActivity : AppCompatActivity() {
                 append(" · 投 $mPushedFrames 帧")
                 append(if (emitted >= 0) " · 编码 $emitted 帧" else " · 编码统计不可用")
                 if (drop > 0) append(" · 丢 $drop")
+                // 推流侧状态明确标出，避免“计数照涨、其实没推上去”的假象
+                when {
+                    pushPresent != 1L -> Unit
+                    pushActive == 0L || pushState == 5L -> append(" · 推流已断开")
+                    pushState == 4L -> append(" · 推流重连中")
+                }
             }
         )
     }

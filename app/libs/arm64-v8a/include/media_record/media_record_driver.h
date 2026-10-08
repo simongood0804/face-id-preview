@@ -285,6 +285,26 @@ typedef struct mr_stats {
   int64_t muxer_tmpfile_errno;       ///< errno of that tmpfile() (0 = ok)
   int32_t surface_source;            ///< 1 when the source runs in surface mode
   int32_t reserved0;                 ///< alignment padding (append-only ABI)
+
+  // ---- appended 2026-10-08 (append-only: the offsets above are unchanged, but
+  // ---- rebuild against this header — sizeof(mr_stats) grew) ----------------
+  //
+  // Stream-push health. A push session that had silently stopped used to be
+  // indistinguishable from a healthy one from outside: the frame counters keep
+  // climbing (the encoder is fine) while nothing reaches the server.
+  // Reading `push_present == 1 && push_active == 0`, or `push_state == 5`
+  // (disconnected) while `push_frames_sent` stagnates, is the signal that the
+  // session is down and should be rebuilt.
+  int64_t push_present;              ///< 1 when the graph has a StreamPushNode
+  int64_t push_active;               ///< 1 while the node still feeds the session
+  int64_t push_state;                ///< StreamState: 3=streaming, 4=reconnecting, 5=disconnected
+  int64_t push_frames_sent;          ///< packets accepted by the push session
+  int64_t push_frames_dropped;       ///< packets the session dropped
+  int64_t push_bytes_sent;           ///< payload bytes accepted by the session
+  int64_t push_rtt_ms;               ///< 0 = unknown (upstream does not fill it yet)
+  int64_t push_packet_loss_pct_x100; ///< packet loss %, times 100; 0 = unknown
+  int64_t push_uptime_s;             ///< seconds the current session has been up
+  int64_t push_bitrate_kbps;         ///< current target bitrate, when ABR is active
 } mr_stats;
 
 MEDIA_RECORD_API int mr_session_get_stats(mr_session* session, mr_stats* out);

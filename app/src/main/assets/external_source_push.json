@@ -15,7 +15,7 @@
       "type": "VideoEncoderNode",
       "options": {
         "fps": 30,
-        "bitrate": 2000000,
+        "bitrate": 1000000,
         "width": 1280,
         "height": 720,
         "gop_size": 1
@@ -31,8 +31,8 @@
         "remote_url": "http://${PUSH_HOST}:8889/test/whip",
         "video_codec": "h264",
         "audio_codec": "aac",
-        "initial_bitrate_kbps": 1500,
-        "max_bitrate_kbps": 2500,
+        "initial_bitrate_kbps": 800,
+        "max_bitrate_kbps": 1200,
         "min_bitrate_kbps": 200,
         "resolution_width": 1280,
         "resolution_height": 720,

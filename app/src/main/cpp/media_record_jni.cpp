@@ -526,7 +526,9 @@ Java_com_skyworth_faceid_media_MediaRecordNative_nativeGetStats(
     if (rc != MR_OK) {
         LOGE("mr_session_get_stats failed: %d", rc);
     }
-    const jlong vals[12] = {
+    // 索引 0~11：原有字段（offset 未变）；12~21：库 2026-10-08 追加的推流侧健康字段。
+    // Kotlin 端按下标读取，故顺序必须与 mr_stats 声明一致。
+    const jlong vals[22] = {
         st.source_beats,
         st.encoder_notify,
         st.encoder_polls,
@@ -539,10 +541,20 @@ Java_com_skyworth_faceid_media_MediaRecordNative_nativeGetStats(
         st.muxer_tmpfile_ok,
         st.muxer_tmpfile_errno,
         st.surface_source,
+        st.push_present,
+        st.push_active,
+        st.push_state,
+        st.push_frames_sent,
+        st.push_frames_dropped,
+        st.push_bytes_sent,
+        st.push_rtt_ms,
+        st.push_packet_loss_pct_x100,
+        st.push_uptime_s,
+        st.push_bitrate_kbps,
     };
-    jlongArray arr = env->NewLongArray(12);
+    jlongArray arr = env->NewLongArray(22);
     if (arr == nullptr) return nullptr;
-    env->SetLongArrayRegion(arr, 0, 12, vals);
+    env->SetLongArrayRegion(arr, 0, 22, vals);
     return arr;
 }
 
