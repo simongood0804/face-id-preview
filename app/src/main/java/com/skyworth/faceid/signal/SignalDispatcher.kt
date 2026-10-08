@@ -7,7 +7,7 @@ import com.skyworth.faceid.bus.BusHub
 import com.skyworth.faceid.bus.BusPublisher
 import com.skyworth.faceid.bus.BusSubscriber
 import com.skyworth.faceid.bus.ServiceRegistry
-import com.skyworth.faceid.zone.GazeFallpointDetector
+import com.skyworth.faceid.zone.HeadRayZoneDetector
 
 /**
  * 信号转发层核心：信号分发器。
@@ -29,14 +29,14 @@ import com.skyworth.faceid.zone.GazeFallpointDetector
 class SignalDispatcher(
     private val hub: BusHub,
     private val publisher: BusPublisher,
-    /** 算法结果 → 分心输入 的提取器（保持信号层与算法包解耦）。 */
-    private val distractionExtractor: (IFaceIDAlgorithm.FaceIDResult) -> SignalTypes.AlgoDistractionInput =
-        { r -> SignalTypes.AlgoDistractionInput(r.faceId.isNotEmpty(), r.gazeDistracted) },
     /** 分心状态机实例（可注入便于测试）。 */
     private val stateMachine: DistractionStateMachine = DistractionStateMachine(),
-    /** 自研视线落点判定器（[DistractionSource.SELF] 源用），由外部构建注入；null 时 SELF 退化为 SDK。 */
-    private val fallpointDetector: GazeFallpointDetector? = null,
-    /** 分心数据源开关（FACEP-016，默认 [DistractionSource.SDK]），启动时由外部按持久化值注入。 */
+    /**
+     * 头姿射线注意点位判定器（Y=680/Z=750 平面 + 最近点位）。分心判定的**唯一**来源。
+     * 由外部注入；未注入时该模块不输出分心。
+     */
+    private val headRayDetector: HeadRayZoneDetector? = null,
+    /** 分心数据源开关（FACEP-016，仅用于 UI 展示/持久化；判定逻辑已统一为头姿射线）。 */
     private val initialSource: DistractionSource = DistractionSource.SDK
 ) {
     private val TAG = "SignalDispatcher"
@@ -76,9 +76,21 @@ class SignalDispatcher(
     /** SELF 源 headDir 无效诊断日志节流：距上次日志的最小间隔（ms）。 */
     private var lastInvalidLogMs = 0L
 
+    /** 头姿射线判定结果日志节流时间戳（ms）。 */
+    private var lastHeadRayLogMs = 0L
+
+    /** 上次日志时的 headDir[1] 分量（调试用：姿态变化即触发日志）。 */
+    private var lastLoggedDirY = Float.NaN
+
+    /** 上次日志时的 headDir[2] 分量（调试用：姿态变化即触发日志）。 */
+    private var lastLoggedDirZ = Float.NaN
+
     companion object {
         /** SELF 源 headDir 无效诊断日志节流间隔（ms）。 */
         private const val INVALID_LOG_INTERVAL_MS = 5_000L
+
+        /** 调试日志触发阈值：headDir 的 Y/Z 分量变化超过该值即打一条日志。 */
+        private const val DIR_LOG_DELTA = 0.02f
     }
 
     /** 最近一次故障事件（无故障时为 null）。 */
@@ -131,36 +143,87 @@ class SignalDispatcher(
     }
 
     /**
-     * 按当前 [distractionSource] 解析分心输入（FACEP-016）。
-     * - [DistractionSource.SDK]：用算法返回的 `gazeDistracted`（默认）。
-     * - [DistractionSource.SELF]：用自研落点区域判定结果；detector 为 null 时退化为 SDK。
+     * 解析分心输入：**统一采用头姿射线判定**（[HeadRayZoneDetector]）。
+     *
+     * 判定口径（`X = 人的右侧 / Y = 人脸朝向(前) / Z = 向上`，mm）：
+     * 1. 头姿射线（起点 `headHwT`、方向 `headDir`）与 `Y=680mm`（前方 680mm 的竖直平面）
+     *    求交，取交点的**高度 Z**：`Z > 700mm` → 不分心；否则分心。
+     * 2. 分心时再与 `Z=750mm`（高度 750mm 的水平面）求交，落点最近的点位（点2~点6）为分心点位。
+     *
+     * 说明：**不设兜底策略**——不再回退 SDK 的 `gazeDistracted`，也不再使用真实视线
+     * 射线或旧的 xz 四边形区域判定。头姿射线无效时直接按"无人脸"上报由状态机复位。
+     *
+     * 同时把**视线交点高度 Z**（`Y=680` 平面交点 Z）与**分心点位**缓存到
+     * [lastGazeZHeight] / [lastPointId]，供 UI 显示。
      */
     private fun resolveDistractionInput(result: IFaceIDAlgorithm.FaceIDResult): SignalTypes.AlgoDistractionInput {
-        val detector = fallpointDetector
-        if (distractionSource == DistractionSource.SELF && detector != null) {
-            // headDir* 需 flags&HEADFRAME 且 headDirValid==1（底层 cam_transform_enabled 开启）
-            // 隐患修复：hasFace 表示"检测到人脸"（headDir 有效即有人脸），
-            // 与落点是否命中区域无关——落点不命中任何区域 ≠ 无人脸（否则会被状态机按
-            // "无人脸 3s 复位"误复位，导致 SELF 模式分心判定失效）。
-            val valid = (result.flags and FaceFlag.HEADFRAME) != 0 &&
-                result.headDirValid >= 1.0f
-            if (!valid) {
-                // 隐患修复：headDir 无效时节流记日志，提示可能底层 cam_transform_enabled 未开启
-                val nowMs = System.currentTimeMillis()
-                if (nowMs - lastInvalidLogMs > INVALID_LOG_INTERVAL_MS) {
-                    Log.w(TAG, "SELF: headDir invalid (flags HEADFRAME=${(result.flags and FaceFlag.HEADFRAME) != 0}, " +
-                        "headDirValid=${result.headDirValid}); check cam_transform_enabled")
-                    lastInvalidLogMs = nowMs
+        val headRay = headRayDetector
+            ?: return SignalTypes.AlgoDistractionInput.NO_FACE
+
+        // 头姿射线有效条件：flags&HEADFRAME 且 headDirValid==1（底层 cam_transform_enabled 开启）
+        val valid = (result.flags and FaceFlag.HEADFRAME) != 0 &&
+            result.headDirValid >= 1.0f
+
+        val hp = headRay.update(result.headHwTSafe, result.headDirSafe, valid)
+
+        // 缓存供 UI 显示（无效时置 NaN / NONE）
+        lastGazeZHeight = hp.intersectY68Z
+        lastPointId = hp.pointId
+
+        if (valid) {
+            val nowMs = System.currentTimeMillis()
+            // 调试模式：headDir 三分量变化超过阈值即打日志（不限 5s 节流），
+            // 便于一次采集正坐/抬头/低头多组姿态数据；无变化时按 5s 节流。
+            val d = result.headDirSafe
+            val changed = d != null && d.size >= 3 &&
+                (Math.abs(d[1] - lastLoggedDirY) > DIR_LOG_DELTA ||
+                    Math.abs(d[2] - lastLoggedDirZ) > DIR_LOG_DELTA)
+            if (changed || nowMs - lastHeadRayLogMs > INVALID_LOG_INTERVAL_MS) {
+                val t = result.headHwTSafe
+                val tStr = if (t != null && t.size >= 3) "[%.1f, %.1f, %.1f]".format(t[0], t[1], t[2]) else "null"
+                val dStr = if (d != null && d.size >= 3) "[%.3f, %.3f, %.3f]".format(d[0], d[1], d[2]) else "null"
+                Log.i(TAG, "headRay: distracted=${hp.isDistracted} gazeZHeight=${hp.intersectY68Z} " +
+                    "point=${headRay.pointName(hp.pointId)}" +
+                    (hp.intersectZ75?.let { " xy@Z750=(${it[0]}, ${it[1]})" } ?: "") +
+                    " | headHwT=$tStr headDir=$dStr " +
+                    "yaw=${result.headDirYaw} pitch=${result.headDirPitch}")
+                if (d != null && d.size >= 3) {
+                    lastLoggedDirY = d[1]
+                    lastLoggedDirZ = d[2]
                 }
+                lastHeadRayLogMs = nowMs
             }
-            val pred = detector.update(result.headHwTSafe, result.headDirSafe, valid)
-            return SignalTypes.AlgoDistractionInput(
-                hasFace = valid,                        // 有人脸（headDir 有效）
-                gazeDistracted = if (pred.isDistracted) 1f else 0f
-            )
+        } else {
+            val nowMs = System.currentTimeMillis()
+            if (nowMs - lastInvalidLogMs > INVALID_LOG_INTERVAL_MS) {
+                Log.w(TAG, "headRay invalid: flags HEADFRAME=${(result.flags and FaceFlag.HEADFRAME) != 0}, " +
+                    "headDirValid=${result.headDirValid}; check cam_transform_enabled")
+                lastInvalidLogMs = nowMs
+            }
         }
-        return distractionExtractor(result)
+
+        // hasFace 表示"检测到人脸"（headDir 有效即有人脸），与是否命中点位无关
+        return SignalTypes.AlgoDistractionInput(
+            hasFace = valid,
+            gazeDistracted = if (hp.isDistracted) 1f else 0f,
+            pointId = hp.pointId
+        )
     }
+
+    /**
+     * 最近一帧的**视线交点高度 Z**（头姿射线与前方 Y=680mm 竖直平面交点的高度，mm）。
+     * 无效帧为 [Float.NaN]。供 UI 实时显示（显示名 "gazeZ"）。
+     */
+    @Volatile
+    var lastGazeZHeight: Float = Float.NaN
+        private set
+
+    /**
+     * 最近一帧命中的**分心点位编号**（2~6）；未分心/无效为 -1。供 UI 实时显示。
+     */
+    @Volatile
+    var lastPointId: Int = -1
+        private set
 
     /**
      * 直接处理一条算法结果消息（外部推送路径）。

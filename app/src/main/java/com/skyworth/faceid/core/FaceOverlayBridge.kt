@@ -27,6 +27,19 @@ class FaceOverlayBridge(
 
     private val TAG = "FaceOverlayBridge"
 
+    /**
+     * 最近一帧的**视线 Z 轴高度**（头姿射线与 Y=680mm 平面交点高度，mm），NaN=无效。
+     * 由调用方（Activity）在每帧从 [com.skyworth.faceid.signal.SignalDispatcher] 同步。
+     */
+    @Volatile
+    var gazeZHeight: Float = Float.NaN
+
+    /**
+     * 最近一帧命中的**分心点位编号**（2~6），-1=未命中。由调用方每帧同步。
+     */
+    @Volatile
+    var pointId: Int = -1
+
     /** 功能模块分区。 */
     enum class Module { RECOGNITION, FATIGUE, DISTRACTION, BEHAVIOR, FUSION }
 
@@ -145,7 +158,15 @@ class FaceOverlayBridge(
                 gazePitch = result.gazePitch,
                 gazeCalibrated = result.gazeCalibrated,
                 gazeDistracted = if (distractActive) 1f else 0f,
-                zoneId = result.zoneId
+                zoneId = result.zoneId,
+                // 头姿射线判定输出：视线 Z 轴高度（Y=680 交点高度）+ 分心点位
+                gazeZHeight = gazeZHeight,
+                pointId = pointId,
+                // face-sdk 1.0.3：MPIIGaze 眼图（右下角可视化）
+                eyePatch = result.eyePatch,
+                eyePatchValid = result.eyePatchValid,
+                // 头朝向相对正视基准的偏差（俯视小罗盘）
+                headDeviation = result.headDeviation
             )
 
             // 行为监测：仅画框，只需 rect/type/confidence，其余默认
@@ -155,19 +176,16 @@ class FaceOverlayBridge(
                 confidence = result.confidence
             )
 
-            // 融合监测（FACEP-018）：预览仅绘制 68 点密集地标 + 头姿坐标轴 + zone 面板。
-            // 填充 denseLandmarks(68点)、keypoints(头姿起点)、headpose、zoneId。
+            // 融合监测（FACEP-018）：预览仅绘制头朝向罗盘（Y 偏航 / P 俯仰）。
+            // 不画 68 点地标、人脸框、关键点，避免遮挡画面。
             Module.FUSION -> FaceOverlayView.FaceBox(
                 rect = rect,
                 type = overlayType,
                 confidence = result.confidence,
-                keypoints = result.keypoints,
-                denseLandmarks = result.landmarks,
-                pitch = result.headposePitch,
-                yaw = result.headposeYaw,
-                roll = result.headposeRoll,
                 gazeDistracted = if (distractActive) 1f else 0f,
-                zoneId = result.zoneId
+                zoneId = result.zoneId,
+                // 头朝向相对正前方的偏差（Y/P 罗盘）
+                headDeviation = result.headDeviation
             )
         }
     }

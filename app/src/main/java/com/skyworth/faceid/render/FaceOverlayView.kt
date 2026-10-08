@@ -102,30 +102,6 @@ class FaceOverlayView @JvmOverloads constructor(
         strokeJoin = Paint.Join.ROUND
     }
 
-    /** 坐标系 Y 轴画笔（绿色）。 */
-    private val mAxisYPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        color = Color.GREEN
-        style = Paint.Style.STROKE
-        strokeWidth = 3f
-        strokeCap = Paint.Cap.ROUND
-    }
-
-    /** 坐标系 Z 轴画笔（蓝色）。 */
-    private val mAxisZPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        color = Color.BLUE
-        style = Paint.Style.STROKE
-        strokeWidth = 3f
-        strokeCap = Paint.Cap.ROUND
-    }
-
-    /** 视线方向线画笔（橙色）。 */
-    private val mGazePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        color = Color.argb(255, 255, 140, 0)  // Orange
-        style = Paint.Style.STROKE
-        strokeWidth = 4f
-        strokeCap = Paint.Cap.ROUND
-    }
-
     /** 分心提示文字画笔（红色）。 */
     private val mDistractedPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         color = Color.RED
@@ -142,12 +118,80 @@ class FaceOverlayView @JvmOverloads constructor(
 
     // 预计算弧度常量，避免每帧重复 Math.toRadians
     private val DEG2RAD = (Math.PI / 180.0).toFloat()
-    private val Y_BASE_RAD = (-90f * DEG2RAD)  // Y 轴默认垂直向上
-    private val Z_BASE_RAD = (180f * DEG2RAD)   // Z 轴默认水平向左
-    /** π 弧度，用于轴的 180° 反向。 */
-    private val PI_RAD = (Math.PI).toFloat()
-    /** 轴端点到原点最小 View 长度(px)：过短时视为退化，不画箭头，避免 atan2(0,0) 异常。 */
-    private val MIN_ARROW_LEN = 6f
+
+    // ===== 俯视小罗盘（头朝向正向示意，基于车辆外参正视基准）=====
+    /** 罗盘底盘填充。 */
+    private val mCompassBgPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = Color.argb(170, 0, 0, 0)
+        style = Paint.Style.FILL
+    }
+    /** 罗盘外圈描边。 */
+    private val mCompassRingPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = Color.argb(200, 160, 200, 255)
+        style = Paint.Style.STROKE
+        strokeWidth = 2f
+    }
+    /** 罗盘十字参考线（前后左右）。 */
+    private val mCompassCrossPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = Color.argb(120, 200, 200, 200)
+        style = Paint.Style.STROKE
+        strokeWidth = 1.5f
+    }
+    /** 罗盘"正前"基准线（固定指向画面上方）。 */
+    private val mCompassFwdPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = Color.argb(220, 120, 255, 120)
+        style = Paint.Style.STROKE
+        strokeWidth = 3f
+        strokeCap = Paint.Cap.ROUND
+    }
+    /** 罗盘头朝向箭头。 */
+    private val mCompassHeadPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = Color.argb(255, 255, 90, 90)
+        style = Paint.Style.STROKE
+        strokeWidth = 4f
+        strokeCap = Paint.Cap.ROUND
+    }
+    /** 罗盘文字。 */
+    private val mCompassTextPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = Color.WHITE
+        textSize = 20f
+    }
+    /** 罗盘诊断日志节流时间戳。 */
+    private var mCompassLogMs = 0L
+
+    // ===== MPIIGaze 眼图可视化（face-sdk 1.0.3 eyePatch）=====
+    /**
+     * 眼图复用 Bitmap：**左右眼各一个独立实例**。
+     *
+     * 注意：不能两眼共用一个 Bitmap。硬件加速下 canvas.drawBitmap 是延迟光栅化的，
+     * 若两轮循环复用同一实例，两次绘制实际执行时都指向该实例的最终内容 →
+     * 左眼会显示成右眼的样子（两眼图相同）。故每眼独占一个 Bitmap。
+     */
+    private val mEyePatchBitmaps = arrayOf(
+        android.graphics.Bitmap.createBitmap(EYE_PATCH_W, EYE_PATCH_H, android.graphics.Bitmap.Config.ARGB_8888),
+        android.graphics.Bitmap.createBitmap(EYE_PATCH_W, EYE_PATCH_H, android.graphics.Bitmap.Config.ARGB_8888)
+    )
+    /** 眼图像素复用缓冲（60×36），仅 UI 线程使用。 */
+    private val mEyePatchPixels = IntArray(EYE_PATCH_W * EYE_PATCH_H)
+    /** 眼图绘制画笔（关闭抗锯齿，保持像素清晰）。 */
+    private val mEyePatchPaint = Paint().apply {
+        isAntiAlias = false
+        isFilterBitmap = false
+    }
+    /** 眼图外框画笔。 */
+    private val mEyePatchBorderPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = Color.argb(220, 0, 255, 200)
+        style = Paint.Style.STROKE
+        strokeWidth = 2f
+    }
+    /** 眼图标签画笔。 */
+    private val mEyePatchLabelPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = Color.argb(230, 0, 255, 200)
+        textSize = 20f
+        style = Paint.Style.FILL
+    }
+    /** 眼图放大倍数（36×60 原始尺寸过小，放大便于观察）。 */
+    private val EYE_PATCH_SCALE = 3
 
     /**
      * 更新人脸列表并重绘。
@@ -256,55 +300,62 @@ class FaceOverlayView @JvmOverloads constructor(
                 }
 
                 DRAW_MODE_DISTRACTION -> {
-                    // 分心监测：头姿 + 视线 + 关键 5 点 + 头姿/视线箭头
+                    // 分心监测：头姿/视线 Z 高度 + 点位 + 关键 5 点 + 头姿/视线箭头
                     // （不画人脸框/名称/置信度/眼嘴状态）
                     val poseHeight = mPosePaint.textSize
+                    // 两行文字纵向排布（互不重叠）：
+                    //   判定块在上：背景 [top - 2h - 12, top - h - 6]，基线 top - h - 12
+                    //   头姿块在下：背景 [top - h - 6, top]，       基线 top - 6
+                    // 注意：每块文字必须完整落在自己的背景框内，否则会出现上下行重叠。
 
-                    // 头姿信息（小字，画面上方）
+                    // 第一行（重点）：视线 Z 轴高度 + 分心点位
+                    val zText = if (face.gazeZHeight.isNaN()) {
+                        "gazeZ: --"
+                    } else {
+                        "gazeZ: %.0fmm".format(face.gazeZHeight)
+                    }
+                    val ptText = if (face.pointId > 0) "点${face.pointId}" else "-"
+                    val judgeText = "$zText   point: $ptText"
+                    val judgeWidth = mPosePaint.measureText(judgeText)
+                    canvas.drawRect(left, top - poseHeight * 2 - 12, left + judgeWidth + 8,
+                        top - poseHeight - 6, mBgPaint)
+                    canvas.drawText(judgeText, left + 4, top - poseHeight - 12, mPosePaint)
+
+                    // 第二行：头姿角原始值
                     val poseText = "P:%.0f Y:%.0f R:%.0f".format(face.pitch, face.yaw, face.roll)
                     val poseWidth = mPosePaint.measureText(poseText)
-                    canvas.drawRect(left, top - poseHeight * 2 - 12, left + poseWidth + 8,
-                        top - poseHeight - 6, mBgPaint)
-                    canvas.drawText(poseText, left + 4, top - poseHeight - 1, mPosePaint)
-
-                    // 视线信息（小字，头姿下方）
-                    val gazeText = "G:yaw%.0f pit%.0f v%d c%d d%d".format(
-                        face.gazeYaw, face.gazePitch,
-                        if (face.gazeValid > 0f) 1 else 0,
-                        if (face.gazeCalibrated > 0f) 1 else 0,
-                        if (face.gazeDistracted > 0f) 1 else 0)
-                    val gazeWidth = mPosePaint.measureText(gazeText)
-                    canvas.drawRect(left, top - poseHeight - 8, left + gazeWidth + 8, top, mBgPaint)
-                    canvas.drawText(gazeText, left + 4, top - poseHeight - 3, mPosePaint)
+                    canvas.drawRect(left, top - poseHeight - 6, left + poseWidth + 8, top, mBgPaint)
+                    canvas.drawText(poseText, left + 4, top - 6, mPosePaint)
 
                     // 绘制 5 关键点（紫色，瞳孔/鼻尖/嘴角）
                     face.keypoints?.forEach { pt ->
                         canvas.drawCircle(pt.x * scaleX, pt.y * scaleY, 4f, mKeypointPaint)
                     }
 
-                    // 头姿坐标轴 + 视线（仅 DETECTED）
-                    if (face.type == FaceType.DETECTED) {
-                        drawHeadPoseArrow(canvas, face, scaleX, scaleY)
-                        drawGaze(canvas, face, scaleX, scaleY)
-                    }
+                    // 头姿坐标轴已按需求移除；头朝向以左下角俯视罗盘示意
                 }
 
                 DRAW_MODE_FUSION -> {
-                    // 融合监测（FACEP-018）：仅绘制 68 点密集地标 + 头姿坐标轴。
-                    // 不画人脸框/名称/5点/视线线/眼嘴文字，避免遮挡画面。
-                    // 头姿坐标轴无条件绘制（不论 detected/spoof/未录入），供分心/头姿判定持续参考。
-                    face.denseLandmarks?.forEach { pt ->
-                        canvas.drawCircle(pt.x * scaleX, pt.y * scaleY, 3f, mLandmarkPaint)
-                    }
-                    drawHeadPoseArrow(canvas, face, scaleX, scaleY)
+                    // 融合监测（FACEP-018）：仅绘制头朝向罗盘。
+                    // 不画人脸框/名称/5点/68点地标/视线线/眼嘴文字，避免遮挡画面。
+                    // 罗盘在固定屏幕位置绘制（见下方），不随人脸移动。
                 }
             }
         }
 
-        // 分心模式：左侧 zone 面板 + 固定分心提示
+        // 分心模式：左侧 zone 面板 + 固定分心提示 + 右下角 MPIIGaze 眼图 + 左下角俯视罗盘
         if (drawMode == DRAW_MODE_DISTRACTION) {
             drawZonePanel(canvas, faces)
             drawDistracted(canvas)
+            faces.firstOrNull()?.let {
+                drawEyePatches(canvas, it)
+                drawHeadingCompass(canvas, it)
+            }
+        }
+
+        // 融合监测模式：同样在左下角绘制 Y/P 两个罗盘（不画 68 点地标）
+        if (drawMode == DRAW_MODE_FUSION) {
+            faces.firstOrNull()?.let { drawHeadingCompass(canvas, it) }
         }
     }
 
@@ -323,6 +374,192 @@ class FaceOverlayView @JvmOverloads constructor(
         canvas.drawRect(x - 8f, y - mDistractedPaint.textSize - 8f,
             x + w + 8f, y + 8f, mBgPaint)
         canvas.drawText(text, x, y, mDistractedPaint)
+    }
+
+    /**
+     * 绘制**两个独立罗盘**，分别表达 Y（偏航）/ P（俯仰）与"正前方"的关系。
+     *
+     * 数据：`headDeviation = [pitch, yaw, roll]`（度，相对正前方；正视为 0）。
+     * roll 无法由世界系方向向量得到（只有 yaw/pitch 两个自由度），故**不绘制 R 罗盘**。
+     *
+     * 画法统一（绿线 = 正前方基准，红箭头 = 当前姿态）：
+     * - **Y 偏航**（俯视图）：基准朝上（正前），红箭头随 `yaw` 偏转；右转 → 偏右。
+     * - **P 俯仰**（侧视图）：基准水平指向右（正前），红箭头随 `pitch` 上下偏；抬头 → 偏上。
+     *
+     * 两个罗盘横向并排放在**左下角**，各带标题与角度值。
+     */
+    private fun drawHeadingCompass(canvas: Canvas, face: FaceBox) {
+        val dev = face.headDeviation
+        if (dev == null || dev.size < 3) {
+            // 诊断日志（节流）：headDeviation 为空时无法绘制罗盘
+            val now = System.currentTimeMillis()
+            if (now - mCompassLogMs > 5000L) {
+                mCompassLogMs = now
+                android.util.Log.w("FaceOverlayView",
+                    "drawHeadingCompass skip: headDeviation=${dev?.contentToString()} view=${width}x${height}")
+            }
+            return
+        }
+
+        val pitch = dev[0]
+        val yaw = dev[1]
+
+        val radius = 44f
+        val gap = 24f
+        val titleH = 20f
+        val valueH = 18f
+        val margin = 20f
+        val blockW = radius * 2
+        val totalW = blockW * 2 + gap
+        val totalH = titleH + radius * 2 + valueH
+        // 左下角并排
+        val left0 = margin
+        val top0 = height - totalH - margin
+        if (left0 + totalW > width || top0 < 0) return
+
+        // Y 偏航（俯视图）：基准朝上 = 正前（yaw=0），右转为正 → 顺时针偏右。
+        // 关键：箭头必须与基准线(0,-1)**同起点**起算，否则两指针夹角不等于 yaw。
+        //   yaw=0   → (0,-1) 朝上（与基准重合）
+        //   yaw=+90 → (1, 0) 朝右
+        val yawRad = Math.toRadians(yaw.toDouble())
+        drawSingleAxisCompass(
+            canvas,
+            cx = left0 + radius,
+            cy = top0 + titleH + radius,
+            radius = radius,
+            title = "Y 偏航",
+            value = yaw,
+            dirX = Math.sin(yawRad),
+            dirY = -Math.cos(yawRad),
+            baseX = 0.0,
+            baseY = -1.0
+        )
+
+        // P 俯仰（侧视图）：基准朝右 = 正前（pitch=0），抬头为正 → 逆时针偏上。
+        // 同样要求与基准线(1,0)同起点：
+        //   pitch=0   → (1, 0) 朝右（与基准重合）
+        //   pitch=+90 → (0,-1) 朝上
+        val pitchRad = Math.toRadians(pitch.toDouble())
+        drawSingleAxisCompass(
+            canvas,
+            cx = left0 + blockW + gap + radius,
+            cy = top0 + titleH + radius,
+            radius = radius,
+            title = "P 俯仰",
+            value = pitch,
+            dirX = Math.cos(pitchRad),
+            dirY = -Math.sin(pitchRad),
+            baseX = 1.0,
+            baseY = 0.0
+        )
+    }
+
+    /**
+     * 绘制单个单轴罗盘（底盘 + 十字 + 绿色基准线 + 红色姿态箭头 + 标题 + 角度值）。
+     *
+     * @param cx,cy 圆心（View 坐标）
+     * @param radius 半径
+     * @param title 标题（如 "Y 偏航"）
+     * @param value 该轴角度（度）
+     * @param dirX,dirY 红色箭头方向（单位向量，**已含屏幕 y 轴向下**的处理）
+     * @param baseX,baseY 绿色基准线方向（单位向量，同样为屏幕方向）
+     */
+    private fun drawSingleAxisCompass(
+        canvas: Canvas,
+        cx: Float,
+        cy: Float,
+        radius: Float,
+        title: String,
+        value: Float,
+        dirX: Double,
+        dirY: Double,
+        baseX: Double,
+        baseY: Double
+    ) {
+        // 底盘 + 外圈
+        canvas.drawCircle(cx, cy, radius, mCompassBgPaint)
+        canvas.drawCircle(cx, cy, radius, mCompassRingPaint)
+        // 十字参考
+        canvas.drawLine(cx, cy - radius, cx, cy + radius, mCompassCrossPaint)
+        canvas.drawLine(cx - radius, cy, cx + radius, cy, mCompassCrossPaint)
+
+        val len = radius - 6f
+
+        // 绿色基准线（"正前方"）
+        val bex = cx + (baseX * len).toFloat()
+        val bey = cy + (baseY * len).toFloat()
+        canvas.drawLine(cx, cy, bex, bey, mCompassFwdPaint)
+        drawArrowHead(canvas, bex, bey, cx, cy, mCompassFwdPaint)
+
+        // 红色姿态箭头
+        val tex = cx + (dirX * len).toFloat()
+        val tey = cy + (dirY * len).toFloat()
+        canvas.drawLine(cx, cy, tex, tey, mCompassHeadPaint)
+        drawArrowHead(canvas, tex, tey, cx, cy, mCompassHeadPaint)
+
+        // 标题（居中于罗盘上方）
+        val tw = mCompassTextPaint.measureText(title)
+        canvas.drawText(title, cx - tw / 2f, cy - radius - 6f, mCompassTextPaint)
+
+        // 角度值（居中于罗盘下方）
+        val vt = "%+.0f°".format(value)
+        val vw = mCompassTextPaint.measureText(vt)
+        canvas.drawText(vt, cx - vw / 2f, cy + radius + 18f, mCompassTextPaint)
+    }
+
+    /**
+     * 在预览右下角绘制 MPIIGaze 归一化眼图（face-sdk 1.0.3 `eyePatch`）。
+     *
+     * 原始 patch 为每眼 36 行 × 60 列灰度字节（已直方图均衡、不镜像），
+     * 此处按 [EYE_PATCH_SCALE] 放大显示，左眼在上、右眼在下；
+     * 无效眼（`eyePatchValid` 对应位为 0）不绘制，并在框内标注 "N/A"。
+     *
+     * 固定屏幕位置绘制（不随人脸移动），避免遮挡人脸区域。
+     */
+    private fun drawEyePatches(canvas: Canvas, face: FaceBox) {
+        val patches = face.eyePatch ?: return
+        val dstW = EYE_PATCH_W * EYE_PATCH_SCALE
+        val dstH = EYE_PATCH_H * EYE_PATCH_SCALE
+        val margin = 16f
+        val labelH = mEyePatchLabelPaint.textSize
+        val gap = 8f
+
+        // 右下角起始位置（两眼纵向排列）
+        val left = width - dstW - margin
+        val top = height - (dstH * 2 + gap + labelH * 2) - margin
+
+        // [0]=左眼、[1]=右眼
+        for (eye in 0 until 2) {
+            if (eye >= patches.size) continue
+            val patch = patches[eye]
+            val valid = (face.eyePatchValid and (1 shl eye)) != 0
+            val y = top + eye * (dstH + gap + labelH)
+
+            // 标签
+            canvas.drawText(if (eye == 0) "L-EYE" else "R-EYE", left, y + labelH - 2, mEyePatchLabelPaint)
+
+            val imgTop = y + labelH
+            val imgRect = RectF(left, imgTop, left + dstW, imgTop + dstH)
+
+            if (valid && patch.size >= EYE_PATCH_W * EYE_PATCH_H) {
+                // 灰度字节 → ARGB 像素（复用缓冲，避免每帧分配）
+                for (i in mEyePatchPixels.indices) {
+                    val g = patch[i].toInt() and 0xFF
+                    mEyePatchPixels[i] = (0xFF shl 24) or (g shl 16) or (g shl 8) or g
+                }
+                // 每眼用独立 Bitmap（见 mEyePatchBitmaps 注释：共用会因延迟光栅化导致两眼相同）
+                val bmp = mEyePatchBitmaps[eye]
+                bmp.setPixels(
+                    mEyePatchPixels, 0, EYE_PATCH_W, 0, 0, EYE_PATCH_W, EYE_PATCH_H
+                )
+                canvas.drawBitmap(bmp, null, imgRect, mEyePatchPaint)
+                canvas.drawRect(imgRect, mEyePatchBorderPaint)
+            } else {
+                // 无效：画空框 + "N/A"
+                canvas.drawRect(imgRect, mEyePatchBorderPaint)
+                canvas.drawText("N/A", left + 4, imgTop + labelH + 4, mEyePatchLabelPaint)
+            }
+        }
     }
 
     /**
@@ -376,148 +613,14 @@ class FaceOverlayView @JvmOverloads constructor(
     }
 
     // ============================================================
-    // 视线追踪可视化
+    // 视线追踪可视化（已按需求移除：不再绘制视线射线）
     // ============================================================
-
-    /**
-     * 绘制左右眼两条视线方向线 + 分心状态提示。
-     * 左眼起点 = 5 关键点 index 0（左眼中心），右眼起点 = index 1（右眼中心），
-     * 各自以同一 gazeYaw/gazePitch 方向延伸（橙色线）。
-     * 分心时显示红色 "DISTRACTED" 提示。
-     */
-    private fun drawGaze(canvas: Canvas, face: FaceBox, scaleX: Float, scaleY: Float) {
-        if (face.gazeValid <= 0f) return
-
-        val faceW = face.rect.right - face.rect.left
-        val gazeLen = faceW * 1.6f  // 视线线比头姿线更长，便于观察
-        val gazeYawRad = face.gazeYaw * DEG2RAD
-        val gazePitchRad = face.gazePitch * DEG2RAD
-        val dx = sin(gazeYawRad) * gazeLen * scaleX
-        val dy = sin(-gazePitchRad) * gazeLen * scaleY
-
-        // 左右眼起点：5 关键点（index 0=左眼, 1=右眼，即瞳孔位置）。
-        // 算法只输出一个视线方向（gazeYaw/gazePitch），因此左右眼共用同一方向，
-        // 但各自从自己的瞳孔点出发画线。
-        val kps = face.keypoints
-        val leftEye = when {
-            kps != null && kps.size >= 1 -> kps[0]
-            else -> PointF(face.rect.left + (face.rect.right - face.rect.left) * 0.4f,
-                           (face.rect.top + face.rect.bottom) / 2f)
-        }
-        val rightEye = when {
-            kps != null && kps.size >= 2 -> kps[1]
-            else -> PointF(face.rect.left + (face.rect.right - face.rect.left) * 0.6f,
-                           (face.rect.top + face.rect.bottom) / 2f)
-        }
-
-        drawSingleGaze(canvas, leftEye, dx, dy, scaleX, scaleY)
-        drawSingleGaze(canvas, rightEye, dx, dy, scaleX, scaleY)
-    }
-
-    /**
-     * 以单只眼睛为起点绘制一条视线线。
-     *
-     * @param eye 眼睛起点（原图坐标）
-     * @param dx  水平方向增量（已缩放）
-     * @param dy  垂直方向增量（已缩放）
-     */
-    private fun drawSingleGaze(canvas: Canvas, eye: PointF, dx: Float, dy: Float,
-                               scaleX: Float, scaleY: Float) {
-        val sx = eye.x * scaleX
-        val sy = eye.y * scaleY
-        val ex = sx + dx
-        val ey = sy + dy
-        canvas.drawLine(sx, sy, ex, ey, mGazePaint)
-        drawArrowHead(canvas, ex, ey, sx, sy, mGazePaint)
-    }
 
     // ============================================================
     // 头姿朝向箭头 + 坐标系
     // ============================================================
 
-    /**
-     * 绘制头姿三维坐标轴（2D 三角函数方案，FACEP-007）。
-     *
-     * 画面配色与方向（画笔颜色：mAxisX=红 / mAxisY=绿 / mAxisZ=蓝，绘制时按角色重排）：
-     *   - 红(mAxisX) = 脸部朝向，由 yaw/pitch 决定；
-     *   - 蓝(mAxisZ) = 竖直向上，由 roll 控制（位于原 Y 逻辑位置）；
-     *   - 绿(mAxisY) = 水平，由 roll 控制，基准取反默认朝右，长度为红/蓝的 0.7。
-     * 角度处理：yaw 取负(前置镜像)、roll 取负；绘制顺序 绿→蓝→红(红最顶层，避免被遮挡)。
-     *
-     * 原点为两眼中间点（从 5 关键点中取左眼/右眼），fallback 到人脸框中心。
-     * 所有坐标在原图空间，需乘以 scaleX/scaleY 缩放至 View 空间。
-     */
-    private fun drawHeadPoseArrow(canvas: Canvas, face: FaceBox, scaleX: Float, scaleY: Float) {
-        // 起点：两眼中间点（keypoints[0]=左眼, keypoints[1]=右眼）
-        val startX: Float
-        val startY: Float
-        val kps = face.keypoints
-        if (kps != null && kps.size >= 2) {
-            startX = (kps[0].x + kps[1].x) / 2f
-            startY = (kps[0].y + kps[1].y) / 2f
-        } else {
-            startX = (face.rect.left + face.rect.right) / 2f
-            startY = (face.rect.top + face.rect.bottom) / 2f
-        }
-
-        val faceW = face.rect.right - face.rect.left
-        val axisLen = faceW * 1.2f
-
-        // ---- 头姿角极性说明（勿随意改动，方向均经真机校准）----
-        // face.yaw/pitch/roll 为 SDK 原始角度(度)；此处仅做方向/镜像处理：
-        //  - yawRad = -face.yaw  ：前置摄像头画面为镜像，转头方向取反；
-        //  - pitchRad = face.pitch：原值；下方红轴竖直投影 sin(-pitchRad) 等于 -sin(pitch)，
-        //    即 pitch 方向在竖直上又反了一次（点头方向如反，改这里而非下面公式）；
-        //  - rollRad = -face.roll ：roll 取反，翻转歪头旋转方向（歪头方向如反，改这里）。
-        // 注意：若未来 SDK 侧 headYaw/headPitch/headRoll 已按 DMS/镜像约定输出过方向，
-        //       上面这些取负会造成"双重反转"、方向反掉——需在升级 SDK 后整体复核。
-        val yawRad = (-face.yaw) * DEG2RAD
-        val pitchRad = face.pitch * DEG2RAD
-        val rollRad = (-face.roll) * DEG2RAD
-
-        // 缩放至 View 空间
-        val sx = startX * scaleX
-        val sy = startY * scaleY
-
-        // 绘制原点圆点（白色）
-        val originPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-            color = Color.WHITE; style = Paint.Style.FILL
-        }
-        canvas.drawCircle(sx, sy, 5f, originPaint)
-
-        // 绘制顺序（底层→顶层）＝ 绿 → 蓝 → 红：红(朝向)最后画在最顶层，
-        // 这样红绿/红蓝交叉处露出红线，不被横向/竖向轴遮挡。
-        // --- 水平轴（绿色）：原蓝色(Z)位置的水平向，仅 roll 控制旋转。
-        //    取反：基准角 Z_BASE_RAD(180°朝左) 加 π(180°) 反向 → 默认朝右。
-        //    修复隐患：与红/蓝一致补乘 scaleX/scaleY，避免非 1:1 缩放下长度/位置错位。 ---
-        val zAngle = Z_BASE_RAD + PI_RAD + rollRad
-        val zAxisLen = axisLen * 0.7f
-        val zEx = sx + cos(zAngle) * zAxisLen * scaleX
-        val zEy = sy + sin(zAngle) * zAxisLen * scaleY
-        canvas.drawLine(sx, sy, zEx, zEy, mAxisYPaint)
-        drawArrowHead(canvas, zEx, zEy, sx, sy, mAxisYPaint)
-
-        // --- 竖直轴（蓝色）：始终指向上方，仅 roll 控制旋转。
-        //    注：蓝色移到原本绿色(Y)所在的位置（竖直向上），相对三轴布局不变。 ---
-        val yAngle = Y_BASE_RAD + rollRad
-        val yEx = sx + cos(yAngle) * axisLen * scaleX
-        val yEy = sy + sin(yAngle) * axisLen * scaleY
-        canvas.drawLine(sx, sy, yEx, yEy, mAxisZPaint)
-        drawArrowHead(canvas, yEx, yEy, sx, sy, mAxisZPaint)
-
-        // --- X 轴（红色）：脸部朝向，由 yaw/pitch 决定（最后绘制=最顶层） ---
-        // 修复隐患：正直(yaw/pitch≈0)时该轴端点≈原点，长度过小会画出方向固定的异常
-        // 小三角(atan2(0,0))；故先算 View 空间长度，过小则只画短线、跳过箭头。
-        val dx = sin(yawRad) * axisLen
-        val dy = sin(-pitchRad) * axisLen
-        val xEx = sx + dx * scaleX
-        val xEy = sy + dy * scaleY
-        canvas.drawLine(sx, sy, xEx, xEy, mAxisXPaint)
-        val redLenV = hypot(xEx - sx, xEy - sy)
-        if (redLenV >= MIN_ARROW_LEN) {
-            drawArrowHead(canvas, xEx, xEy, sx, sy, mAxisXPaint)
-        }
-    }
+    // 头姿三维坐标轴绘制已按需求移除（头朝向改由左下角俯视罗盘示意）。
 
     /**
      * 在线段末端绘制三角箭头。
@@ -567,10 +670,28 @@ class FaceOverlayView @JvmOverloads constructor(
         val gazeDistracted: Float = 0f,
         /** DMS 分区 ID。 */
         val zoneId: Float = 0f,
+        /** 视线 Z 轴高度（头姿射线与 Y=680mm 平面交点高度，mm）；NaN=无效。 */
+        val gazeZHeight: Float = Float.NaN,
+        /** 分心点位编号（2~6）；-1=未命中。 */
+        val pointId: Int = -1,
         /** 眼睛是否睁开（true=睁眼，false=闭眼）。 */
         val eyeOpen: Boolean = true,
         /** 嘴巴是否张开（true=张嘴，false=闭嘴）。 */
-        val mouthOpen: Boolean = false
+        val mouthOpen: Boolean = false,
+        /**
+         * MPIIGaze 归一化眼部灰度 patch（face-sdk 1.0.3）。
+         * 每眼 36×60 = 2160 字节；[0]=左眼、[1]=右眼。
+         * 由 Overlay 转 Bitmap 绘制在预览角落（分心模式）。
+         */
+        val eyePatch: Array<ByteArray>? = null,
+        /** 眼图有效性位标志：bit0=左眼有效，bit1=右眼有效。 */
+        val eyePatchValid: Int = 0,
+        /**
+         * 头朝向相对**正视基准**的偏差角 `[pitch, yaw, roll]`（度），
+         * 取 F→W 的 `head_hw_rot`（正视时为单位阵，故其欧拉角即相对正前方的偏差）。
+         * 用于绘制"俯视小罗盘"：抬头+/低头-、右转+/左转-、右倾+/左倾-。为 null 时不画。
+         */
+        val headDeviation: FloatArray? = null
     )
 
     enum class FaceType { DETECTED, SPOOF }
@@ -586,6 +707,10 @@ class FaceOverlayView @JvmOverloads constructor(
         const val DRAW_MODE_BEHAVIOR = 3
         /** 绘制模式：融合监测（FACEP-018，仅 68 点密集地标 + 头姿坐标轴 + zone 面板）。 */
         const val DRAW_MODE_FUSION = 4
+
+        /** MPIIGaze 眼图尺寸（与 face-sdk 模型输入一致：60 列 × 36 行）。 */
+        private const val EYE_PATCH_W = 60
+        private const val EYE_PATCH_H = 36
 
         /** DMS 分区 ID → 名称映射（与 C 侧 InitDefaultZones 对齐）。 */
         private val ZONE_NAMES = arrayOf(
