@@ -12,6 +12,7 @@
     <string name="btn_dump_continuous">连续dump</string>
     <string name="btn_dump_continuous_active">连续dump中…</string>
     <string name="dump_timer_format">剩余 %1$d 张：%2$s</string>
+    <string name="dump_timer_video_format">剩余 %1$d 秒：%2$s</string>
 
     <!-- 连续 dump 输出格式选择 -->
     <string name="dump_mode_title">连续 Dump 格式</string>
