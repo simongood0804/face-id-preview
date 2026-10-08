@@ -131,11 +131,15 @@ MEDIA_RECORD_API int mr_session_push_frame_eof(mr_session* session);
 //   mr_session_open(cfg, NULL, /*surface_mode=*/1, /*resident=*/1, ...);
 //   mr_session_start(s);
 //   mr_session_get_input_surface(s, &window, &w, &h);
-//   // each frame, on your GL thread:
-//   //   eglCreateWindowSurface(display, config, (EGLNativeWindowType)window, ...)
-//   //   draw ...; eglPresentationTimeANDROID(display, surface, pts_ns);
-//   //   eglSwapBuffers(display, surface);
-//   mr_session_notify_frame(s, pts_us);
+//   mr_render* r = mr_render_create(window, w, h);   // library-owned EGL setup
+//   // each frame, on your render thread:
+//   //   A) draw with your own GL — the EGL context is already current:
+//   mr_render_frame(r, my_draw, my_user, pts_ns);
+//   //   B) or hand the library a camera buffer (zero-copy, synchronous):
+//   mr_render_frame_buffer(r, ahwb, src_w, src_h, pts_ns);
+//   mr_session_notify_frame(s, pts_us);              // pump the encoder
+//   //   ... repeat ...
+//   mr_render_destroy(r);
 //   mr_session_push_frame_eof(s);   // REQUIRED: finalizes the MP4.
 //   // (mr_session_stop(s) would abort instead: MR_OK, but 0-byte output.)
 //   mr_session_wait(s, -1);
@@ -153,11 +157,82 @@ MEDIA_RECORD_API int mr_session_get_input_surface(mr_session* session,
 /// One call per frame; non-blocking and safe from the rendering thread; the
 /// graph pumps the hardware encoder from this beat. Returns MR_ERROR_OVERFLOW
 /// when the small handoff queue is full (encoder slower than the producer).
-/// The MP4 frame timestamp comes from the buffer's presentation time (set by
-/// the caller, e.g. eglPresentationTimeANDROID) — `timestamp_us` only orders
-/// the in-graph notification.
+/// The MP4 frame timestamp comes from the buffer's presentation time — set it
+/// through the mr_render_* helpers below (each takes pts_ns), or yourself with
+/// eglPresentationTimeANDROID if you own the EGL setup. `timestamp_us` only
+/// orders the in-graph notification.
 MEDIA_RECORD_API int mr_session_notify_frame(mr_session* session,
                                              int64_t timestamp_us);
+
+// ---- P4-C helper: encoder-input-surface rendering (no hand-written EGL) -----
+// The surface path used to require the caller to build the whole EGL plumbing
+// (eglGetDisplay / eglChooseConfig / eglCreateWindowSurface / eglCreateContext /
+// eglMakeCurrent / eglPresentationTimeANDROID / eglSwapBuffers). These entry
+// points do that part for you — the same plumbing the library's own surface
+// renderer uses — so the caller only draws, and the presentation timestamp is
+// always stamped (a missing one makes MediaCodec drop most input-surface frames).
+//
+//   mr_render* r = mr_render_create(window, w, h);   // window from mr_session_get_input_surface
+//   ... each frame:
+//   mr_render_frame(r, my_draw, user, pts_ns);       // GL context current inside my_draw
+//   ... or, zero-copy, when the source is an AHardwareBuffer:
+//   mr_render_frame_buffer(r, ahwb, src_w, src_h, pts_ns);
+//   ...
+//   mr_render_destroy(r);
+//
+// Frame sources may differ per camera (DMS 1600x1300, RVC 1280x760, ...): the
+// library letterboxes whatever it is given into the encoder surface, so no
+// source-size assumption is made and switching cameras needs no session rebuild.
+
+/// Opaque render handle bound to one encoder input surface.
+typedef struct mr_render mr_render;
+
+/// Per-frame callback for mr_render_frame(): invoked with the EGL context
+/// already made current, so plain GL calls (glViewport / glDraw* / ...) work.
+typedef void (*mr_render_draw_fn)(void* user);
+
+/// Build the EGL display/config/context and bind `anativewindow` (obtained from
+/// mr_session_get_input_surface) as the render target. width/height are the
+/// encoder's configured geometry. Returns NULL on failure or on host builds.
+MEDIA_RECORD_API mr_render* mr_render_create(void* anativewindow, int width,
+                                             int height);
+
+/// Release the handle (and its EGL objects). NULL is a no-op.
+MEDIA_RECORD_API void mr_render_destroy(mr_render* render);
+
+/// Draw one frame with the caller's own GL: makes the context current, calls
+/// draw(user), then flushes, stamps the presentation time `pts_ns` and swaps.
+/// Returns MR_OK or MR_ERROR_INVALID_ARGUMENT.
+MEDIA_RECORD_API int mr_render_frame(mr_render* render, mr_render_draw_fn draw,
+                                     void* user, int64_t pts_ns);
+
+/// One frame of a solid colour (no callback) — smoke tests / placeholder frames.
+/// `rgba` packs 0xRRGGBBAA.
+MEDIA_RECORD_API int mr_render_frame_clear(mr_render* render, uint32_t rgba,
+                                           int64_t pts_ns);
+
+/// One frame straight from an AHardwareBuffer (Android only), SYNCHRONOUSLY: the
+/// buffer is consumed inside this call and never retained, so it is safe to pass
+/// one that dies when the caller's frame callback returns (EVS recycles it right
+/// after). Do NOT acquire it for later use from another thread — doing so has
+/// been observed to crash vendor gralloc.
+///
+/// `src_width`/`src_height` select the VALID image area from the buffer's
+/// top-left: a gralloc allocation can be far taller than the picture it holds
+/// (e.g. 1600x3900 allocated with only the top 1600x1300 painted), and the unused
+/// part must not reach the video. 0 = the buffer's own dimensions. The valid area
+/// is letterboxed into the encoder surface (aspect preserved, black bars).
+///
+/// Returns MR_OK, or a negative mr_status — MR_ERROR_RUNTIME while the underlying
+/// buffer import only admits R8G8B8A8_UNORM, so a vendor-private format (e.g.
+/// 0x120) needs the corresponding upstream change; the call shape stays the same.
+MEDIA_RECORD_API int mr_render_frame_buffer(mr_render* render,
+                                            void* ahardwarebuffer, int src_width,
+                                            int src_height, int64_t pts_ns);
+
+/// Copy the handle's last error message into `buffer` (always NUL-terminated).
+MEDIA_RECORD_API int mr_render_last_error(mr_render* render, char* buffer,
+                                          size_t buffer_size);
 
 /// Surface-path diagnostics. Counters are updated by the graph nodes while the
 /// session runs, so a device-side failure can be attributed WITHOUT logcat:

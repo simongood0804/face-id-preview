@@ -97,7 +97,7 @@ internal object MediaRecordNative {
 
     external fun nativeSurfaceStop(handle: Long): Int
 
-    /** [drawn, dropped, drawFailures, notifyFailures, lastDrawUs, lastConvertUs]。 */
+    /** [drawn, dropped, drawFailures, notifyFailures, lastDrawUs, lastConvertUs, zeroCopy]。 */
     external fun nativeSurfaceStats(handle: Long): LongArray
 
     // ---- 诊断 ----

@@ -45,14 +45,14 @@ target_include_directories(media_record_jni PRIVATE
     "${MR_INCLUDE_DIR}"
 )
 
-# EGL/GLESv2：P4-C surface 路径（encoder_surface_renderer）自建 GL 管线，
-# 把相机帧直接画到编码器输入 surface。
+# GLESv2：P4-C surface 路径的 CPU 回退分支仍要自己画（mr_render_frame 里上传纹理+绘制）。
+# EGL 已不再需要：display/config/context/window surface 与 PTS/swap 全部由库的
+# mr_render_create / mr_render_frame* 负责。
 target_link_libraries(media_record_jni
     media_record_core_shared
     datachannel
     android
     nativewindow
-    EGL
     GLESv2
     log
 )

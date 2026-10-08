@@ -622,11 +622,12 @@ Java_com_skyworth_faceid_media_MediaRecordNative_nativeSurfaceStop(
     return MR_OK;
 }
 
-/// surface 渲染诊断：[drawn, dropped, drawFailures, notifyFailures, lastDrawUs, lastConvertUs]。
+/// surface 渲染诊断：
+/// [drawn, dropped, drawFailures, notifyFailures, lastDrawUs, lastConvertUs, zeroCopy]。
 JNIEXPORT jlongArray JNICALL
 Java_com_skyworth_faceid_media_MediaRecordNative_nativeSurfaceStats(
     JNIEnv* env, jobject /*thiz*/, jlong /*handle*/) {
-    jlong vals[6] = {0, 0, 0, 0, 0, 0};
+    jlong vals[7] = {0, 0, 0, 0, 0, 0, 0};
     {
         std::lock_guard<std::mutex> lk(g_surfaceMutex);
         if (g_surfaceRenderer != nullptr) {
@@ -636,11 +637,12 @@ Java_com_skyworth_faceid_media_MediaRecordNative_nativeSurfaceStats(
             vals[3] = g_surfaceRenderer->notifyFailures();
             vals[4] = g_surfaceRenderer->lastDrawUs();
             vals[5] = g_surfaceRenderer->lastConvertUs();
+            vals[6] = g_surfaceRenderer->zeroCopy();
         }
     }
-    jlongArray arr = env->NewLongArray(6);
+    jlongArray arr = env->NewLongArray(7);
     if (arr == nullptr) return nullptr;
-    env->SetLongArrayRegion(arr, 0, 6, vals);
+    env->SetLongArrayRegion(arr, 0, 7, vals);
     return arr;
 }
 

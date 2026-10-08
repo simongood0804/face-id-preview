@@ -2,26 +2,36 @@
 //
 //   open(cfg, NULL, surface_mode = 1, resident = 1)
 //   start()
-//   get_input_surface() -> ANativeWindow*  ──┐
-//                                            ├─ 本文件：EGL/GLES 画到该 surface
-//   notify_frame(pts_us)   ──────────────────┘
-//   push_frame_eof()  // 收尾并 finalize MP4
+//   get_input_surface() -> ANativeWindow*
+//   mr_render_create(window, w, h)        ← EGL 归库管（**必须在渲染线程里调**）
+//     每帧：mr_render_frame(...)（自绘 + 上传纹理）+ mr_session_notify_frame()
+//   mr_render_destroy(); push_frame_eof(); wait()
 //
-// 数据流（不做 EGLImage 零拷贝，原因见头文件）：
-//   相机 HAL 回调线程                         本渲染器 GL 线程
-//   ─────────────────                        ─────────────────
-//   Enqueue(hwBuffer)                         cv.wait(readyIdx_)
-//     ├ AHardwareBuffer_lock                    ├ 2D 纹理上传（glTexImage2D/SubImage2D）
-//     ├ UYVY -> RGBA（帧有效期内完成）            ├ 按比例 letterbox 绘制
-//     ├ unlock                                 ├ eglPresentationTimeANDROID + swap
-//     └ 投递到 ping-pong 帧槽                    └ mr_session_notify_frame
+// ⚠️ 线程绑定（真机实测的关键约束，违反则整条链路废掉）：
+//   库的 RenderContext::CreateFromNativeWindow() 内部会 eglMakeCurrent，把刚建好的
+//   context 留在**创建它的那个线程**上且不释放；而 RenderContext::MakeCurrent() 只是裸的
+//   eglMakeCurrent。所以 create / 每帧 frame / destroy 必须都在**同一个线程**里调用，
+//   否则每帧 eglMakeCurrent 都报 `EGL_BAD_ACCESS`（libEGL 刷屏，把日志缓冲写满）：
+//   一帧都画不进编码器输入 surface，mr_stats 表现为 `encoder_polls > 0 而
+//   encoder_emitted == 0`（库文档给的定义：codec 没有输出）→ 推流没有媒体，
+//   服务端表现就是「有推流者，但浏览器说找不到流」。
+//   故本类固定用**同一个渲染线程**（threadLoop）承担 mr_render_create /
+//   mr_render_frame / mr_render_destroy；Create() 只登记几何与 ANativeWindow。
+//
+// 渲染路径：相机回调线程内做 UYVY→RGBA（buffer 只在回调期间有效），交给渲染线程用
+//   mr_render_frame 上传纹理并按比例 letterbox 绘制。
+//
+// 零拷贝（mr_render_frame_buffer）**未启用**：本机相机是 vendor 私有格式 0x120，而库的
+//   buffer import 只收 R8G8B8A8_UNORM（必返回 MR_ERROR_RUNTIME），且它只能在相机回调
+//   线程内调用，与上面的「同线程」约束冲突（保留 tryZeroCopy 备库侧放开后接入）。
 //
 #include "encoder_surface_renderer.h"
 
 #include <android/log.h>
 #include <android/native_window.h>
-#include <EGL/eglext.h>
 #include <GLES2/gl2.h>
+
+#include <pthread.h>
 
 #include <chrono>
 #include <cstring>
@@ -35,8 +45,6 @@
 #define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, LOG_TAG, __VA_ARGS__)
 
 namespace {
-
-PFNEGLPRESENTATIONTIMEANDROIDPROC g_eglPresentationTime = nullptr;
 
 inline long long nowUs() {
     using namespace std::chrono;
@@ -67,8 +75,17 @@ inline void yuv2rgba(int y, int u, int v, uint8_t* out) {
 /// 以其实现为准。若按 `[Y0][U][Y1][V]` 读，会把 U 当亮度、亮度当色度：
 /// IR 画面（U/V≈128）下表现为「整幅纯绿、但人物轮廓清晰」。
 void uyvyToRgba(const uint8_t* src, int srcStrideBytes, uint8_t* dst, int w, int h) {
+    // 关键优化：AHardwareBuffer lock 得到的内存多为**非 cacheable** 映射，逐像素随机读
+    // 延迟极高（实测 ~180ns/次）。改为**按源行 memcpy 宽加载**到本地 cacheable 行缓冲再
+    // 转换，把慢内存访问次数降低约一个数量级。
+    // 真机实测：不做这一步 conv 约 32ms/帧（1600x1300，已低于 30fps 预算并开始掉帧）。
+    static thread_local std::vector<uint8_t> rowBuf;
+    const size_t strideBytes = static_cast<size_t>(srcStrideBytes);
+    if (rowBuf.size() < strideBytes) rowBuf.resize(strideBytes);
+
     for (int y = 0; y < h; ++y) {
-        const uint8_t* s = src + static_cast<size_t>(y) * srcStrideBytes;
+        memcpy(rowBuf.data(), src + static_cast<size_t>(y) * strideBytes, strideBytes);
+        const uint8_t* s = rowBuf.data();
         uint8_t* d = dst + static_cast<size_t>(y) * w * 4;
         for (int x = 0; x + 1 < w; x += 2) {
             const int u = s[0];
@@ -160,13 +177,8 @@ enum class AspectMode {
 const AspectMode kAspectMode = AspectMode::FIT;
 
 /// 生成 NDC 四边形（GL_TRIANGLE_STRIP: BL, BR, TL, TR）。
-///
-/// - 几何：按 `kAspectMode` 等比适配 `srcW x srcH` 到 `dstW x dstH`；
-/// - 纹理坐标：只取 `[0,uMax] x [0,vMax]`。CPU 路径的纹理尺寸就等于有效图像尺寸
-///   （uMax=vMax=1）；保留该参数是为了兼容"纹理比图像大"的场景
-///   （例如以后若恢复 EGLImage，AHardwareBuffer 会远大于有效图像）。
-void quadVertices(bool flipY, int srcW, int srcH, int dstW, int dstH, float uMax, float vMax,
-                  float* positions, float* texCoords) {
+void quadVertices(bool flipY, int srcW, int srcH, int dstW, int dstH, float* positions,
+                  float* texCoords) {
     float sx = 1.f;
     float sy = 1.f;
     if (srcW > 0 && srcH > 0 && dstW > 0 && dstH > 0) {
@@ -180,8 +192,8 @@ void quadVertices(bool flipY, int srcW, int srcH, int dstW, int dstH, float uMax
     }
     const float p[8] = {-sx, -sy, sx, -sy, -sx, sy, sx, sy};
     // flipY == false：表面顶部 <-> 纹理 v=0
-    const float t0[8] = {0.f, vMax, uMax, vMax, 0.f, 0.f, uMax, 0.f};
-    const float t1[8] = {0.f, 0.f, uMax, 0.f, 0.f, vMax, uMax, vMax};
+    const float t0[8] = {0.f, 1.f, 1.f, 1.f, 0.f, 0.f, 1.f, 0.f};
+    const float t1[8] = {0.f, 0.f, 1.f, 0.f, 0.f, 1.f, 1.f, 1.f};
     memcpy(positions, p, sizeof(p));
     memcpy(texCoords, flipY ? t1 : t0, sizeof(t1));
 }
@@ -205,20 +217,12 @@ EncoderSurfaceRenderer* EncoderSurfaceRenderer::Create(void* window, int width, 
     self->height_ = height;
     ANativeWindow_acquire(static_cast<ANativeWindow*>(window));
 
-    self->thread_ = std::thread([self] { self->threadLoop(); });
-
-    {
-        std::unique_lock<std::mutex> lk(self->mtx_);
-        self->cv_.wait(lk, [self] { return self->running_ || self->stop_; });
-        if (self->stop_ && !self->running_) {
-            lk.unlock();
-            self->Stop();
-            delete self;
-            return nullptr;
-        }
-    }
-    LOGI("renderer started: encoder %dx%d, viewport %dx%d (CPU RGBA upload)", width, height,
-         self->surfaceWidth_, self->surfaceHeight_);
+    // EGL（display/config/context/window surface）交给库，但**必须在渲染线程里创建**：
+    // 库在 CreateFromNativeWindow 里 eglMakeCurrent 之后不释放，跨线程就是 EGL_BAD_ACCESS。
+    // 这里只登记几何与窗口，句柄留到 threadLoop 首次建帧时懒创建（见 ensureRenderHandle）。
+    LOGI("renderer created: encoder %dx%d anw=%dx%d (mr_render 句柄将由渲染线程创建)",
+         width, height, ANativeWindow_getWidth(static_cast<ANativeWindow*>(window)),
+         ANativeWindow_getHeight(static_cast<ANativeWindow*>(window)));
     return self;
 }
 
@@ -233,23 +237,96 @@ EncoderSurfaceRenderer::~EncoderSurfaceRenderer() {
 void EncoderSurfaceRenderer::Stop() {
     {
         std::lock_guard<std::mutex> lk(mtx_);
-        if (stop_ && !thread_.joinable()) return;
         stop_ = true;
     }
     cv_.notify_all();
     if (thread_.joinable()) thread_.join();
+
+    // 句柄由渲染线程在退出前自行销毁（EGL 线程绑定：谁创建谁销毁），这里只做汇总。
     LOGI("renderer stopped: drawn=%d dropped=%d drawFail=%d notifyFail=%d "
-         "lastDraw=%lldus lastConvert=%lldus",
+         "lastDraw=%lldus lastConvert=%lldus zeroCopy=%d",
          drawn_.load(), dropped_.load(), drawFail_.load(), notifyFail_.load(),
          static_cast<long long>(lastDrawUs_.load()),
-         static_cast<long long>(lastConvertUs_.load()));
+         static_cast<long long>(lastConvertUs_.load()), zeroCopy());
+}
+
+// ============================================================================
+// 零拷贝快速路径
+// ============================================================================
+
+bool EncoderSurfaceRenderer::tryZeroCopy(AHardwareBuffer* buffer, int srcW, int srcH,
+                                         int64_t tsUs) {
+    // 注意：本调用必须在相机回调线程内同步完成（库保证不持有该 buffer），
+    // 因此对 EVS 那种"回调返回即回收"的 buffer 是安全的。
+    const int rc = mr_render_frame_buffer(render_, buffer, srcW, srcH,
+                                          static_cast<long long>(tsUs) * 1000);
+    if (rc != MR_OK) {
+        char err[256];
+        err[0] = '\0';
+        mr_render_last_error(render_, err, sizeof(err));
+        LOGW("mr_render_frame_buffer failed rc=%d (%s); 永久降级到 CPU 纹理上传路径",
+             rc, err);
+        zeroCopyUsable_ = false;
+        return false;
+    }
+
+    if (!zeroCopy_.exchange(true)) {
+        LOGI("零拷贝路径启用：mr_render_frame_buffer（相机回调线程内同步渲染）");
+    }
+    const int nrc = mr_session_notify_frame(session_, tsUs);
+    if (nrc != MR_OK) notifyFail_++;
+    drawn_++;
+    return true;
+}
+
+// ============================================================================
+// CPU 回退路径
+// ============================================================================
+
+void EncoderSurfaceRenderer::ensureThread() {
+    std::lock_guard<std::mutex> lk(mtx_);
+    if (stop_ || thread_.joinable()) return;
+    thread_ = std::thread([this] {
+        // 显式命名：否则会继承父线程（EVS 回调线程）的名字，日志里分不清谁在报错。
+        pthread_setname_np(pthread_self(), "EncSurfRender");
+        threadLoop();
+    });
+    LOGI("渲染线程已启动（唯一调用 mr_render_* 的线程）");
+}
+
+bool EncoderSurfaceRenderer::ensureRenderHandle() {
+    if (render_ != nullptr) return true;
+    render_ = mr_render_create(window_, width_, height_);
+    if (render_ == nullptr) {
+        // 限频：句柄建不起来时每帧都会走到这里，逐帧打会把 logcat 缓冲冲掉
+        // （之前被 libEGL 刷屏冲掉全部诊断信息的教训）。
+        const long long now = nowUs();
+        if (createAttempts_++ == 0 || now - lastErrorLogUs_ > 1000000LL) {
+            lastErrorLogUs_ = now;
+            LOGE("mr_render_create failed (window=%p %dx%d, 第 %d 次尝试)", window_, width_,
+                 height_, createAttempts_);
+        }
+        return false;
+    }
+    LOGI("mr_render 句柄已创建（本渲染线程）：%dx%d", width_, height_);
+    return true;
 }
 
 void EncoderSurfaceRenderer::Enqueue(AHardwareBuffer* buffer, int width, int height,
                                      int64_t timestampUs) {
     if (buffer == nullptr || width <= 0 || height <= 0) return;
 
-    // 取一块可写的 ping-pong 缓冲；上一帧 GL 线程尚未取走则丢当前帧（不阻塞取流）。
+    AHardwareBuffer_Desc desc;
+    AHardwareBuffer_describe(buffer, &desc);
+    const int srcStrideBytes = hbRowStrideBytes(desc);
+
+    // 零拷贝未启用（原因见文件顶部说明）：一律走 CPU 纹理路径，由渲染线程统一绘制。
+    // 关键点是 mr_render_* 必须与创建句柄的线程一致，因此这里不能在相机回调线程里
+    // 去碰库的渲染句柄。
+
+    // 2) CPU 回退：取一块可写的 ping-pong 缓冲（上一帧未绘完则丢当前帧，不阻塞取流）
+    ensureThread();
+
     uint8_t* dst = nullptr;
     int idx = -1;
     {
@@ -267,9 +344,6 @@ void EncoderSurfaceRenderer::Enqueue(AHardwareBuffer* buffer, int width, int hei
 
     // 色彩转换必须在此刻完成：HardwareBuffer 只在本回调期间有效。
     // 只读有效图像区域（buffer 可能远高于图像，见 ahardwarebuffer_util.h）。
-    AHardwareBuffer_Desc desc;
-    AHardwareBuffer_describe(buffer, &desc);
-    const int srcStrideBytes = hbRowStrideBytes(desc);
     if (srcStrideBytes <= 0) return;
 
     const long long t0 = nowUs();
@@ -296,27 +370,7 @@ void EncoderSurfaceRenderer::Enqueue(AHardwareBuffer* buffer, int width, int hei
     cv_.notify_one();
 }
 
-// ============================================================================
-// GL 线程
-// ============================================================================
-
 void EncoderSurfaceRenderer::threadLoop() {
-    if (!initEgl() || !buildPrograms()) {
-        LOGE("GL init failed");
-        {
-            std::lock_guard<std::mutex> lk(mtx_);
-            stop_ = true;
-        }
-        cv_.notify_all();
-        teardownEgl();
-        return;
-    }
-    {
-        std::lock_guard<std::mutex> lk(mtx_);
-        running_ = true;
-    }
-    cv_.notify_all();
-
     for (;;) {
         int idx = -1;
         int w = 0;
@@ -332,140 +386,83 @@ void EncoderSurfaceRenderer::threadLoop() {
             tsUs = readyTsUs_;
         }
 
+        drawBuf_ = bufs_[idx].data();
+        drawW_ = w;
+        drawH_ = h;
+
         const long long t0 = nowUs();
-        bool ok = drawRgba(bufs_[idx].data(), w, h);
+        int rc = MR_ERROR_STATE;
+        if (ensureRenderHandle()) {
+            rc = mr_render_frame(render_, &EncoderSurfaceRenderer::drawCallback, this,
+                                 static_cast<long long>(tsUs) * 1000);
+        }
+        bool ok = (rc == MR_OK);
         if (ok) {
-            if (g_eglPresentationTime != nullptr) {
-                g_eglPresentationTime(display_, surface_, static_cast<long long>(tsUs) * 1000);
-            }
-            if (eglSwapBuffers(display_, surface_) != EGL_TRUE) {
-                LOGE("eglSwapBuffers failed: 0x%x", eglGetError());
-                ok = false;
-            } else {
-                const int rc = mr_session_notify_frame(session_, tsUs);
-                if (rc != MR_OK) {
-                    // 队列满：编码器慢于生产，丢帧属正常，仅计数。
-                    notifyFail_++;
-                }
+            if (mr_session_notify_frame(session_, tsUs) != MR_OK) notifyFail_++;
+        } else {
+            char err[256];
+            err[0] = '\0';
+            if (render_ != nullptr) mr_render_last_error(render_, err, sizeof(err));
+            // 限频：首次失败 + 之后每秒最多一条（逐帧打会把 logcat 缓冲冲掉）
+            const long long now = nowUs();
+            if (drawFail_.load() == 0 || now - lastErrorLogUs_ > 1000000LL) {
+                lastErrorLogUs_ = now;
+                LOGE("mr_render_frame failed rc=%d (%s)（已失败 %d 帧）", rc, err,
+                     drawFail_.load() + 1);
             }
         }
         lastDrawUs_ = nowUs() - t0;
         if (ok) drawn_++; else drawFail_++;
 
+        drawBuf_ = nullptr;
         {
             std::lock_guard<std::mutex> lk(mtx_);
             readyIdx_ = -1;
-            if (stop_) {
-                running_ = false;
-                break;
-            }
+            if (stop_) break;
         }
         cv_.notify_all();
     }
 
-    {
-        std::lock_guard<std::mutex> lk(mtx_);
-        running_ = false;
+    // 在创建它的这个线程里销毁句柄（EGL 线程绑定：谁创建谁销毁）。
+    if (render_ != nullptr) {
+        mr_render_destroy(render_);
+        render_ = nullptr;
     }
-    teardownEgl();
 }
 
-bool EncoderSurfaceRenderer::initEgl() {
-    display_ = eglGetDisplay(EGL_DEFAULT_DISPLAY);
-    if (display_ == EGL_NO_DISPLAY) {
-        LOGE("eglGetDisplay failed");
-        return false;
-    }
-    EGLint major = 0;
-    EGLint minor = 0;
-    if (eglInitialize(display_, &major, &minor) != EGL_TRUE) {
-        LOGE("eglInitialize failed: 0x%x", eglGetError());
-        display_ = EGL_NO_DISPLAY;
-        return false;
-    }
-    g_eglPresentationTime = reinterpret_cast<PFNEGLPRESENTATIONTIMEANDROIDPROC>(
-        eglGetProcAddress("eglPresentationTimeANDROID"));
-    if (g_eglPresentationTime == nullptr) {
-        LOGW("eglPresentationTimeANDROID unavailable; encoder timestamps may be non-monotonic");
-    }
+void EncoderSurfaceRenderer::drawCallback(void* user) {
+    static_cast<EncoderSurfaceRenderer*>(user)->onDraw();
+}
 
-    const EGLint configAttrs[] = {
-        EGL_SURFACE_TYPE, EGL_WINDOW_BIT,
-        EGL_RENDERABLE_TYPE, EGL_OPENGL_ES2_BIT,
-        EGL_RED_SIZE, 8,
-        EGL_GREEN_SIZE, 8,
-        EGL_BLUE_SIZE, 8,
-        EGL_ALPHA_SIZE, 8,
-        EGL_NONE,
-    };
-    EGLint numConfigs = 0;
-    if (eglChooseConfig(display_, configAttrs, &config_, 1, &numConfigs) != EGL_TRUE ||
-        numConfigs < 1) {
-        LOGE("eglChooseConfig failed: 0x%x", eglGetError());
-        return false;
+void EncoderSurfaceRenderer::onDraw() {
+    // 库已把 EGL 上下文 makeCurrent，这里直接写 GL。
+    if (!glReady_) {
+        if (!buildPrograms()) return;
+        glReady_ = true;
     }
-
-    surface_ = eglCreateWindowSurface(display_, config_,
-                                      static_cast<EGLNativeWindowType>(window_), nullptr);
-    if (surface_ == EGL_NO_SURFACE) {
-        LOGE("eglCreateWindowSurface failed: 0x%x", eglGetError());
-        return false;
-    }
-
-    // 以 EGL surface 的**真实**尺寸为准绘制（真机实测与库返回值一致，均为 1280x720；
-    // 这里仍然查一次并打日志，便于换平台/换编码器时第一时间发现不一致）。
-    EGLint surfW = 0;
-    EGLint surfH = 0;
-    eglQuerySurface(display_, surface_, EGL_WIDTH, &surfW);
-    eglQuerySurface(display_, surface_, EGL_HEIGHT, &surfH);
-    surfaceWidth_ = (surfW > 0) ? surfW : width_;
-    surfaceHeight_ = (surfH > 0) ? surfH : height_;
-    LOGI("surface geom: lib=%dx%d anw=%dx%d egl=%dx%d", width_, height_,
-         ANativeWindow_getWidth(static_cast<ANativeWindow*>(window_)),
-         ANativeWindow_getHeight(static_cast<ANativeWindow*>(window_)), surfW, surfH);
-    if (surfaceWidth_ != width_ || surfaceHeight_ != height_) {
-        LOGW("encoder input surface size (%dx%d) != library size (%dx%d); using EGL size",
-             surfaceWidth_, surfaceHeight_, width_, height_);
-    }
-
-    const EGLint ctxAttrs[] = {EGL_CONTEXT_CLIENT_VERSION, 2, EGL_NONE};
-    context_ = eglCreateContext(display_, config_, EGL_NO_CONTEXT, ctxAttrs);
-    if (context_ == EGL_NO_CONTEXT) {
-        LOGE("eglCreateContext failed: 0x%x", eglGetError());
-        return false;
-    }
-    if (eglMakeCurrent(display_, surface_, surface_, context_) != EGL_TRUE) {
-        LOGE("eglMakeCurrent failed: 0x%x", eglGetError());
-        return false;
-    }
-
-    glViewport(0, 0, surfaceWidth_, surfaceHeight_);
+    glViewport(0, 0, width_, height_);
     glDisable(GL_DEPTH_TEST);
     glDisable(GL_BLEND);
-    LOGI("EGL ready: EGL %d.%d, viewport %dx%d", major, minor, surfaceWidth_, surfaceHeight_);
-    return true;
-}
 
-void EncoderSurfaceRenderer::teardownEgl() {
-    if (display_ != EGL_NO_DISPLAY) {
-        // GL 对象必须在上下文仍为 current 时删除，故先删后解绑。
-        if (context_ != EGL_NO_CONTEXT && surface_ != EGL_NO_SURFACE &&
-            eglGetCurrentContext() != EGL_NO_CONTEXT) {
-            if (program2d_ != 0) glDeleteProgram(static_cast<GLuint>(program2d_));
-            if (tex2d_ != 0) glDeleteTextures(1, reinterpret_cast<GLuint*>(&tex2d_));
-        }
-        program2d_ = 0;
-        tex2d_ = 0;
-        texW_ = 0;
-        texH_ = 0;
-        eglMakeCurrent(display_, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT);
-        if (context_ != EGL_NO_CONTEXT) eglDestroyContext(display_, context_);
-        if (surface_ != EGL_NO_SURFACE) eglDestroySurface(display_, surface_);
-        eglTerminate(display_);
+    const uint8_t* rgba = drawBuf_;
+    const int srcW = drawW_;
+    const int srcH = drawH_;
+    if (rgba == nullptr || srcW <= 0 || srcH <= 0) return;
+
+    glBindTexture(GL_TEXTURE_2D, static_cast<GLuint>(tex2d_));
+    glPixelStorei(GL_UNPACK_ALIGNMENT, 4);
+    if (texW_ != srcW || texH_ != srcH) {
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, srcW, srcH, 0, GL_RGBA, GL_UNSIGNED_BYTE,
+                     rgba);
+        texW_ = srcW;
+        texH_ = srcH;
+    } else {
+        glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, srcW, srcH, GL_RGBA, GL_UNSIGNED_BYTE, rgba);
     }
-    context_ = EGL_NO_CONTEXT;
-    surface_ = EGL_NO_SURFACE;
-    display_ = EGL_NO_DISPLAY;
+
+    glClearColor(0.f, 0.f, 0.f, 1.f);
+    glClear(GL_COLOR_BUFFER_BIT);
+    drawQuad(program2d_, tex2d_, srcW, srcH);
 }
 
 bool EncoderSurfaceRenderer::buildPrograms() {
@@ -481,17 +478,15 @@ bool EncoderSurfaceRenderer::buildPrograms() {
     return true;
 }
 
-void EncoderSurfaceRenderer::drawQuad(int program, int texId, int target, int srcW, int srcH,
-                                      float uMax, float vMax) {
+void EncoderSurfaceRenderer::drawQuad(int program, int texId, int srcW, int srcH) {
     glUseProgram(static_cast<GLuint>(program));
 
     float positions[8];
     float texCoords[8];
-    quadVertices(kFlipY, srcW, srcH, surfaceWidth_, surfaceHeight_, uMax, vMax, positions,
-                 texCoords);
+    quadVertices(kFlipY, srcW, srcH, width_, height_, positions, texCoords);
 
     glActiveTexture(GL_TEXTURE0);
-    glBindTexture(static_cast<GLenum>(target), static_cast<GLuint>(texId));
+    glBindTexture(GL_TEXTURE_2D, static_cast<GLuint>(texId));
     const int loc = glGetUniformLocation(static_cast<GLuint>(program), "uTexture");
     if (loc >= 0) glUniform1i(loc, 0);
 
@@ -504,27 +499,5 @@ void EncoderSurfaceRenderer::drawQuad(int program, int texId, int target, int sr
 
     glDisableVertexAttribArray(0);
     glDisableVertexAttribArray(1);
-    glBindTexture(static_cast<GLenum>(target), 0);
-}
-
-bool EncoderSurfaceRenderer::drawRgba(const uint8_t* rgba, int srcW, int srcH) {
-    if (rgba == nullptr || srcW <= 0 || srcH <= 0) return false;
-
-    glBindTexture(GL_TEXTURE_2D, static_cast<GLuint>(tex2d_));
-    glPixelStorei(GL_UNPACK_ALIGNMENT, 4);
-    if (texW_ != srcW || texH_ != srcH) {
-        // 尺寸变化（首帧/换摄像头）：重新分配纹理
-        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, srcW, srcH, 0, GL_RGBA, GL_UNSIGNED_BYTE,
-                     rgba);
-        texW_ = srcW;
-        texH_ = srcH;
-    } else {
-        glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, srcW, srcH, GL_RGBA, GL_UNSIGNED_BYTE, rgba);
-    }
-    if (glGetError() != GL_NO_ERROR) return false;
-
-    glClearColor(0.f, 0.f, 0.f, 1.f);
-    glClear(GL_COLOR_BUFFER_BIT);
-    drawQuad(program2d_, tex2d_, GL_TEXTURE_2D, srcW, srcH, 1.f, 1.f);
-    return true;
+    glBindTexture(GL_TEXTURE_2D, 0);
 }

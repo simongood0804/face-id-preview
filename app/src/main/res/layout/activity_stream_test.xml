@@ -24,6 +24,18 @@
             android:textSize="24sp"
             android:textStyle="bold" />
 
+        <!-- 推流状态：未推流 / ● 正在推流（实时摘要） / 正在停止。
+             放在滚动日志之外，始终可见。 -->
+        <TextView
+            android:id="@+id/tv_stream_state"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="6dp"
+            android:text="@string/stream_test_state_idle"
+            android:textColor="#888888"
+            android:textSize="15sp"
+            android:textStyle="bold" />
+
         <!-- 状态/日志区（可滚动查看多行） -->
         <ScrollView
             android:layout_width="match_parent"
@@ -50,14 +62,6 @@
             android:textSize="14sp" />
 
         <Button
-            android:id="@+id/btn_push"
-            android:layout_width="match_parent"
-            android:layout_height="44dp"
-            android:layout_marginTop="6dp"
-            android:text="@string/stream_test_btn_push"
-            android:textSize="14sp" />
-
-        <Button
             android:id="@+id/btn_push_surface"
             android:layout_width="match_parent"
             android:layout_height="44dp"
@@ -72,6 +76,14 @@
             android:layout_marginTop="6dp"
             android:text="@string/stream_test_btn_stop"
             android:textSize="14sp" />
+
+        <Button
+            android:id="@+id/btn_target"
+            android:layout_width="match_parent"
+            android:layout_height="40dp"
+            android:layout_marginTop="6dp"
+            android:text="@string/stream_test_btn_target"
+            android:textSize="13sp" />
 
         <Button
             android:id="@+id/btn_back_home"

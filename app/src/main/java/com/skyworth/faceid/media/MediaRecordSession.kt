@@ -19,7 +19,11 @@ import android.util.Log
  * 注意：**不要用 [stop] 结束录制**——它会中止图、muxer 不 finalize，输出为 0 字节；
  * [stop] 仅用于放弃本次会话。
  */
-class MediaRecordSession private constructor(private var handle: Long) {
+class MediaRecordSession private constructor(
+    // handle 由 UI/收尾线程写（close）、相机回调线程读，这里给足可见性；
+    // native 侧对陈旧句柄只做指针比较后返回 MR_ERROR_STATE，不会解引用已释放的会话。
+    @field:Volatile private var handle: Long
+) {
 
     /** 会话是否有效（已成功 open 且未 close）。 */
     val isValid: Boolean
@@ -106,11 +110,13 @@ class MediaRecordSession private constructor(private var handle: Long) {
     /**
      * 投递一帧相机 HardwareBuffer 给 surface 渲染器（相机 HAL 回调线程调用）。
      *
-     * 非阻塞：native 侧在**帧有效期内**完成 UYVY → RGBA 转换，交给内部 GL 线程上传纹理、
-     * 绘制到编码器输入 surface 并 `mr_session_notify_frame`；上一帧未绘完则丢弃当前帧。
+     * 非阻塞。native 侧优先走**零拷贝**：在回调线程内同步调用库的
+     * `mr_render_frame_buffer`（缓冲只在本次调用内被消费、不被持有）；若库当前不支持该
+     * buffer 的格式（返回 `MR_ERROR_RUNTIME`），则**一次性永久降级**为
+     * 「回调线程内 UYVY → RGBA + GL 线程 `mr_render_frame` 自绘」。
      *
-     * 注意：转换必须在回调线程内完成（HardwareBuffer 只在回调期间有效），因此本方法
-     * **不可**把 buffer 存起来延后处理。
+     * 注意：无论哪条路径都必须在回调线程内完成（HardwareBuffer 只在回调期间有效），
+     * 因此本方法**不可**把 buffer 存起来延后处理。
      */
     fun enqueueToSurface(
         buffer: HardwareBuffer,
@@ -126,7 +132,9 @@ class MediaRecordSession private constructor(private var handle: Long) {
 
     /**
      * surface 渲染诊断：
-     * `[drawn, dropped, drawFailures, notifyFailures, lastDrawUs, lastConvertUs]`（后两项微秒）。
+     * `[drawn, dropped, drawFailures, notifyFailures, lastDrawUs, lastConvertUs, zeroCopy]`
+     * （两个耗时单位为微秒；`zeroCopy = 1` 表示走的是库的零拷贝 `mr_render_frame_buffer`，
+     * `0` 表示已降级为宿主自绘 + CPU 纹理上传）。
      */
     fun surfaceStats(): LongArray? =
         if (handle != 0L) MediaRecordNative.nativeSurfaceStats(handle) else null

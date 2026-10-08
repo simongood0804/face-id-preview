@@ -7,6 +7,9 @@
 #   make push-system 推送 APK 到 /system/app/（需 root）
 #   make uninstall   卸载应用
 #   make run         启动应用
+#   make pc-up       一键启动 PC 侧推流环境（MediaMTX + 控制中继 + 播放页，含自检）
+#   make pc-check    自检 PC 侧推流环境
+#   make pc-down     停止 PC 侧推流环境
 #   make test        运行所有单元测试
 #   make test-class  运行指定测试类（例: make test-class CLASS=PipelineConfigTest）
 #   make test-suite  运行测试套件
@@ -32,14 +35,34 @@ APK_NAME        := DmsFace.apk
 MODEL_ASSET_DIR   := app/src/main/assets/models
 VENDOR_MODEL_DIR  := /vendor/etc/faceid
 
+# ------ PC 侧推流环境（车机推流的对端：MediaMTX + 控制中继）------
+# 说明：MediaMTX 手工启动读 ~/mediamtx.yml（若用 brew services 则读 /opt/homebrew/etc/mediamtx/）。
+# 控制中继 server.py 与播放页 index.html 来自 media_record 库仓库，不在本仓库内。
+MEDIAMTX_CONFIG   ?= $(HOME)/mediamtx.yml
+MEDIAMTX_LOG      ?= /tmp/mediamtx.log
+RELAY_DIR         ?= $(CURDIR)/../media_record/media_record/tools/camera-switch-demo
+RELAY_LOG         ?= /tmp/relay.log
+WHIP_PORT         ?= 8889
+RELAY_PORT        ?= 8081
+RELAY_STREAM      ?= test
+# 打开播放页用的主机：**多网段时优先 192.***（演示通常跑在 192 网段的 WiFi 局域网；
+# 这台 Mac 就是 en0=10.14.11.42、en1=192.168.6.233，取 en0 会指错网段）。
+# 规则：本机所有非回环 IPv4 → 优先取 192.* → 否则第一个 → 都没有则 localhost。
+# 可覆盖：make pc-up PAGE_HOST=192.168.6.233
+PAGE_HOST         ?= $(shell A=$$(ifconfig 2>/dev/null | awk '/inet /{print $$2}' | grep -v '^127\.'); \
+                          P=$$(echo "$$A" | grep '^192\.' | head -1); \
+                          [ -n "$$P" ] || P=$$(echo "$$A" | head -1); echo "$${P:-localhost}")
+
 # ------ 颜色输出 ------
 RED    := \033[0;31m
 GREEN  := \033[0;32m
 YELLOW := \033[1;33m
 NC     := \033[0m
 
-.PHONY: build clean-build install push-system uninstall run log log-crash log-evs \
-        gpu top dumpsys clean help test test-class test-suite
+.PHONY: build clean-build install push-system uninstall run stop restart \
+        pc-up pc-check pc-down \
+        log log-crash log-evs log-last gpu top mem dumpsys pid \
+        clean help test test-class test-suite test-report
 
 # =============================================================================
 # 构建
@@ -138,6 +161,47 @@ stop:
 
 ## 重启应用
 restart: stop run
+
+# =============================================================================
+# PC 侧推流环境（MediaMTX + 控制中继 server.py）—— 一条命令启动
+# =============================================================================
+
+## 一键启动 PC 侧推流环境：准备配置 → 起 MediaMTX → 起中继 → 自检 → 打开播放页
+pc-up:
+	@echo "$(GREEN)[PC-UP] 配置: $(MEDIAMTX_CONFIG)$(NC)"
+	@[ -f $(MEDIAMTX_CONFIG) ] || printf 'paths:\n  test:\n    source: publisher\n' > $(MEDIAMTX_CONFIG)
+	@echo "$(GREEN)[PC-UP] 启动 MediaMTX（已在跑则跳过）...$(NC)"
+	@if pgrep -q mediamtx; then echo "$(YELLOW)  已在运行，跳过$(NC)"; else (cd $(HOME) && nohup mediamtx > $(MEDIAMTX_LOG) 2>&1 &); fi
+	@echo "$(GREEN)[PC-UP] 启动控制中继（已在跑则跳过）...$(NC)"
+	@if lsof -nP -i :$(RELAY_PORT) >/dev/null 2>&1; then echo "$(YELLOW)  已在运行，跳过$(NC)"; else (cd $(RELAY_DIR) && nohup python3 $(RELAY_DIR)/server.py > $(RELAY_LOG) 2>&1 &); fi
+	@sleep 2
+	@$(MAKE) --no-print-directory pc-check
+	@echo "$(GREEN)[PC-UP] 打开播放页 http://$(PAGE_HOST):$(RELAY_PORT)/$(NC)"
+	@open "http://$(PAGE_HOST):$(RELAY_PORT)/"
+	@echo "$(YELLOW)  下一步：车机 App → 推流测试校验 → 开始推流$(NC)"
+	@echo "$(YELLOW)  推流地址: http://<PC-IP>:$(WHIP_PORT)/$(RELAY_STREAM)/whip$(NC)"
+
+## 自检 PC 侧推流环境（配置是否放行、中继是否在跑）
+pc-check:
+	@code=$$(curl -s -o /dev/null -w "%{http_code}" --max-time 3 http://127.0.0.1:$(WHIP_PORT)/$(RELAY_STREAM)/ 2>/dev/null || true); \
+	case "$$code" in \
+		200) echo "  播放页/配置 : 200   OK —— 已放行，可以推流";; \
+		500) echo "  播放页/配置 : 500   path 未放行 → 检查 $(MEDIAMTX_CONFIG) 的 paths";; \
+		000|"") echo "  播放页/配置 : ----  MediaMTX 未启动（make pc-up）";; \
+		*) echo "  播放页/配置 : $$code";; \
+	esac
+	@relay=$$(curl -s --max-time 3 http://127.0.0.1:$(RELAY_PORT)/state 2>/dev/null || true); \
+	if [ -n "$$relay" ]; then echo "  中继 /state : $$relay"; \
+	else echo "  中继 /state : ----  中继未启动（可选，仅影响浏览器切摄像头）"; fi
+
+## 停止 PC 侧推流环境（MediaMTX + 控制中继）
+pc-down:
+	@echo "$(GREEN)[PC-DOWN] 停止控制中继与 MediaMTX...$(NC)"
+	@pkill -f 'camera-switch-demo.*server\.py' || true
+	@pkill mediamtx || true
+	@sleep 1
+	@pgrep -q mediamtx && echo "$(RED)  MediaMTX 仍在运行$(NC)" || echo "$(YELLOW)  MediaMTX 已停止$(NC)"
+	@lsof -nP -i :$(RELAY_PORT) >/dev/null 2>&1 && echo "$(RED)  中继端口 $(RELAY_PORT) 仍被占用$(NC)" || echo "$(YELLOW)  中继已停止$(NC)"
 
 # =============================================================================
 # 日志
@@ -272,6 +336,11 @@ help:
 	@echo "  run            启动应用"
 	@echo "  stop           强制停止应用"
 	@echo "  restart        重启应用"
+	@echo ""
+	@echo "--- PC 侧推流环境（车机推流的对端）---"
+	@echo "  pc-up          一键启动 MediaMTX + 控制中继 + 打开播放页，并自检"
+	@echo "  pc-check       只自检（配置是否放行、中继 /state）"
+	@echo "  pc-down        停止 MediaMTX 与控制中继"
 	@echo ""
 	@echo "--- 测试 ---"
 	@echo "  test           运行所有单元测试"

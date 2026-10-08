@@ -5,7 +5,9 @@ import android.opengl.GLSurfaceView
 import android.os.Bundle
 import android.util.Log
 import android.widget.Button
+import android.widget.EditText
 import android.widget.TextView
+import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import com.android.car.evs.CameraIds
 import com.skyworth.faceid.R
@@ -13,6 +15,8 @@ import com.skyworth.faceid.camera.CameraSwitchClient
 import com.skyworth.faceid.core.CameraPreference
 import com.skyworth.faceid.core.FrameSession
 import com.skyworth.faceid.core.NativeFrameReader
+import com.skyworth.faceid.core.PushTarget
+import com.skyworth.faceid.core.RelayDiscovery
 import com.skyworth.faceid.media.MediaRecordSession
 import java.io.File
 import java.util.ArrayDeque
@@ -50,9 +54,17 @@ class StreamTestActivity : AppCompatActivity() {
 
     private lateinit var mSurface: GLSurfaceView
     private lateinit var mStatus: TextView
+    private lateinit var mState: TextView
 
     private var mFrameSession: FrameSession? = null
+
+    /** 当前推流/录制会话（null = 空闲）。相机回调线程也会读，故 @Volatile。 */
+    @Volatile
     private var mSession: MediaRecordSession? = null
+
+    /** 是否有会话正在收尾（pushEof→wait→close）。期间禁止启动新会话。 */
+    @Volatile
+    private var mStopping = false
 
     /** 推帧串行化：HAL 回调可能密集，上一帧未处理完则丢弃当前帧，避免阻塞回调线程。 */
     private val mPushing = AtomicBoolean(false)
@@ -98,6 +110,14 @@ class StreamTestActivity : AppCompatActivity() {
     @Volatile
     private var mSurfaceHeight = 0
 
+    /** 当前会话的名称（"推流"/"录制"），用于顶部状态提示。 */
+    @Volatile
+    private var mSessionLabel = "推流"
+
+    /** 当前会话的开始时刻（wall clock ms），用于算实时 fps。 */
+    @Volatile
+    private var mSessionStartMs = 0L
+
     /** 面板日志（环形保留最近 N 行）。 */
     private val mLogLines = ArrayDeque<String>()
 
@@ -118,19 +138,27 @@ class StreamTestActivity : AppCompatActivity() {
 
         mSurface = findViewById(R.id.preview_surface)
         mStatus = findViewById(R.id.tv_status)
+        mState = findViewById(R.id.tv_stream_state)
 
+        // 录制与推流统一走 P4-C「surface」路径：本平台硬件编码器只接受 surface 输入，
+        // CPU 内存路径（mr_session_push_frame）拿不到任何输出（encoder_emitted 恒为 0），
+        // 因此不再保留 CPU 版的推流入口。
         findViewById<Button>(R.id.btn_record).setOnClickListener {
-            startSession(ASSET_RECORD, "录制")
+            startSession(ASSET_RECORD, LABEL_RECORD, surfaceMode = SURFACE_MODE_ON)
         }
-        findViewById<Button>(R.id.btn_push).setOnClickListener {
-            startSession(ASSET_PUSH, "推流")
-        }
-        // P4-C：编码器输入 surface 路径（自建 EGL 管线直绘，适配只接受 surface 输入的编码器）
+        // 推流按钮是**可恢复的开关**：空闲时开始推流，推流中点击即停止（回到空闲）。
         findViewById<Button>(R.id.btn_push_surface).setOnClickListener {
-            startSession(ASSET_PUSH, "推流(surface)", surfaceMode = SURFACE_MODE_ON)
+            if (mSession != null) {
+                stopSessionAsync()
+            } else {
+                startSession(ASSET_PUSH, LABEL_PUSH, surfaceMode = SURFACE_MODE_ON)
+            }
         }
         findViewById<Button>(R.id.btn_stop).setOnClickListener {
             stopSessionAsync()
+        }
+        findViewById<Button>(R.id.btn_target).setOnClickListener {
+            showTargetDialog()
         }
         findViewById<Button>(R.id.btn_back_home).setOnClickListener {
             finish()
@@ -139,12 +167,20 @@ class StreamTestActivity : AppCompatActivity() {
         // config 输出路径 ${FILES_DIR}/out/... 需要目录存在
         File(filesDir, "out").mkdirs()
 
+        // 对端（PC）地址：运行期可配（PC 走 WiFi 拿 DHCP，地址会变）
+        PushTarget.init(this)
+        appendLog(
+            "对端：${PushTarget.host}（推流 :${PushTarget.WHIP_PORT}，中继 :${PushTarget.RELAY_PORT}）"
+        )
+
         // 打印库版本（同时触发 native 库加载，可及早发现集成问题）
         val ver = MediaRecordSession.libraryVersion()
         appendLog(
             if (ver != null) "media_record v${ver[0]}.${ver[1]}.${ver[2]}"
             else "media_record 库加载失败（见 logcat）"
         )
+
+        updateStreamUi()  // 初始状态：未推流
     }
 
     override fun onStart() {
@@ -170,6 +206,13 @@ class StreamTestActivity : AppCompatActivity() {
     }
 
     override fun onDestroy() {
+        // 离开本页即收尾当前会话：否则 native 侧还在推流/录制，再次进入本页时
+        // mSession 已为 null，状态提示会与实际情况不一致。
+        // 注意排除配置变更（语言/字号/深色模式等会重建 Activity）——那种情况不该中断推流。
+        if (mSession != null && !isChangingConfigurations) {
+            appendLog("离开页面，停止会话并保存…")
+            stopSessionAsync()
+        }
         stopPreview()
         super.onDestroy()
     }
@@ -227,11 +270,11 @@ class StreamTestActivity : AppCompatActivity() {
             .indexOf(CameraPreference.selectedCameraId)
             .let { if (it >= 0) it + 1 else 0 }
         mSwitcher = CameraSwitchClient(
-            relayBase = CAMERA_SWITCH_RELAY,
+            relayBase = PushTarget.relayBase,
             onSwitch = { cam -> runOnUiThread { switchCamera(cam) } },
             onStatus = { msg -> onSwitchStatus(msg) }
         ).also { it.startPolling() }
-        appendLog("切换中继轮询已启动：$CAMERA_SWITCH_RELAY（当前 $mCurrentCameraIndex 路）")
+        appendLog("切换中继轮询已启动：${PushTarget.relayBase}（当前 $mCurrentCameraIndex 路）")
     }
 
     /** 停止中继轮询。 */
@@ -239,6 +282,12 @@ class StreamTestActivity : AppCompatActivity() {
         mSwitcher?.stop()
         mSwitcher = null
         mLastSwitchStatus = null
+    }
+
+    /** 对端地址变更后重启轮询（推流会话需重新点「开始推流」才生效）。 */
+    private fun restartSwitcher() {
+        stopSwitcher()
+        startSwitcher()
     }
 
     /** 状态回调（轮询线程）。仅在状态**变化**时上屏，避免"中继不可达"反复刷屏。 */
@@ -288,6 +337,70 @@ class StreamTestActivity : AppCompatActivity() {
             Log.e(TAG, "switchCamera($index) failed", e)
             appendLog("切换失败：${e.message}")
         }
+    }
+
+    // ============================================================
+    // 对端（PC）地址
+    // ============================================================
+
+    /**
+     * 「对端地址」弹窗：手填 PC 的 IP/主机名，或点「自动发现」扫本网段找中继。
+     *
+     * 背景：PC 走 WiFi 拿 DHCP 地址、**会变**，写死会导致推流与切换一起失效。
+     */
+    private fun showTargetDialog() {
+        val input = EditText(this).apply {
+            setText(PushTarget.host)
+            hint = "PC 的 IP 或主机名"
+            setSingleLine()
+            setPadding(48, 24, 48, 24)
+        }
+        AlertDialog.Builder(this)
+            .setTitle(R.string.stream_test_btn_target)
+            .setMessage(
+                "MediaMTX :${PushTarget.WHIP_PORT}（推流）\n" +
+                    "中继 :${PushTarget.RELAY_PORT}（切换指令，server.py）\n" +
+                    "当前：${PushTarget.host}"
+            )
+            .setView(input)
+            .setPositiveButton("保存") { _, _ ->
+                val value = input.text.toString().trim()
+                if (value.isNotEmpty()) {
+                    PushTarget.setHost(this, value)
+                    appendLog("对端地址 → ${PushTarget.host}（推流 ${PushTarget.whipUrl}）")
+                    if (mSession != null) appendLog("推流会话仍在用旧地址，请停止后重新开始")
+                    restartSwitcher()
+                }
+            }
+            .setNeutralButton("自动发现") { _, _ -> autoDiscoverTarget() }
+            .setNegativeButton("取消", null)
+            .show()
+    }
+
+    /** 扫描本网段寻找中继（server.py）；找到即采用其 IP 作为对端地址。 */
+    private fun autoDiscoverTarget() {
+        appendLog("正在扫描本网段寻找中继（:${PushTarget.RELAY_PORT}）…")
+        Thread {
+            val ip = try {
+                RelayDiscovery.findRelay()
+            } catch (t: Throwable) {
+                Log.e(TAG, "findRelay failed", t)
+                null
+            }
+            runOnUiThread {
+                if (ip == null) {
+                    appendLog(
+                        "未发现中继：确认 PC 上中继已启动" +
+                            "（CSWITCH_CAMS=6 python3 server.py），且车机与 PC 同网段"
+                    )
+                } else {
+                    PushTarget.setHost(this, ip)
+                    appendLog("发现中继：$ip → 对端地址已更新（推流 ${PushTarget.whipUrl}）")
+                    if (mSession != null) appendLog("推流会话仍在用旧地址，请停止后重新开始")
+                    restartSwitcher()
+                }
+            }
+        }.also { it.isDaemon = true; it.start() }
     }
 
     // ============================================================
@@ -414,6 +527,7 @@ class StreamTestActivity : AppCompatActivity() {
         val notifyFail = ss?.getOrNull(3) ?: -1L
         val lastDrawUs = ss?.getOrNull(4) ?: -1L
         val lastConvertUs = ss?.getOrNull(5) ?: -1L
+        val zeroCopy = ss?.getOrNull(6) ?: -1L
         val st = session.stats()
         val beats = st?.getOrNull(0) ?: -1L
         val notify = st?.getOrNull(1) ?: -1L
@@ -422,16 +536,75 @@ class StreamTestActivity : AppCompatActivity() {
         val surfaceSrc = st?.getOrNull(11) ?: -1L
         val line = "surface 投 $mPushedFrames 帧（${width}x$height → " +
             "enc ${mSurfaceWidth}x$mSurfaceHeight）drawn=$drawn drop=$drop " +
-            "drawFail=$drawFail notifyFail=$notifyFail | conv %.2fms draw %.2fms".format(
-                lastConvertUs / 1000.0, lastDrawUs / 1000.0
-            ) + " | enc beats=$beats notify=$notify polls=$polls " +
+            "drawFail=$drawFail notifyFail=$notifyFail | " +
+            (if (zeroCopy == 1L) "零拷贝" else "CPU(conv %.2fms)".format(lastConvertUs / 1000.0)) +
+            " draw %.2fms".format(lastDrawUs / 1000.0) +
+            " | enc beats=$beats notify=$notify polls=$polls " +
             "emitted=$emitted surfSrc=$surfaceSrc"
         runOnUiThread { appendLog(line) }
+
+        // 顶部状态栏的实时摘要（随进度每 ~2 秒刷新；UI 线程切换由 helper 内部处理）
+        val elapsedMs = (System.currentTimeMillis() - mSessionStartMs).coerceAtLeast(1L)
+        val fps = mPushedFrames * 1000.0 / elapsedMs
+        updateStreamUi(
+            detail = buildString {
+                append("%.1ffps".format(fps))
+                append(" · 投 $mPushedFrames 帧")
+                append(if (emitted >= 0) " · 编码 $emitted 帧" else " · 编码统计不可用")
+                if (drop > 0) append(" · 丢 $drop")
+            }
+        )
     }
 
     // ============================================================
     // 会话（录制 / 推流）
     // ============================================================
+
+    /**
+     * 刷新顶部状态提示与推流按钮文案（三个状态：推流中 / 正在停止 / 未推流）。
+     *
+     * 状态以 [mSession] 是否为 null 为准，因而**天然可恢复**：任何路径（按钮、
+     * 录制按钮、启动失败、收尾完成）都会把界面带回一致状态。可从任意线程调用。
+     *
+     * @param stopping 正在收尾（finalize 输出文件）——此时按钮置灰，避免重入启动。
+     * @param detail   推流中的实时摘要（如 `29.8fps · 投 3400 帧 · 编码 3399 帧`）。
+     */
+    private fun updateStreamUi(stopping: Boolean = false, detail: String? = null) {
+        val live = mSession != null
+        val label = mSessionLabel
+        runOnUiThread {
+            val btn = findViewById<Button>(R.id.btn_push_surface)
+            val recordBtn = findViewById<Button>(R.id.btn_record)
+            recordBtn.isEnabled = !stopping  // 收尾期间禁止开新会话（否则两个 native 会话并存）
+            when {
+                live -> {
+                    btn.isEnabled = true
+                    btn.setText(
+                        if (label == LABEL_RECORD) R.string.stream_test_btn_record_stop
+                        else R.string.stream_test_btn_push_stop
+                    )
+                    mState.setTextColor(0xFF00E676.toInt())  // 绿色 = 正在推流
+                    mState.text = getString(
+                        R.string.stream_test_state_live,
+                        label,
+                        detail ?: "启动中…"
+                    )
+                }
+                stopping -> {
+                    btn.isEnabled = false
+                    btn.setText(R.string.stream_test_btn_stopping)
+                    mState.setTextColor(0xFFFFB300.toInt())  // 橙色 = 收尾中
+                    mState.setText(R.string.stream_test_state_stopping)
+                }
+                else -> {
+                    btn.isEnabled = true
+                    btn.setText(R.string.stream_test_btn_push_surface)
+                    mState.setTextColor(0xFF888888.toInt())  // 灰色 = 未推流
+                    mState.setText(R.string.stream_test_state_idle)
+                }
+            }
+        }
+    }
 
     /**
      * 读取 assets config 并打开/启动一个持续运行（resident）的会话。
@@ -440,10 +613,19 @@ class StreamTestActivity : AppCompatActivity() {
      *                    1 = 编码器输入 surface 路径（宿主 GL 直绘 + `notify_frame`）。
      */
     private fun startSession(assetName: String, label: String, surfaceMode: Int = 0) {
-        stopSessionAsync()
+        // 上一次会话还在收尾时不开新的：否则两个 native 会话并存，抢编码器/输入 surface。
+        if (mStopping) {
+            appendLog("上一次会话正在收尾，请稍候再点…")
+            return
+        }
+        if (stopSessionAsync()) {
+            appendLog("已停止上一次会话，正在收尾——完成后请再点一次「开始」")
+            return
+        }
         val json = loadConfig(assetName)
         if (json == null) {
             appendLog("读取 $assetName 失败")
+            updateStreamUi()
             return
         }
         mTargetWidth = 0
@@ -467,12 +649,14 @@ class StreamTestActivity : AppCompatActivity() {
         val session = MediaRecordSession.open(json, surfaceMode = surfaceMode, resident = 1)
         if (session == null) {
             appendLog("$label 会话打开失败（见 logcat）")
+            updateStreamUi()
             return
         }
         val rc = session.start()
         if (rc != MediaRecordSession.MR_OK) {
             appendLog("$label 启动失败 rc=$rc：${session.lastError()}")
             session.close()
+            updateStreamUi()
             return
         }
 
@@ -484,6 +668,7 @@ class StreamTestActivity : AppCompatActivity() {
                 appendLog("$label 取编码器输入 surface 失败（见 logcat）")
                 session.stop()
                 session.close()
+                updateStreamUi()
                 return
             }
             mSurfaceWidth = size.first
@@ -500,39 +685,74 @@ class StreamTestActivity : AppCompatActivity() {
         mConvSumUs = 0
         mPushSumUs = 0
         mSession = session
+        mSessionLabel = label
+        mSessionStartMs = System.currentTimeMillis()
         appendLog("$label 已启动（$assetName）")
+        updateStreamUi()  // 立刻显示「● 推流中」，按钮切成「停止推流」
     }
 
-    /** 异步收尾当前会话：pushEof（finalize）→ wait → close。 */
-    private fun stopSessionAsync() {
-        val session = mSession ?: return
+    /**
+     * 异步收尾当前会话：pushEof（finalize）→ wait → close。
+     *
+     * @return true = 刚启动了收尾流程（调用方不应紧接着开新会话）；false = 本来就没有会话。
+     */
+    private fun stopSessionAsync(): Boolean {
+        val session = mSession ?: return false
         mSession = null
         val wasSurface = mSurfaceMode
         mSurfaceMode = false
+        mStopping = true
         appendLog("正在停止并保存…")
+        updateStreamUi(stopping = true)  // 置灰按钮，避免收尾期间重入启动
         Thread {
-            // pushEof 会先停 surface 渲染器（join GL 线程）再 finalize MP4
-            val surfaceStats = session.surfaceStats()
-            val eofRc = session.pushEof()
-            val waitRc = session.waitSession(WAIT_FINALIZE_MS)
-            val stats = session.stats()
-            session.close()
-            runOnUiThread {
-                appendLog("已停止：eof=$eofRc wait=$waitRc，推帧 $mPushedFrames / 丢 $mDroppedFrames")
-                if (wasSurface) {
-                    appendLog(
-                        "surface: drawn=${surfaceStats?.getOrNull(0)} " +
-                            "drop=${surfaceStats?.getOrNull(1)} " +
-                            "drawFail=${surfaceStats?.getOrNull(2)} " +
-                            "notifyFail=${surfaceStats?.getOrNull(3)} " +
-                            "zeroCopy=${surfaceStats?.getOrNull(5)}"
-                    )
-                }
-                stats?.let {
-                    appendLog("stats: beats=${it[0]} notify=${it[1]} polls=${it[2]} emitted=${it[5]}")
+            var surfaceStats: LongArray? = null
+            var stats: LongArray? = null
+            var eofRc = Int.MIN_VALUE
+            var waitRc = Int.MIN_VALUE
+            var failure: Throwable? = null
+            try {
+                // pushEof 会先停 surface 渲染器（join 渲染线程）再 finalize MP4
+                surfaceStats = session.surfaceStats()
+                eofRc = session.pushEof()
+                waitRc = session.waitSession(WAIT_FINALIZE_MS)
+                stats = session.stats()
+            } catch (t: Throwable) {
+                // 收尾阶段的异常必须兜住：否则界面会永久卡在「正在停止」（按钮置灰无法恢复）
+                failure = t
+                Log.e(TAG, "stop session failed", t)
+            } finally {
+                session.close()  // 幂等
+                runOnUiThread {
+                    mStopping = false
+                    val fail = failure
+                    if (fail != null) {
+                        appendLog("收尾异常：${fail.message}（会话已释放）")
+                    } else {
+                        appendLog(
+                            "已停止：eof=$eofRc wait=$waitRc，" +
+                                "推帧 $mPushedFrames / 丢 $mDroppedFrames"
+                        )
+                        if (wasSurface) {
+                            appendLog(
+                                "surface: drawn=${surfaceStats?.getOrNull(0)} " +
+                                    "drop=${surfaceStats?.getOrNull(1)} " +
+                                    "drawFail=${surfaceStats?.getOrNull(2)} " +
+                                    "notifyFail=${surfaceStats?.getOrNull(3)} " +
+                                    "zeroCopy=${surfaceStats?.getOrNull(5)}"
+                            )
+                        }
+                        stats?.let {
+                            appendLog(
+                                "stats: beats=${it[0]} notify=${it[1]} " +
+                                    "polls=${it[2]} emitted=${it[5]}"
+                            )
+                        }
+                    }
+                    updateStreamUi()  // 回到「未推流」，按钮恢复「开始推流」
                 }
             }
         }.start()
+        return true
     }
 
     // ============================================================
@@ -541,7 +761,8 @@ class StreamTestActivity : AppCompatActivity() {
 
     /**
      * 读取 assets 管线 config：
-     * 1. 替换 `${FILES_DIR}` 占位符；
+     * 1. 替换 `${FILES_DIR}` 与 `${PUSH_HOST}` 占位符
+     *    （后者来自 [PushTarget]，PC 走 WiFi 的 DHCP 地址会变，不能写死在 assets 里）；
      * 2. 把 `options.output` 的**相对路径**补成 filesDir 下的绝对路径。
      *
      * 第 2 步是必需的：引擎用 C 的 `open()` 打开输出文件，相对路径按**进程 CWD** 解析
@@ -551,6 +772,7 @@ class StreamTestActivity : AppCompatActivity() {
     private fun loadConfig(assetName: String): String? = try {
         val raw = assets.open(assetName).bufferedReader().use { it.readText() }
             .replace("\${FILES_DIR}", filesDir.absolutePath)
+            .replace("\${PUSH_HOST}", PushTarget.host)
         absolutizeOutputPaths(raw)
     } catch (e: Exception) {
         Log.e(TAG, "loadConfig $assetName failed", e)
@@ -638,11 +860,9 @@ class StreamTestActivity : AppCompatActivity() {
         /** 面板最多保留日志行数。 */
         private const val MAX_LOG_LINES = 40
 
-        /**
-         * 摄像头切换中继地址（跑在 PC 上的 `tools/camera-switch-demo/server.py`）。
-         * 端口与 server.py 的 `CSWITCH_PORT` 保持一致；改地址只需改这里。
-         */
-        private const val CAMERA_SWITCH_RELAY = "http://192.168.6.233:8081"
+        /** 会话名称（状态提示与按钮文案共用）。 */
+        private const val LABEL_PUSH = "推流"
+        private const val LABEL_RECORD = "录制"
 
         /**
          * 中继/观看端约定的摄像头编号顺序（**第 i 个按钮 = 第 i 路**）。

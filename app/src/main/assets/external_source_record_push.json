@@ -45,7 +45,7 @@
       "type": "StreamPushNode",
       "options": {
         "backend_type": "webrtc",
-        "remote_url": "http://192.168.6.233:8889/test/whip",
+        "remote_url": "http://${PUSH_HOST}:8889/test/whip",
         "video_codec": "h264",
         "audio_codec": "aac",
         "initial_bitrate_kbps": 2000,

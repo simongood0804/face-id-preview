@@ -95,9 +95,16 @@
     <string name="stream_test_title">推流测试校验</string>
     <string name="stream_test_hint">等待相机预览…</string>
     <string name="stream_test_btn_record">开始录制</string>
-    <string name="stream_test_btn_push">开始推流</string>
     <string name="stream_test_btn_push_surface">开始推流（surface）</string>
     <string name="stream_test_btn_stop">停止并保存</string>
+    <string name="stream_test_btn_target">对端地址（PC）</string>
+    <string name="stream_test_btn_push_stop">停止推流</string>
+    <string name="stream_test_btn_record_stop">停止录制</string>
+    <string name="stream_test_btn_stopping">正在停止…</string>
+    <string name="stream_test_state_idle">未推流</string>
+    <!-- %1$s = 会话名（推流/录制），%2$s = 实时摘要（fps、帧数等） -->
+    <string name="stream_test_state_live">● %1$s中 · %2$s</string>
+    <string name="stream_test_state_stopping">正在停止（保存输出文件）…</string>
 
     <!-- 融合监测（FACEP-018） -->
     <string name="fusion_title">融合监测</string>
