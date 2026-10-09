@@ -26,11 +26,26 @@
 # JDK 路径：优先环境变量/命令行参数（make JAVA_HOME=/path）；
 # macOS 自动探测 JDK 11，其他平台需显式指定（如 make JAVA_HOME=/usr/lib/jvm/java-11）
 JAVA_HOME ?= $(shell /usr/libexec/java_home -v 11 2>/dev/null)
-PACKAGE_NAME    := com.skyworth.faceid
-ACTIVITY_NAME   := .ui.HomeActivity
+# 包名与安装位置：默认本项目的 DmsFace。
+# 需要**顶替车机预装的其它系统应用**（例如标定软件 AVM_Calibrate）时，命令行覆盖这三项：
+#   make push-system PACKAGE_NAME=com.mediapipe.avm \
+#                    SYSTEM_APP_DIR=/system/app/AVM_Calibrate APK_NAME=AVM_Calibrate.apk
+# 说明：
+#   * PACKAGE_NAME 经 ORG_GRADLE_PROJECT_appId 传给 Gradle（Gradle 原生支持该前缀的环境变量），
+#     保证 APK 内的 applicationId 与部署位置一致，不必给每条 gradlew 命令加参数；
+#   * push-system 会先把目标目录下**文件名不同**的 APK 备份到 PC 的 /tmp 再删除，
+#     避免新旧两个包并存（预装软件被顶掉后仍可用备份还原）；
+#   * 目标包若已存在，**签名 / sharedUserId / 版本号**可能冲突，先跑 `make probe-replace` 体检。
+PACKAGE_NAME    ?= com.skyworth.faceid
+# 启动 Activity 用**完整类名**：包名可被顶替，但类名仍属 com.skyworth.faceid（namespace 未变），
+# 若写成 `.ui.HomeActivity`，`am start -n <新包名>/.ui.HomeActivity` 会展开成新包名下的类而找不到。
+ACTIVITY_NAME   := com.skyworth.faceid.ui.HomeActivity
 APK_PATH        := app/build/outputs/apk/release/app-release.apk
-SYSTEM_APP_DIR  := /system/app/DmsFace
-APK_NAME        := DmsFace.apk
+SYSTEM_APP_DIR  ?= /system/app/DmsFace
+APK_NAME        ?= DmsFace.apk
+# 车机相机命名方案配置文件（App 启动时读一次；按车型推送，不用重编 APK）
+CAMERA_PROFILE  ?= /vendor/etc/faceid/evs_camera_profile.json
+export ORG_GRADLE_PROJECT_appId := $(PACKAGE_NAME)
 # 模型文件（dlc + manifest）源目录与车机 vendor 目标目录
 MODEL_ASSET_DIR   := app/src/main/assets/models
 VENDOR_MODEL_DIR  := /vendor/etc/faceid
@@ -59,7 +74,7 @@ GREEN  := \033[0;32m
 YELLOW := \033[1;33m
 NC     := \033[0m
 
-.PHONY: build clean-build install push-system uninstall run stop restart \
+.PHONY: build clean-build install push-system uninstall probe-replace push-profile run stop restart \
         pc-up pc-check pc-down \
         log log-crash log-evs log-last gpu top mem dumpsys pid \
         clean help test test-class test-suite test-report
@@ -103,10 +118,25 @@ push-system: clean-build
 	adb root
 	adb wait-for-device
 	adb remount
+	@echo "$(GREEN)[PUSH-SYSTEM] 顶替前清理：备份并移除目标目录下其它 APK...$(NC)"
+	@adb shell "ls $(SYSTEM_APP_DIR)/*.apk 2>/dev/null" | tr -d '\r' | while read -r f; do \
+		if [ -n "$$f" ] && [ "$$(basename $$f)" != "$(APK_NAME)" ]; then \
+			echo "  备份到 /tmp/$$(basename $$f).bak 并移除 $$f"; \
+			adb pull "$$f" "/tmp/$$(basename $$f).bak" >/dev/null 2>&1 || true; \
+			adb shell rm -f "$$f"; \
+		fi; \
+	done; true
 	@echo "$(GREEN)[PUSH-SYSTEM] creating directory...$(NC)"
 	adb shell mkdir -p $(SYSTEM_APP_DIR)/lib/arm64
-	@echo "$(GREEN)[PUSH-SYSTEM] pushing APK...$(NC)"
-	adb push $(APK_PATH) $(SYSTEM_APP_DIR)/$(APK_NAME)
+	@echo "$(GREEN)[PUSH-SYSTEM] pushing APK to device temp（先推临时文件：adb push 直接覆盖系统文件时会先把目标删掉，传输一旦中断就留成 whiteout）...$(NC)"
+	adb push $(APK_PATH) /data/local/tmp/$(APK_NAME).new
+	@echo "$(GREEN)[PUSH-SYSTEM] verifying transfer (md5)...$(NC)"
+	@L=$$(md5 -q $(APK_PATH) 2>/dev/null || md5sum $(APK_PATH) | awk '{print $$1}'); \
+	 R=$$(adb shell "md5sum /data/local/tmp/$(APK_NAME).new" | tr -d '\r' | awk '{print $$1}'); \
+	 echo "  local =$$L"; echo "  device=$$R"; \
+	 if [ "$$L" != "$$R" ]; then echo "$(RED)  MD5 不一致，已中止（系统目录未被改动）$(NC)"; exit 1; fi
+	@echo "$(GREEN)[PUSH-SYSTEM] installing into $(SYSTEM_APP_DIR)...$(NC)"
+	adb shell "cp /data/local/tmp/$(APK_NAME).new $(SYSTEM_APP_DIR)/$(APK_NAME) && chmod 644 $(SYSTEM_APP_DIR)/$(APK_NAME) && chown root:root $(SYSTEM_APP_DIR)/$(APK_NAME)"
 	@echo "$(GREEN)[PUSH-SYSTEM] extracting and pushing native libs...$(NC)"
 	cd /tmp && rm -rf apk_libs && mkdir apk_libs && cd apk_libs && \
 	unzip -o $(CURDIR)/$(APK_PATH) "lib/arm64-v8a/*" && \
@@ -142,6 +172,44 @@ uninstall:
 	adb uninstall $(PACKAGE_NAME) 2>/dev/null && \
 		echo "$(GREEN)[UNINSTALL] done$(NC)" || \
 		echo "$(YELLOW)[UNINSTALL] package not found$(NC)"
+
+## 设置车机相机命名方案（按车型；**不用重编 APK**，改完需重启 App 生效）
+## 用法:
+##   make push-profile MODE=van233   # 老 van233：FVC / RBS / RVC / LBS + RVC + DMS
+##   make push-profile MODE=avm      # minibus 等：AVMF / AVMR / AVMB / AVML + RVC + DMS
+##   make push-profile MODE=auto     # 按固件 /vendor/etc/evs_hal_devices.xml 自动识别（默认）
+##   make push-profile ORDER=AVMF,AVMR,AVMB,AVML,RVC,DMS    # 完全手动指定 6 路
+push-profile:
+	@echo "$(GREEN)[PROFILE] 写入相机命名方案 → $(CAMERA_PROFILE)$(NC)"
+	@if [ -n "$(ORDER)" ]; then \
+		echo "{\"mode\":\"order\",\"order\":[\"$$(echo $(ORDER) | sed 's/,/","/g')\"]}" > /tmp/evs_camera_profile.json; \
+	else \
+		echo "{\"mode\":\"$(if $(MODE),$(MODE),auto)\",\"order\":[]}" > /tmp/evs_camera_profile.json; \
+	fi
+	@cat /tmp/evs_camera_profile.json
+	adb root >/dev/null 2>&1 || true
+	adb wait-for-device
+	adb remount >/dev/null 2>&1 || true
+	adb shell mkdir -p $$(dirname $(CAMERA_PROFILE))
+	adb push /tmp/evs_camera_profile.json $(CAMERA_PROFILE)
+	adb shell chmod 644 $(CAMERA_PROFILE)
+	@echo "$(YELLOW)  已写入；重启 App 生效：make stop && make run$(NC)"
+
+## 顶替预装软件前的**只读**体检（不改任何东西）
+## 用法: make probe-replace PACKAGE_NAME=<标定软件包名> SYSTEM_APP_DIR=<它的目录>
+probe-replace:
+	@echo "$(GREEN)[PROBE] 目标包名 = $(PACKAGE_NAME)$(NC)"
+	@echo "$(YELLOW)  目标安装位置 = $(SYSTEM_APP_DIR)/$(APK_NAME)$(NC)"
+	@echo "$(YELLOW)  --- 1) 包是否已安装（含签名/共享 UID/ABI）---$(NC)"
+	@adb shell "dumpsys package $(PACKAGE_NAME) 2>/dev/null | grep -iE 'codePath|resourcePath|versionCode|versionName|sharedUser|userId=|primaryCpuAbi|flags=|signatures'" || echo "  (无输出：该包未安装)"
+	@echo "$(YELLOW)  --- 2) 它在 packages.xml 里的记录 ---$(NC)"
+	@adb shell "grep -nE '<(package|updated-package) name=\"$(PACKAGE_NAME)\"|<item name=\"$(PACKAGE_NAME)\"' /data/system/packages.xml" || echo "  (无记录)"
+	@echo "$(YELLOW)  --- 3) 各 shared-user（判断它属于哪个共享 UID）---$(NC)"
+	@adb shell "grep -n 'shared-user name' /data/system/packages.xml" || true
+	@echo "$(YELLOW)  --- 4) packages.list 记录 ---$(NC)"
+	@adb shell "grep -n '^$(PACKAGE_NAME) ' /data/system/packages.list" || echo "  (无记录)"
+	@echo "$(YELLOW)  --- 5) 目标目录现有文件 ---$(NC)"
+	@adb shell "ls -l $(SYSTEM_APP_DIR)/ 2>/dev/null" || true
 
 # =============================================================================
 # 运行

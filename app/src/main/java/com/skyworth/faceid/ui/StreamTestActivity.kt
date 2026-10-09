@@ -11,7 +11,7 @@ import android.widget.Toast
 import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import androidx.appcompat.widget.SwitchCompat
-import com.android.car.evs.CameraIds
+import com.skyworth.faceid.camera.EvsCameraCatalog
 import com.skyworth.faceid.R
 import com.skyworth.faceid.camera.CameraSwitchClient
 import com.skyworth.faceid.core.CameraPreference
@@ -224,6 +224,10 @@ class StreamTestActivity : AppCompatActivity() {
             if (ver != null) "media_record v${ver[0]}.${ver[1]}.${ver[2]}"
             else "media_record 库加载失败（见 logcat）"
         )
+
+        // 相机清单随车型变（van233=FVC/RBS/RVC/LBS，minibus=AVMF/AVMR/AVMB/AVML），
+        // 上屏一行便于一眼确认"这台车解析到的是哪几路"。
+        appendLog(EvsCameraCatalog.describe())
 
         updateStreamUi()   // 初始状态：未推流
         refreshOutSize()   // 「清理」按钮上显示当前落盘占用
@@ -1111,18 +1115,15 @@ class StreamTestActivity : AppCompatActivity() {
          * 1) 观看端 `index.html` 的 `DEFAULT_NAMES`；
          * 2) 中继 `server.py` 的 `CSWITCH_CAMS`（默认 5，**要含 DMS 必须设为 6**，
          *    否则第 6 路的指令会被它按 `1 <= cam <= NUM_CAMS` 静默丢弃）；
-         * 3) 本列表。
+         * 3) 本列表 —— 由 [EvsCameraCatalog] 按**固件声明**解析，槽位顺序固定
+         *    （前/右/后/左/倒车/驾驶员），**名字随车型变**：
+         *    van233 环视四路是 `FVC/RBS/RVC/LBS`，minibus 是 `AVMF/AVMR/AVMB/AVML`。
+         *    切勿写死任一套：HAL 对固件未声明的名字会"成功却一帧不出"，且不报错
+         *    （2026-10-09 两台车各踩一次）。
          *
          * 刻意与 [CameraPreference.selectableCameraIds] 解耦：那是主页下拉框的展示顺序，
          * 为 UI 需要调整时不应连带把中继的编号映射改错。
          */
-        private val SWITCH_CAMERA_ORDER = listOf(
-            CameraIds.AVMF,  // 1
-            CameraIds.AVMR,  // 2
-            CameraIds.AVMB,  // 3
-            CameraIds.AVML,  // 4
-            CameraIds.RVC,   // 5
-            CameraIds.DMS    // 6
-        )
+        private val SWITCH_CAMERA_ORDER = EvsCameraCatalog.ids
     }
 }
