@@ -25,7 +25,7 @@
         android:textSize="14sp"
         android:textColor="#AAAAAA" />
 
-    <!-- 四个功能入口（2×2 田字型，适配横屏） -->
+    <!-- 功能入口：每行两个（适配横屏） -->
     <!-- 第 1 行：人脸识别 | 疲劳监测 -->
     <LinearLayout
         android:layout_width="match_parent"
@@ -81,6 +81,35 @@
             android:minHeight="110dp"
             android:padding="16dp"
             android:text="@string/home_btn_behavior"
+            android:textSize="18sp" />
+    </LinearLayout>
+
+    <!-- 第 3 行：融合监测 | 推流测试校验（与第 1、2 行同款两列布局） -->
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="12dp"
+        android:orientation="horizontal">
+
+        <Button
+            android:id="@+id/btn_fusion"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:layout_marginEnd="12dp"
+            android:minHeight="110dp"
+            android:padding="16dp"
+            android:text="@string/home_btn_fusion"
+            android:textSize="18sp" />
+
+        <Button
+            android:id="@+id/btn_stream_test"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:minHeight="110dp"
+            android:padding="16dp"
+            android:text="@string/home_btn_stream_test"
             android:textSize="18sp" />
     </LinearLayout>
 

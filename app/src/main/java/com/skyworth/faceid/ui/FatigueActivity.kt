@@ -23,13 +23,17 @@ import com.skyworth.faceid.signal.DoorSignalSource
 /**
  * 疲劳监测模块（FACEP-011 阶段三 / FACEP-015 配置化分级）。
  *
- * 复用公共基础设施：`AlgoSession`（含眼嘴管线）、`FrameSession`、`FaceOverlayBridge`（疲劳区）。
+ * 复用公共基础设施：`AlgoSession`（含眼嘴管线 + **共享疲劳状态机**）、`FrameSession`、
+ * `FaceOverlayBridge`（疲劳区）。
  *
- * - **疲劳判定下沉 `:algo`**（FACEP-015）：规则从 `assets/fatigue_rules.json` 加载（[FatigueRuleLoader]），
- *   判定由 [FatigueStateMachine] 完成——三级疲劳（轻度/中度/重度）覆盖升级、逐级退出、窗口统计、无人脸复位；
+ * - **疲劳判定下沉 `:algo`**（FACEP-015）：规则从 `assets/fatigue_rules.json` 加载
+ *   （[FatigueRuleLoader]），判定由 [FatigueStateMachine] 完成——三级疲劳（轻度/中度/重度）
+ *   覆盖升级、逐级退出、窗口统计、无人脸复位；
+ * - **FACEP-019 共享化**：状态机**挂在 [AlgoSession]**（算法结果入口统一喂入），本页只提供
+ *   规则来源并读取 `lastFatigueOutput` 渲染，不再自持实例，与融合监测页判定口径一致；
  * - **渲染**（FACEP-015 §4.3）：左上角状态指示灯（正常绿/轻度黄/中度橙/重度红）+ 状态文本，
  *   下方闭眼/哈欠描述 + 诊断统计区（当前命中条件与窗口计数，不跳变，便于观察规则影响）；
- * - 门信号（[DoorSignalSource]）：门开触发眼/嘴校准复位（换驾驶员重校）。
+ * - 门信号（[DoorSignalSource]）：门开触发眼/嘴校准复位 + 时序模块复位（换驾驶员重校）。
  *
  * 生命周期：onStart 装配并 acquire，onStop release。
  */
@@ -51,9 +55,6 @@ class FatigueActivity : AppCompatActivity() {
     private var mBridge: FaceOverlayBridge? = null
     private var mDoorSource: DoorSignalSource? = null
 
-    /** FACEP-015：疲劳判定引擎（规则从 JSON 注入）。 */
-    private var mFatigueMachine: FatigueStateMachine? = null
-
     private var mAlgorithmEnabled = true
 
     /** 渲染器是否已设置（GLSurfaceView.setRenderer 仅能调用一次）。 */
@@ -73,10 +74,12 @@ class FatigueActivity : AppCompatActivity() {
         mDiagCont = findViewById(R.id.tv_diag_cont)
         findViewById<Button>(R.id.btn_back_home).setOnClickListener { finish() }
 
-        // FACEP-015：加载疲劳规则（assets/fatigue_rules.json；缺失/损坏回退默认）
+        // FACEP-019：疲劳判定引擎统一挂在共享层 AlgoSession（不再本页自持实例）。
+        // 本页只负责**提供规则来源**（assets/fatigue_rules.json；缺失/损坏回退默认），
+        // 首次 acquire 时由共享层拉取生效，保证各页疲劳判定口径一致。
         val rule = FatigueRuleLoader.loadFromAssets(this)
-        mFatigueMachine = FatigueStateMachine(rule)
-        Log.i(TAG, "onCreate: fatigue rule loaded (levels=${rule.levels.size})")
+        AlgoSession.get().fatigueRuleProvider = { rule }
+        Log.i(TAG, "onCreate: fatigue rule provider set (levels=${rule.levels.size})")
     }
 
     override fun onStart() {
@@ -124,14 +127,15 @@ class FatigueActivity : AppCompatActivity() {
             mFrameSession = frame
             mBridge = FaceOverlayBridge(findViewById(R.id.face_overlay))
 
-            // 门信号：门开 → 眼/嘴校准复位 + 疲劳统计复位（换驾驶员重校，§4.6-B 全局事件；
+            // 门信号：门开 → 眼/嘴校准复位 + 时序模块复位（换驾驶员重校，§4.6-B 全局事件；
             // FACEP-015 中危修复：避免换人后沿用上一位驾驶员的疲劳累计）
             mDoorSource = DoorSignalSource(this).also { ds ->
                 ds.onDoorChanged = { door ->
                     if (door.isOpen) {
-                        Log.i(TAG, "door open, reset calibration & fatigue")
+                        Log.i(TAG, "door open, reset calibration & timing modules")
                         algo.onDoorOpened()
-                        mFatigueMachine?.reset()
+                        // FACEP-019：行为/疲劳状态机在共享层，统一复位
+                        algo.resetTimingModules()
                     }
                 }
                 ds.connect()
@@ -168,7 +172,12 @@ class FatigueActivity : AppCompatActivity() {
         }
     }
 
-    /** 算法结果回调：疲劳区桥接 + 疲劳分级判定（FACEP-015）。 */
+    /**
+     * 算法结果回调：疲劳区桥接 + 读取共享层疲劳判定结果（FACEP-015 / FACEP-019）。
+     *
+     * 疲劳状态机已统一挂在 [AlgoSession]（算法结果入口喂入），本页不再自己 update，
+     * 只取 [AlgoSession.lastFatigueOutput] 渲染，保证与融合监测页判定完全一致。
+     */
     private fun onAlgorithmResult(result: IFaceIDAlgorithm.FaceIDResult) {
         // 算法结果已修正回原图空间（1600×1300），用原图尺寸缩放显示（FACEP-011 裁剪映射）
         val distributor = mFrameSession?.frameDistributor()
@@ -176,17 +185,8 @@ class FatigueActivity : AppCompatActivity() {
         val imgH = distributor?.frameHeight ?: ORIGINAL_HEIGHT
         mBridge?.setFaces(result, false, FaceOverlayBridge.Module.FATIGUE, imgW, imgH)
 
-        val machine = mFatigueMachine ?: return
-        val hasFace = result.faceId.isNotEmpty() || result.faceRect != null
-
-        // FACEP-015：疲劳引擎判定（喂连续开合度，引擎内部判闭眼/哈欠/窗口统计/无人脸复位）。
-        // 用单调时钟（nanoTime），避免 wall clock 被 NTP/校时回拨导致时长异常（隐患 A 修复）。
-        val out = machine.update(
-            result.eyeOpenRatio,
-            result.mouthOpenRatio,
-            hasFace,
-            System.nanoTime() / 1_000_000
-        )
+        // FACEP-019：读取共享层疲劳输出（含闭眼/哈欠/窗口统计/无人脸复位诊断）
+        val out = mAlgoSession?.lastFatigueOutput ?: return
         renderFatigue(out)
     }
 

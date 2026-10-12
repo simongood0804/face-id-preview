@@ -19,7 +19,7 @@ import com.skyworth.faceid.signal.DistractionSource
 import com.skyworth.faceid.signal.DistractionSourceStore
 import com.skyworth.faceid.signal.SignalDispatcher
 import com.skyworth.faceid.signal.VehicleSignalSource
-import com.skyworth.faceid.zone.GazeFallpointDetector
+import com.skyworth.faceid.zone.HeadRayZoneDetector
 import com.skyworth.faceid.zone.RegionConfigLoader
 
 /**
@@ -119,12 +119,11 @@ class DistractionActivity : AppCompatActivity() {
             val publisher = BusPublisher(hub)
             // FACEP-016：自研视线落点判定器（SELF 源）+ 数据源开关（默认 SDK，持久化读取）
             // 区域配置从 assets 的 zone_regions.json 解析（4 点四边形，后续可改）。
-            val regions = RegionConfigLoader.loadFromAssets(this)
-            val fallpointDetector = GazeFallpointDetector(regions)
             mDispatcher = SignalDispatcher(
                 hub = hub,
                 publisher = publisher,
-                fallpointDetector = fallpointDetector,
+                // 分心判定唯一来源：头姿射线 + Y=680/Z=750 平面 + 最近注意点位
+                headRayDetector = HeadRayZoneDetector(),
                 initialSource = DistractionSourceStore.load(this)
             )
             updateDistractionSource()   // 初始化显示当前数据源
@@ -133,6 +132,8 @@ class DistractionActivity : AppCompatActivity() {
             mVehicleSource = VehicleSignalSource(this).also { vs ->
                 vs.onSpeedChanged = { speed ->
                     mDispatcher?.processVehicleSpeed(speed)
+                    // 转发给算法侧：按车速分档下发法规分心时长阈值给 SDK
+                    algo.algorithm().setVehicleSpeed(speed.speedKmh)
                     runOnUiThread { updateSpeedText() }
                 }
                 vs.connect()
@@ -174,7 +175,13 @@ class DistractionActivity : AppCompatActivity() {
 
     /** 算法结果回调：分心区桥接 + 分心状态展示。 */
     private fun onAlgorithmResult(result: IFaceIDAlgorithm.FaceIDResult) {
-        val distractActive = mDispatcher?.lastDistraction?.distracted ?: false
+        val dispatch = mDispatcher
+        val distractActive = dispatch?.lastDistraction?.distracted ?: false
+        // 同步头姿射线判定输出（视线 Z 轴高度 + 分心点位）供叠加层显示
+        mBridge?.let { b ->
+            b.gazeZHeight = dispatch?.lastGazeZHeight ?: Float.NaN
+            b.pointId = dispatch?.lastPointId ?: -1
+        }
         // 算法结果已修正回原图空间（1600×1300），用原图尺寸缩放显示（FACEP-011 裁剪映射）
         val distributor = mFrameSession?.frameDistributor()
         val imgW = distributor?.frameWidth ?: ORIGINAL_WIDTH

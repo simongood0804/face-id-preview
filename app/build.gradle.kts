@@ -9,10 +9,17 @@ android {
     ndkVersion = "25.2.9519653"
 
     defaultConfig {
-        applicationId = "com.skyworth.faceid"
+        // 包名可用 `-PappId=xxx`（或环境变量 ORG_GRADLE_PROJECT_appId=xxx）覆盖，默认本项目包名。
+        // 用途：**顶替车机预装的第三方系统应用**（例如标定软件）——需要占用它的包名与安装位置
+        // 才能走预装通道，见 Makefile 的 PACKAGE_NAME / SYSTEM_APP_DIR / APK_NAME 说明。
+        // 注意：只改 applicationId，`namespace`（类名与 R 资源包）保持 com.skyworth.faceid 不变，
+        // 避免全项目重命名；用 am start 启动时要用**完整类名**（Makefile 里已改成完整类名）。
+        applicationId = (project.findProperty("appId") as String?) ?: "com.skyworth.faceid"
         minSdk = rootProject.extra["minSdkVersion"] as Int
         targetSdk = rootProject.extra["targetSdkVersion"] as Int
-        versionCode = 1
+        // ⚠️ 不要随意降到 1：顶替车机预装的 `com.mediapipe.avm`（标定软件）时它的
+        // versionCode 是 2，比它低容易被 PackageManager 当降级处理。留出余量。
+        versionCode = 3
         versionName = "1.0.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
@@ -80,6 +87,15 @@ android {
         cmake {
             path = file("src/main/cpp/CMakeLists.txt")
             version = "3.18.1"
+        }
+    }
+
+    // media_record 预编译库（app/libs/arm64-v8a/*.so）通过 jniLibs 打包进 APK。
+    // CMake 侧改用 link_directories + `-l` 链接（不用 IMPORTED target），
+    // 避免"IMPORTED 与 jniLibs 重复打包"冲突，也避免 release 下 IMPORTED 库未被稳定打包。
+    sourceSets {
+        getByName("main") {
+            jniLibs.srcDirs("libs")
         }
     }
 

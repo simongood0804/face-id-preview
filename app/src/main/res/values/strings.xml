@@ -12,6 +12,18 @@
     <string name="btn_dump_continuous">连续dump</string>
     <string name="btn_dump_continuous_active">连续dump中…</string>
     <string name="dump_timer_format">剩余 %1$d 张：%2$s</string>
+    <string name="dump_timer_video_format">剩余 %1$d 秒：%2$s</string>
+
+    <!-- 行为监测 · 时序延时配置 -->
+    <string name="behavior_delay_title">时序判定延时</string>
+    <string name="behavior_delay_hint">进入=连续满足多久才确认；退出=中断多久才恢复。0 表示不延时/不宽限。</string>
+    <string name="behavior_delay_smoke_enter">吸烟 · 进入延时：%1$s</string>
+    <string name="behavior_delay_smoke_exit">吸烟 · 退出延时：%1$s</string>
+    <string name="behavior_delay_phone_enter">打电话 · 进入延时：%1$s</string>
+    <string name="behavior_delay_phone_exit">打电话 · 退出延时：%1$s</string>
+    <string name="behavior_delay_unsaved">无可用算法会话，延时未生效</string>
+    <string name="behavior_delay_zero">0（不延时）</string>
+    <string name="behavior_delay_sec">%1$.1f s</string>
 
     <!-- 连续 dump 输出格式选择 -->
     <string name="dump_mode_title">连续 Dump 格式</string>
@@ -88,6 +100,50 @@
     <string name="home_btn_fatigue">疲劳监测</string>
     <string name="home_btn_distraction">分心监测</string>
     <string name="home_btn_behavior">行为监测</string>
+    <string name="home_btn_fusion">融合监测</string>
+    <string name="home_btn_stream_test">推流测试校验</string>
+
+    <!-- 推流测试校验（对接 media_record：预览 + 录制/推流接口调用） -->
+    <string name="stream_test_title">推流测试校验</string>
+    <string name="stream_test_hint">等待相机预览…</string>
+    <string name="stream_test_btn_record">开始录制</string>
+    <string name="stream_test_btn_push_surface">开始推流（surface）</string>
+    <string name="stream_test_btn_stop">停止并保存</string>
+    <string name="stream_test_btn_target">对端地址（PC）</string>
+    <string name="stream_test_btn_push_stop">停止推流</string>
+    <string name="stream_test_btn_record_stop">停止录制</string>
+    <string name="stream_test_record_switch">录制</string>
+    <string name="stream_test_btn_clean">清理录制文件</string>
+    <string name="stream_test_btn_clean_size">清理录制文件（%1$s）</string>
+    <string name="stream_test_clean_title">清理录制文件</string>
+    <string name="stream_test_clean_msg">将删除 %1$d 个文件，共 %2$s，删除后不可恢复。</string>
+    <string name="stream_test_clean_done">已删除 %1$d 个文件，释放 %2$s</string>
+    <string name="stream_test_clean_none">没有可清理的录制文件</string>
+    <string name="stream_test_btn_stopping">正在停止…</string>
+    <string name="stream_test_state_idle">未推流</string>
+    <!-- %1$s = 会话名（推流/录制），%2$s = 实时摘要（fps、帧数等） -->
+    <string name="stream_test_state_live">● %1$s中 · %2$s</string>
+    <string name="stream_test_state_stopping">正在停止（保存输出文件）…</string>
+
+    <!-- 融合监测（FACEP-018） -->
+    <string name="fusion_title">融合监测</string>
+    <string name="fusion_panel_recognition">人脸识别</string>
+    <string name="fusion_panel_fatigue">疲劳检测</string>
+    <string name="fusion_panel_distraction">分心监测</string>
+    <string name="fusion_panel_behavior">行为监测</string>
+    <string name="fusion_rec_face">识别结果：%1$s</string>
+    <string name="fusion_rec_conf">置信度：%1$s</string>
+    <string name="fusion_rec_enrolled">已录入：%1$d</string>
+    <string name="fusion_fatigue_level">疲劳等级：%1$s</string>
+    <string name="fusion_fatigue_eye">眼睛：%1$s  开合度 %2$.2f</string>
+    <string name="fusion_fatigue_mouth">嘴巴：%1$s  开合度 %2$.2f</string>
+    <string name="fusion_behavior_class">行为：%1$s</string>
+    <string name="fusion_zone_hint">分心区域：%1$s</string>
+    <string name="fusion_no_face">未检测到人脸</string>
+    <string name="fusion_eye_open">睁眼</string>
+    <string name="fusion_eye_closed">闭眼</string>
+    <string name="fusion_mouth_open">张嘴</string>
+    <string name="fusion_mouth_closed">闭嘴</string>
     <string name="behavior_preview_only">预览中（吸烟/打电话监测待算法更新）</string>
     <string name="behavior_smoking">吸烟中！</string>
     <string name="behavior_calling">打电话中</string>

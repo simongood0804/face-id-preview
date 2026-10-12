@@ -55,6 +55,21 @@ class FaceIDCameraController : EvsBufferProvider, FrameSource {
     var frameHeight: Int = 0
         private set
 
+    /**
+     * 相机查询到的**有效图像**尺寸（`openCamera` 后由 `OpaqueIdentifier.RESOLUTION`
+     * 解包：高 16 位 = 宽，低 16 位 = 高）。
+     *
+     * 注意：这是**有效画面**尺寸，不等于 [android.hardware.HardwareBuffer] 的分配尺寸——
+     * 真机实测 buffer 为 1600x3900（gralloc 分配），而有效图像只有 1600x1300，
+     * 画面位于 buffer 顶部 1/3。读帧/绘制一律以本尺寸为准。
+     */
+    @Volatile
+    var queriedWidth: Int = 0
+        private set
+    @Volatile
+    var queriedHeight: Int = 0
+        private set
+
     /** 帧尺寸变化回调（主线程）。 */
     override var onFrameSizeChanged: ((width: Int, height: Int) -> Unit)? = null
 
@@ -252,7 +267,10 @@ class FaceIDCameraController : EvsBufferProvider, FrameSource {
             synchronized(bufferLock) {
                 for (desc in buffers) {
                     if (!desc.dequeue()) continue
-                    Log.d(TAG, "frame dequeued: id=${desc.id}, ${desc.width}x${desc.height}")
+                    // 逐帧 debug 日志：默认关闭。这里每帧都会命中，打开后会以 ~30 行/秒
+                    // 的速度刷屏，导致 logd 按 uid 限流（chatty "expire N lines"），
+                    // 连带把我们自己的诊断日志一起丢掉。
+                    if (DEBUG) Log.d(TAG, "frame dequeued: id=${desc.id}, ${desc.width}x${desc.height}")
 
                     // Level 1: buffer 生命周期检查（null / closed）
                     val hw = desc.hardwareBuffer
@@ -324,6 +342,20 @@ class FaceIDCameraController : EvsBufferProvider, FrameSource {
             isActive = true
             evsHalWrapper.openCamera(cameraId)
             resolution = evsHalWrapper.getExtendedInfo(OpaqueIdentifier.RESOLUTION)
+            // 解包有效图像尺寸：高 16 位 = 宽，低 16 位 = 高
+            if (resolution > 0) {
+                queriedWidth = ((resolution ushr 16) and 0xFFFF).toInt()
+                queriedHeight = (resolution and 0xFFFF).toInt()
+                Log.i(
+                    TAG,
+                    "camera resolution: ${queriedWidth}x$queriedHeight " +
+                        "(raw=0x${resolution.toString(16)})"
+                )
+            } else {
+                queriedWidth = 0
+                queriedHeight = 0
+                Log.w(TAG, "camera resolution unavailable (raw=$resolution)")
+            }
             val success = evsHalWrapper.requestToStartVideoStream()
             if (!success) {
                 isActive = false

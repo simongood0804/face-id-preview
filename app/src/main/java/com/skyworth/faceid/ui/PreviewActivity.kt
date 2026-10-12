@@ -36,7 +36,7 @@ import com.skyworth.faceid.signal.DistractionSourceStore
 import com.skyworth.faceid.signal.DistractionStateMachine
 import com.skyworth.faceid.signal.SignalDispatcher
 import com.skyworth.faceid.signal.VehicleSignalSource
-import com.skyworth.faceid.zone.GazeFallpointDetector
+import com.skyworth.faceid.zone.HeadRayZoneDetector
 import com.skyworth.faceid.zone.RegionConfigLoader
 import java.util.concurrent.Executors
 
@@ -234,12 +234,11 @@ class PreviewActivity : AppCompatActivity() {
         mBusPublisher = publisher
         // FACEP-016：自研视线落点判定器（SELF 源）+ 数据源开关（默认 SDK，持久化读取）
         // 区域配置从 assets 的 zone_regions.json 解析（4 点四边形，后续可改）。
-        val regions = RegionConfigLoader.loadFromAssets(this)
-        val fallpointDetector = GazeFallpointDetector(regions)
         mSignalDispatcher = SignalDispatcher(
             hub = hub,
             publisher = publisher,
-            fallpointDetector = fallpointDetector,
+            // 分心判定唯一来源：头姿射线 + Y=680/Z=750 平面 + 最近注意点位
+            headRayDetector = HeadRayZoneDetector(),
             initialSource = DistractionSourceStore.load(this)
         )
 
@@ -568,6 +567,11 @@ class PreviewActivity : AppCompatActivity() {
                         gazeCalibrated = result.gazeCalibrated,
                         gazeDistracted = if (distractActive) 1f else 0f,
                         zoneId = result.zoneId,
+                        // 头姿射线判定输出：视线 Z 轴高度 + 分心点位
+                        gazeZHeight = mSignalDispatcher?.lastGazeZHeight ?: Float.NaN,
+                        pointId = mSignalDispatcher?.lastPointId ?: -1,
+                        // 头朝向相对正视基准的偏差（俯视罗盘）
+                        headDeviation = result.headDeviation,
                         eyeOpen = result.eyeOpen,
                         mouthOpen = result.mouthOpen
                     )),
