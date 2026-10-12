@@ -1,0 +1,175 @@
+<?xml version="1.0" encoding="utf-8"?>
+<androidx.constraintlayout.widget.ConstraintLayout
+    xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    xmlns:tools="http://schemas.android.com/tools"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="@android:color/black">
+
+    <!-- 预览容器（FrameLayout：resize 生效，保持画面比例） -->
+    <FrameLayout
+        android:id="@+id/preview_container"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent">
+
+        <!-- 预览 GLSurfaceView（EVS 需 GL 上下文） -->
+        <android.opengl.GLSurfaceView
+            android:id="@+id/preview_surface"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent" />
+
+        <!-- 人脸框覆盖层（仅画框） -->
+        <com.skyworth.faceid.render.FaceOverlayView
+            android:id="@+id/face_overlay"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent"
+            android:visibility="gone" />
+    </FrameLayout>
+
+    <!-- 模块标题（左上角） -->
+    <TextView
+        android:id="@+id/tv_behavior_title"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_marginStart="12dp"
+        android:layout_marginTop="12dp"
+        android:text="@string/home_btn_behavior"
+        android:textColor="#00FF00"
+        android:textSize="32sp"
+        android:textStyle="bold"
+        app:layout_constraintTop_toTopOf="parent"
+        app:layout_constraintStart_toStartOf="parent" />
+
+    <!-- 阶段一：预览状态提示（阶段二叠加吸烟/打电话状态） -->
+    <TextView
+        android:id="@+id/tv_behavior_status"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_marginStart="12dp"
+        android:layout_marginTop="8dp"
+        android:text="@string/behavior_preview_only"
+        android:textColor="#FFFFFF"
+        android:textSize="28sp"
+        app:layout_constraintTop_toBottomOf="@id/tv_behavior_title"
+        app:layout_constraintStart_toStartOf="parent" />
+
+    <!-- 返回主页按钮（左下角） -->
+    <Button
+        android:id="@+id/btn_back_home"
+        android:layout_width="wrap_content"
+        android:minWidth="120dp"
+        android:layout_height="40dp"
+        android:layout_marginStart="12dp"
+        android:layout_marginBottom="12dp"
+        android:text="@string/btn_back_home"
+        android:textSize="13sp"
+        app:layout_constraintBottom_toBottomOf="parent"
+        app:layout_constraintStart_toStartOf="parent" />
+
+    <!--
+      时序延时配置面板（右下角）：4 个滑块，0~10s，实时生效。
+      用于设置行为判定的进入/退出延时：进入=连续多久才确认；退出=中断多久才回落。
+    -->
+    <ScrollView
+        android:id="@+id/sv_delay_panel"
+        android:layout_width="420dp"
+        android:layout_height="wrap_content"
+        android:layout_marginEnd="12dp"
+        android:layout_marginBottom="12dp"
+        android:background="#CC1A1A1A"
+        android:padding="10dp"
+        app:layout_constraintBottom_toBottomOf="parent"
+        app:layout_constraintEnd_toEndOf="parent">
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical">
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="@string/behavior_delay_title"
+                android:textColor="#FFFFFF"
+                android:textSize="15sp"
+                android:textStyle="bold" />
+
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="2dp"
+                android:text="@string/behavior_delay_hint"
+                android:textColor="#9E9E9E"
+                android:textSize="11sp" />
+
+            <!-- 吸烟 · 进入延时 -->
+            <TextView
+                android:id="@+id/tv_smoke_enter"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="8dp"
+                android:textColor="#FFFFFF"
+                android:textSize="12sp"
+                tools:text="吸烟 · 进入延时：2.0 s" />
+
+            <SeekBar
+                android:id="@+id/sb_smoke_enter"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:max="100"
+                android:progress="20" />
+
+            <!-- 吸烟 · 退出延时 -->
+            <TextView
+                android:id="@+id/tv_smoke_exit"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:textColor="#FFFFFF"
+                android:textSize="12sp"
+                tools:text="吸烟 · 退出延时：0.5 s" />
+
+            <SeekBar
+                android:id="@+id/sb_smoke_exit"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:max="100"
+                android:progress="5" />
+
+            <!-- 打电话 · 进入延时 -->
+            <TextView
+                android:id="@+id/tv_phone_enter"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="8dp"
+                android:textColor="#FFFFFF"
+                android:textSize="12sp"
+                tools:text="打电话 · 进入延时：3.0 s" />
+
+            <SeekBar
+                android:id="@+id/sb_phone_enter"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:max="100"
+                android:progress="30" />
+
+            <!-- 打电话 · 退出延时 -->
+            <TextView
+                android:id="@+id/tv_phone_exit"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:textColor="#FFFFFF"
+                android:textSize="12sp"
+                tools:text="打电话 · 退出延时：0.5 s" />
+
+            <SeekBar
+                android:id="@+id/sb_phone_exit"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:max="100"
+                android:progress="5" />
+
+        </LinearLayout>
+    </ScrollView>
+
+</androidx.constraintlayout.widget.ConstraintLayout>

@@ -1,0 +1,170 @@
+{
+  "schema_version": 1,
+  "regions": [
+    {
+      "id": 0,
+      "name": "forward",
+      "points": [
+        { "x": -300.0, "z": 900.0 },
+        { "x": 300.0, "z": 900.0 },
+        { "x": 300.0, "z": 1300.0 },
+        { "x": -300.0, "z": 1300.0 }
+      ],
+      "is_distraction": false
+    },
+    {
+      "id": 1,
+      "name": "addw_drv_left_knee",
+      "points": [
+        { "x": -500.0, "z": -100.0 },
+        { "x": -200.0, "z": -100.0 },
+        { "x": -200.0, "z": 300.0 },
+        { "x": -500.0, "z": 300.0 }
+      ],
+      "is_distraction": true
+    },
+    {
+      "id": 2,
+      "name": "addw_drv_right_knee",
+      "points": [
+        { "x": 200.0, "z": -100.0 },
+        { "x": 500.0, "z": -100.0 },
+        { "x": 500.0, "z": 300.0 },
+        { "x": 200.0, "z": 300.0 }
+      ],
+      "is_distraction": true
+    },
+    {
+      "id": 3,
+      "name": "addw_drv_belt",
+      "points": [
+        { "x": -200.0, "z": -100.0 },
+        { "x": 200.0, "z": -100.0 },
+        { "x": 200.0, "z": 300.0 },
+        { "x": -200.0, "z": 300.0 }
+      ],
+      "is_distraction": true
+    },
+    {
+      "id": 4,
+      "name": "addw_pass_footwell",
+      "points": [
+        { "x": -800.0, "z": -200.0 },
+        { "x": -500.0, "z": -200.0 },
+        { "x": -500.0, "z": 200.0 },
+        { "x": -800.0, "z": 200.0 }
+      ],
+      "is_distraction": true
+    },
+    {
+      "id": 5,
+      "name": "addw_pass_seat",
+      "points": [
+        { "x": -800.0, "z": 400.0 },
+        { "x": -500.0, "z": 400.0 },
+        { "x": -500.0, "z": 800.0 },
+        { "x": -800.0, "z": 800.0 }
+      ],
+      "is_distraction": true
+    },
+    {
+      "id": 6,
+      "name": "addw_glovebox",
+      "points": [
+        { "x": -800.0, "z": 800.0 },
+        { "x": -500.0, "z": 800.0 },
+        { "x": -500.0, "z": 1200.0 },
+        { "x": -800.0, "z": 1200.0 }
+      ],
+      "is_distraction": true
+    },
+    {
+      "id": 7,
+      "name": "addw_drv_left_vent",
+      "points": [
+        { "x": -400.0, "z": 400.0 },
+        { "x": -100.0, "z": 400.0 },
+        { "x": -100.0, "z": 700.0 },
+        { "x": -400.0, "z": 700.0 }
+      ],
+      "is_distraction": true
+    },
+    {
+      "id": 8,
+      "name": "addw_drv_right_vent",
+      "points": [
+        { "x": 100.0, "z": 400.0 },
+        { "x": 400.0, "z": 400.0 },
+        { "x": 400.0, "z": 700.0 },
+        { "x": 100.0, "z": 700.0 }
+      ],
+      "is_distraction": true
+    },
+    {
+      "id": 9,
+      "name": "addw_dashboard",
+      "points": [
+        { "x": -200.0, "z": 300.0 },
+        { "x": 200.0, "z": 300.0 },
+        { "x": 200.0, "z": 700.0 },
+        { "x": -200.0, "z": 700.0 }
+      ],
+      "is_distraction": true
+    },
+    {
+      "id": 10,
+      "name": "addw_steering_wheel",
+      "points": [
+        { "x": -200.0, "z": -100.0 },
+        { "x": 200.0, "z": -100.0 },
+        { "x": 200.0, "z": 400.0 },
+        { "x": -200.0, "z": 400.0 }
+      ],
+      "is_distraction": true
+    },
+    {
+      "id": 11,
+      "name": "addw_gear_selector",
+      "points": [
+        { "x": 300.0, "z": 300.0 },
+        { "x": 600.0, "z": 300.0 },
+        { "x": 600.0, "z": 700.0 },
+        { "x": 300.0, "z": 700.0 }
+      ],
+      "is_distraction": true
+    },
+    {
+      "id": 12,
+      "name": "addw_hvac",
+      "points": [
+        { "x": 300.0, "z": 700.0 },
+        { "x": 600.0, "z": 700.0 },
+        { "x": 600.0, "z": 1000.0 },
+        { "x": 300.0, "z": 1000.0 }
+      ],
+      "is_distraction": true
+    },
+    {
+      "id": 13,
+      "name": "addw_infotainment",
+      "points": [
+        { "x": 300.0, "z": 400.0 },
+        { "x": 700.0, "z": 400.0 },
+        { "x": 700.0, "z": 800.0 },
+        { "x": 300.0, "z": 800.0 }
+      ],
+      "is_distraction": true
+    },
+    {
+      "id": 14,
+      "name": "addw_center_console",
+      "points": [
+        { "x": 200.0, "z": 300.0 },
+        { "x": 500.0, "z": 300.0 },
+        { "x": 500.0, "z": 700.0 },
+        { "x": 200.0, "z": 700.0 }
+      ],
+      "is_distraction": true
+    }
+  ]
+}

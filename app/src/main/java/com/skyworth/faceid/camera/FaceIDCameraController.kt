@@ -14,6 +14,7 @@ import com.android.car.evs.EvsFrameRate
 import com.android.car.evs.EvsHalWrapper
 import com.android.car.evs.EvsHalWrapperImpl
 import com.android.car.evs.OpaqueIdentifier
+import com.skyworth.faceid.frame.FrameSource
 import java.util.Collections
 
 /**
@@ -21,8 +22,10 @@ import java.util.Collections
  *
  * 与 [FiveCameraController] 中的 [MyEvsCameraController] 实现一致，
  * 关键特性：当摄像头打开失败时自动断线重试，确保 DMS 摄像头最终可用。
+ *
+ * 实现 [FrameSource] 抽象，作为帧层的数据源接入 [com.skyworth.faceid.frame.FrameDistributor]。
  */
-class FaceIDCameraController : EvsBufferProvider {
+class FaceIDCameraController : EvsBufferProvider, FrameSource {
 
     private val TAG = "Evs.Camera"
 
@@ -30,6 +33,16 @@ class FaceIDCameraController : EvsBufferProvider {
     private val buffers = Collections.synchronizedList(
         ArrayList<EvsBufferDesc>(MAX_RECEIVE_FRAME)
     )
+
+    /**
+     * 保护单个 [EvsBufferDesc] 状态翻转的锁。
+     *
+     * `buffers` 的 synchronizedList 只保证集合结构（迭代/增删）并发安全，
+     * 不保护元素内部 state 的读写。而 EVS 库的 [EvsBufferDesc.state] 无同步，
+     * 被 HAL 回调线程（queue）、GL 渲染线程（dequeue/recycle）、
+     * 调度线程（recovery）并发访问，需统一加锁避免数据竞争。
+     */
+    private val bufferLock = Any()
 
     /** 当前取出的描述符。 */
     @Volatile private var descriptor: EvsBufferDesc? = null
@@ -42,15 +55,30 @@ class FaceIDCameraController : EvsBufferProvider {
     var frameHeight: Int = 0
         private set
 
+    /**
+     * 相机查询到的**有效图像**尺寸（`openCamera` 后由 `OpaqueIdentifier.RESOLUTION`
+     * 解包：高 16 位 = 宽，低 16 位 = 高）。
+     *
+     * 注意：这是**有效画面**尺寸，不等于 [android.hardware.HardwareBuffer] 的分配尺寸——
+     * 真机实测 buffer 为 1600x3900（gralloc 分配），而有效图像只有 1600x1300，
+     * 画面位于 buffer 顶部 1/3。读帧/绘制一律以本尺寸为准。
+     */
+    @Volatile
+    var queriedWidth: Int = 0
+        private set
+    @Volatile
+    var queriedHeight: Int = 0
+        private set
+
     /** 帧尺寸变化回调（主线程）。 */
-    var onFrameSizeChanged: ((width: Int, height: Int) -> Unit)? = null
+    override var onFrameSizeChanged: ((width: Int, height: Int) -> Unit)? = null
 
     /**
      * 帧数据回调（算法处理）。
      * 在 [getNewFrame] 中被调用，频率约为每 [FRAME_SKIP] 帧一次。
      * 参数：[HardwareBuffer], 宽, 高。
      */
-    var onFrameData: ((hwBuffer: HardwareBuffer, width: Int, height: Int) -> Unit)? = null
+    override var onFrameData: ((hwBuffer: HardwareBuffer, width: Int, height: Int) -> Unit)? = null
 
     /** 调度执行器（单线程）。 */
     private val dExecutor = EvsExecutorService("DISPATCH", true)
@@ -120,14 +148,16 @@ class FaceIDCameraController : EvsBufferProvider {
                 var accept = false
                 var frameW = 0
                 var frameH = 0
-                for (desc in buffers) {
-                    if (desc.state != EvsBufferDesc.State.NONE) continue
-                    accept = desc.queue(i, buffer, resolution)
-                    if (accept) {
-                        frameW = desc.width
-                        frameH = desc.height
+                synchronized(bufferLock) {
+                    for (desc in buffers) {
+                        if (desc.state != EvsBufferDesc.State.NONE) continue
+                        accept = desc.queue(i, buffer, resolution)
+                        if (accept) {
+                            frameW = desc.width
+                            frameH = desc.height
+                        }
+                        break
                     }
-                    break
                 }
                 if (!accept) {
                     Log.w(TAG, "drop frame because over size($MAX_RECEIVE_FRAME) for: $i")
@@ -200,6 +230,18 @@ class FaceIDCameraController : EvsBufferProvider {
         dExecutor.submit({ handleStopVideoStream() }, "stop")
     }
 
+    // ============================================================
+    // FrameSource 接口实现
+    // ============================================================
+
+    override fun start(cameraId: String) {
+        startCamera(cameraId)
+    }
+
+    override fun stop() {
+        stopCamera()
+    }
+
     private fun stopCameraInternal(recycle: Boolean) {
         dExecutor.submit({ handleStopVideoStream() }, "stop")
     }
@@ -222,30 +264,43 @@ class FaceIDCameraController : EvsBufferProvider {
     override fun getNewFrame(): EvsBufferDesc? {
         if (!isActive) return null
         try {
-            for (desc in buffers) {
-                if (!desc.dequeue()) continue
-                Log.d(TAG, "frame dequeued: id=${desc.id}, ${desc.width}x${desc.height}")
+            synchronized(bufferLock) {
+                for (desc in buffers) {
+                    if (!desc.dequeue()) continue
+                    // 逐帧 debug 日志：默认关闭。这里每帧都会命中，打开后会以 ~30 行/秒
+                    // 的速度刷屏，导致 logd 按 uid 限流（chatty "expire N lines"），
+                    // 连带把我们自己的诊断日志一起丢掉。
+                    if (DEBUG) Log.d(TAG, "frame dequeued: id=${desc.id}, ${desc.width}x${desc.height}")
 
-                // Level 1: buffer 生命周期检查（null / closed）
-                val hw = desc.hardwareBuffer
-                if (hw == null || hw.isClosed) {
-                    EvsBufferDesc.recycle(desc)
-                    Log.w(TAG, "new frame buffer invalid (null/closed), keeping previous")
+                    // Level 1: buffer 生命周期检查（null / closed）
+                    val hw = desc.hardwareBuffer
+                    if (hw == null || hw.isClosed) {
+                        EvsBufferDesc.recycle(desc)
+                        Log.w(TAG, "new frame buffer invalid (null/closed), keeping previous")
+                        break
+                    }
+
+                    // 首次获取帧时记录尺寸并回调
+                    if (desc.width != frameWidth || desc.height != frameHeight) {
+                        frameWidth = desc.width
+                        frameHeight = desc.height
+                        onFrameSizeChanged?.invoke(frameWidth, frameHeight)
+
+                        // 首帧：尺寸变化会触发上层异步调整 GLSurfaceView 尺寸并重建
+                        // GL surface（glViewport 随之变化）。若此刻立即以旧的（全屏）
+                        // surface 渲染该帧，画面会被拉宽占满全屏造成闪屏。
+                        // 因此这里跳过（回收）该帧，保持上一帧（初始为黑）画面，
+                        // 等 surface 重建到正确尺寸后，下一帧再正常渲染。
+                        EvsBufferDesc.recycle(desc)
+                        break
+                    }
+
+                    // 推进：回收上一帧，切换到当前帧
+                    EvsBufferDesc.recycle(descriptor)
+                    descriptor = desc
+                    mLastFrame = desc
                     break
                 }
-
-                // 首次获取帧时记录尺寸并回调
-                if (desc.width != frameWidth || desc.height != frameHeight) {
-                    frameWidth = desc.width
-                    frameHeight = desc.height
-                    onFrameSizeChanged?.invoke(frameWidth, frameHeight)
-                }
-
-                // 推进：回收上一帧，切换到当前帧
-                EvsBufferDesc.recycle(descriptor)
-                descriptor = desc
-                mLastFrame = desc
-                break
             }
         } catch (e: Exception) {
             Log.e(TAG, "getNewFrame error", e)
@@ -287,6 +342,20 @@ class FaceIDCameraController : EvsBufferProvider {
             isActive = true
             evsHalWrapper.openCamera(cameraId)
             resolution = evsHalWrapper.getExtendedInfo(OpaqueIdentifier.RESOLUTION)
+            // 解包有效图像尺寸：高 16 位 = 宽，低 16 位 = 高
+            if (resolution > 0) {
+                queriedWidth = ((resolution ushr 16) and 0xFFFF).toInt()
+                queriedHeight = (resolution and 0xFFFF).toInt()
+                Log.i(
+                    TAG,
+                    "camera resolution: ${queriedWidth}x$queriedHeight " +
+                        "(raw=0x${resolution.toString(16)})"
+                )
+            } else {
+                queriedWidth = 0
+                queriedHeight = 0
+                Log.w(TAG, "camera resolution unavailable (raw=$resolution)")
+            }
             val success = evsHalWrapper.requestToStartVideoStream()
             if (!success) {
                 isActive = false
@@ -321,15 +390,19 @@ class FaceIDCameraController : EvsBufferProvider {
     private fun resetBuffers() {
         descriptor = null
         mLastFrame = null
-        for (desc in buffers) {
-            returnBuffer(desc, false)
+        synchronized(bufferLock) {
+            for (desc in buffers) {
+                returnBuffer(desc, false)
+            }
         }
     }
 
     private fun returnBuffers() {
-        for (desc in buffers) {
-            if (desc.state != EvsBufferDesc.State.RECYCLE) continue
-            returnBuffer(desc, true)
+        synchronized(bufferLock) {
+            for (desc in buffers) {
+                if (desc.state != EvsBufferDesc.State.RECYCLE) continue
+                returnBuffer(desc, true)
+            }
         }
     }
 

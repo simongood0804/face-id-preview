@@ -12,12 +12,12 @@
         android:layout_width="0dp"
         android:layout_height="0dp"
         app:layout_constraintTop_toTopOf="parent"
-        app:layout_constraintBottom_toTopOf="@id/btn_toggle"
+        app:layout_constraintBottom_toBottomOf="parent"
         app:layout_constraintStart_toStartOf="parent"
         app:layout_constraintEnd_toEndOf="parent" />
 
     <!-- 人脸框覆盖层 -->
-    <com.skyworth.faceid.ui.FaceOverlayView
+    <com.skyworth.faceid.render.FaceOverlayView
         android:id="@+id/face_overlay"
         android:layout_width="0dp"
         android:layout_height="0dp"
@@ -27,19 +27,21 @@
         app:layout_constraintStart_toStartOf="@id/preview_surface"
         app:layout_constraintEnd_toEndOf="@id/preview_surface" />
 
+    <!-- ===== 显示类信息（左上角） ===== -->
     <!-- 状态信息 -->
     <TextView
         android:id="@+id/tv_status"
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
         android:layout_marginStart="12dp"
-        android:layout_marginBottom="8dp"
+        android:layout_marginTop="12dp"
         android:text="@string/status_idle"
         android:textColor="@android:color/white"
-        android:textSize="12sp"
-        app:layout_constraintBottom_toTopOf="@id/tv_face_id"
+        android:textSize="18sp"
+        app:layout_constraintTop_toTopOf="parent"
         app:layout_constraintStart_toStartOf="parent" />
 
+    <!-- 帧率 -->
     <TextView
         android:id="@+id/tv_frame_rate"
         android:layout_width="wrap_content"
@@ -47,33 +49,85 @@
         android:layout_marginStart="8dp"
         android:text="@string/frame_rate_label"
         android:textColor="#888888"
-        android:textSize="12sp"
-        app:layout_constraintBottom_toBottomOf="@id/tv_status"
-        app:layout_constraintStart_toEndOf="@id/tv_status" />
+        android:textSize="18sp"
+        app:layout_constraintTop_toBottomOf="@id/tv_status"
+        app:layout_constraintStart_toStartOf="@id/tv_status" />
 
     <!-- Face ID 信息 -->
     <TextView
         android:id="@+id/tv_face_id"
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
-        android:layout_marginStart="12dp"
-        android:layout_marginBottom="12dp"
+        android:layout_marginTop="8dp"
         android:text="@string/face_id_label"
         android:textColor="#00FF00"
         android:textSize="14sp"
         android:textStyle="bold"
+        app:layout_constraintTop_toBottomOf="@id/tv_frame_rate"
+        app:layout_constraintStart_toStartOf="@id/tv_status" />
+
+    <!-- 车速与分心档位信息 -->
+    <TextView
+        android:id="@+id/tv_speed"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="8dp"
+        android:text="@string/speed_label"
+        android:textColor="#00CCFF"
+        android:textSize="14sp"
+        app:layout_constraintTop_toBottomOf="@id/tv_face_id"
+        app:layout_constraintStart_toStartOf="@id/tv_status" />
+
+    <!-- ===== 控制按钮（左下角，上下排布、左对齐） ===== -->
+    <!-- 清除 dump 按钮（最上） -->
+    <Button
+        android:id="@+id/btn_clear_dump"
+        android:layout_width="wrap_content"
+        android:minWidth="120dp"
+        android:layout_height="40dp"
+        android:layout_marginStart="12dp"
+        android:layout_marginBottom="12dp"
+        android:text="@string/btn_clear_dump"
+        android:textSize="13sp"
+        app:layout_constraintBottom_toTopOf="@id/btn_move_dump"
+        app:layout_constraintStart_toStartOf="parent" />
+
+    <!-- 移动 dump 到 sdcard 按钮 -->
+    <Button
+        android:id="@+id/btn_move_dump"
+        android:layout_width="wrap_content"
+        android:minWidth="120dp"
+        android:layout_height="40dp"
+        android:layout_marginStart="12dp"
+        android:layout_marginBottom="12dp"
+        android:text="@string/btn_move_dump"
+        android:textSize="13sp"
+        app:layout_constraintBottom_toTopOf="@id/btn_dump"
+        app:layout_constraintStart_toStartOf="parent" />
+
+    <!-- 手动 dump 按钮 -->
+    <Button
+        android:id="@+id/btn_dump"
+        android:layout_width="wrap_content"
+        android:minWidth="120dp"
+        android:layout_height="40dp"
+        android:layout_marginStart="12dp"
+        android:layout_marginBottom="12dp"
+        android:text="@string/btn_dump_origin"
+        android:textSize="13sp"
         app:layout_constraintBottom_toTopOf="@id/btn_toggle"
         app:layout_constraintStart_toStartOf="parent" />
 
-    <!-- 控制按钮（左下角） -->
+    <!-- Algo 开关按钮（在下） -->
     <Button
         android:id="@+id/btn_toggle"
-        android:layout_width="120dp"
-        android:layout_height="48dp"
+        android:layout_width="wrap_content"
+        android:minWidth="120dp"
+        android:layout_height="40dp"
         android:layout_marginStart="12dp"
         android:layout_marginBottom="12dp"
         android:text="@string/btn_algo_on"
-        android:textSize="16sp"
+        android:textSize="13sp"
         app:layout_constraintBottom_toBottomOf="parent"
         app:layout_constraintStart_toStartOf="parent" />
 

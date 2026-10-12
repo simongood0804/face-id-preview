@@ -1,0 +1,47 @@
+{
+  "nodes": [
+    {
+      "name": "render",
+      "type": "DashcamRenderNode",
+      "options": {
+        "background": "src/examples/assets/dashcam_road.png",
+        "car": "src/examples/assets/flydog.png",
+        "font": "src/examples/assets/Roboto-Regular.ttf",
+        "width": 1280,
+        "height": 720,
+        "fps": 30,
+        "frame_count": 300,
+        "format": "%Y-%m-%d %H:%M:%S"
+      },
+      "output_streams": ["output:frames"]
+    },
+    {
+      "name": "encoder",
+      "type": "VideoEncoderNode",
+      "options": {
+        "fps": 30,
+        "bitrate": 4000000,
+        "gop_size": 1
+      },
+      "input_streams": ["input:frames"],
+      "output_streams": ["output:es_packets"]
+    },
+    {
+      "name": "recorder",
+      "type": "RecorderNode",
+      "input_streams": ["input:es_packets"],
+      "output_streams": ["output:clips"]
+    },
+    {
+      "name": "muxer",
+      "type": "MuxerSinkNode",
+      "options": {
+        "output": "out/dashcam_host_cpu.mp4",
+        "width": 1280,
+        "height": 720,
+        "fps": 30
+      },
+      "input_streams": ["input:clips"]
+    }
+  ]
+}

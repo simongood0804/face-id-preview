@@ -1,0 +1,113 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 推流测试校验页：左侧控制/日志面板 + 右侧相机预览 -->
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:orientation="horizontal"
+    android:background="@android:color/black">
+
+    <!-- ==================== 左侧控制面板 ==================== -->
+    <LinearLayout
+        android:layout_width="0dp"
+        android:layout_height="match_parent"
+        android:layout_weight="0.34"
+        android:orientation="vertical"
+        android:padding="12dp"
+        android:background="#1A1A1A">
+
+        <TextView
+            android:id="@+id/tv_stream_test_title"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="@string/stream_test_title"
+            android:textColor="#00FF00"
+            android:textSize="24sp"
+            android:textStyle="bold" />
+
+        <!-- 推流状态：未推流 / ● 正在推流（实时摘要） / 正在停止。
+             放在滚动日志之外，始终可见。 -->
+        <TextView
+            android:id="@+id/tv_stream_state"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="6dp"
+            android:text="@string/stream_test_state_idle"
+            android:textColor="#888888"
+            android:textSize="15sp"
+            android:textStyle="bold" />
+
+        <!-- 状态/日志区（可滚动查看多行） -->
+        <ScrollView
+            android:layout_width="match_parent"
+            android:layout_height="0dp"
+            android:layout_weight="1"
+            android:layout_marginTop="10dp">
+
+            <TextView
+                android:id="@+id/tv_status"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="@string/stream_test_hint"
+                android:textColor="#CCCCCC"
+                android:textSize="13sp"
+                android:typeface="monospace" />
+        </ScrollView>
+
+        <!-- 录制：用 Switch 表示**状态**（开 = 正在录制，关 = 不在录制），
+             与推流那种"点一下开始、再点一下停止"的重量级开关按钮区分开。 -->
+        <androidx.appcompat.widget.SwitchCompat
+            android:id="@+id/sw_record"
+            android:layout_width="match_parent"
+            android:layout_height="44dp"
+            android:layout_marginTop="8dp"
+            android:text="@string/stream_test_record_switch"
+            android:textSize="14sp" />
+
+        <Button
+            android:id="@+id/btn_push_surface"
+            android:layout_width="match_parent"
+            android:layout_height="44dp"
+            android:layout_marginTop="6dp"
+            android:text="@string/stream_test_btn_push_surface"
+            android:textSize="14sp" />
+
+        <!-- 清理车机上落盘的输出文件（车机空间有限，避免越攒越多） -->
+        <Button
+            android:id="@+id/btn_clean"
+            android:layout_width="match_parent"
+            android:layout_height="44dp"
+            android:layout_marginTop="6dp"
+            android:text="@string/stream_test_btn_clean"
+            android:textSize="14sp" />
+
+        <Button
+            android:id="@+id/btn_target"
+            android:layout_width="match_parent"
+            android:layout_height="40dp"
+            android:layout_marginTop="6dp"
+            android:text="@string/stream_test_btn_target"
+            android:textSize="13sp" />
+
+        <Button
+            android:id="@+id/btn_back_home"
+            android:layout_width="match_parent"
+            android:layout_height="40dp"
+            android:layout_marginTop="10dp"
+            android:text="@string/btn_back_home"
+            android:textSize="13sp" />
+    </LinearLayout>
+
+    <!-- ==================== 右侧预览区 ==================== -->
+    <!-- 父容器必须为 FrameLayout：FrameSession 等比适配会设置 layoutParams/gravity -->
+    <FrameLayout
+        android:id="@+id/preview_container"
+        android:layout_width="0dp"
+        android:layout_height="match_parent"
+        android:layout_weight="0.66">
+
+        <android.opengl.GLSurfaceView
+            android:id="@+id/preview_surface"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent" />
+    </FrameLayout>
+</LinearLayout>

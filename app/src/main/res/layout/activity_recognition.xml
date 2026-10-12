@@ -1,0 +1,173 @@
+<?xml version="1.0" encoding="utf-8"?>
+<androidx.constraintlayout.widget.ConstraintLayout
+    xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="@android:color/black">
+
+    <!-- 预览容器（FrameLayout：resize 生效，保持 1600×1300 画面比例） -->
+    <FrameLayout
+        android:id="@+id/preview_container"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent">
+
+        <!-- 预览 GLSurfaceView（EVS 需 GL 上下文） -->
+        <android.opengl.GLSurfaceView
+            android:id="@+id/preview_surface"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent" />
+
+        <!-- 人脸框覆盖层 -->
+        <com.skyworth.faceid.render.FaceOverlayView
+            android:id="@+id/face_overlay"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent"
+            android:visibility="gone" />
+    </FrameLayout>
+
+    <!-- 识别结果（左上角） -->
+    <TextView
+        android:id="@+id/tv_face_id"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_marginStart="12dp"
+        android:layout_marginTop="12dp"
+        android:text="@string/face_id_label"
+        android:textColor="#00FF00"
+        android:textSize="32sp"
+        android:textStyle="bold"
+        app:layout_constraintTop_toTopOf="parent"
+        app:layout_constraintStart_toStartOf="parent" />
+
+    <!-- 已导入人脸数量（识别模块，左上角，位于识别结果下方） -->
+    <TextView
+        android:id="@+id/tv_enrolled_count"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_marginStart="12dp"
+        android:layout_marginTop="8dp"
+        android:text="@string/enrolled_count_zero"
+        android:textColor="#FFFFFF"
+        android:textSize="28sp"
+        app:layout_constraintTop_toBottomOf="@id/tv_face_id"
+        app:layout_constraintStart_toStartOf="parent" />
+
+    <!-- 录入模式提示（FACEP-012：手动录入中） -->
+    <TextView
+        android:id="@+id/tv_enroll_status"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_marginStart="12dp"
+        android:layout_marginTop="8dp"
+        android:text="@string/enroll_prompt"
+        android:textColor="#FFFF00"
+        android:textSize="14sp"
+        android:visibility="gone"
+        app:layout_constraintTop_toBottomOf="@id/tv_enrolled_count"
+        app:layout_constraintStart_toStartOf="parent" />
+
+    <!-- 连续 dump 倒计时/动作提示（FACEP：60s 采样，左上角，橙色，默认隐藏） -->
+    <TextView
+        android:id="@+id/tv_dump_timer"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_marginStart="12dp"
+        android:layout_marginTop="8dp"
+        android:textColor="#FF8800"
+        android:textSize="42sp"
+        android:textStyle="bold"
+        android:visibility="gone"
+        app:layout_constraintTop_toBottomOf="@id/tv_enroll_status"
+        app:layout_constraintStart_toStartOf="parent" />
+
+    <!-- 返回主页按钮（左下角） -->
+    <Button
+        android:id="@+id/btn_back_home"
+        android:layout_width="wrap_content"
+        android:minWidth="120dp"
+        android:layout_height="40dp"
+        android:layout_marginStart="12dp"
+        android:layout_marginBottom="12dp"
+        android:text="@string/btn_back_home"
+        android:textSize="13sp"
+        app:layout_constraintBottom_toBottomOf="parent"
+        app:layout_constraintStart_toStartOf="parent" />
+
+    <!-- FACEP-011：dump 调试按钮（左下角，返回按钮上方，自下而上：dump原图→导出→清除） -->
+    <Button
+        android:id="@+id/btn_dump"
+        android:layout_width="wrap_content"
+        android:minWidth="120dp"
+        android:layout_height="40dp"
+        android:layout_marginStart="12dp"
+        android:layout_marginBottom="8dp"
+        android:text="@string/btn_dump_origin"
+        android:textSize="13sp"
+        app:layout_constraintBottom_toTopOf="@id/btn_back_home"
+        app:layout_constraintStart_toStartOf="parent" />
+
+    <Button
+        android:id="@+id/btn_move_dump"
+        android:layout_width="wrap_content"
+        android:minWidth="120dp"
+        android:layout_height="40dp"
+        android:layout_marginStart="12dp"
+        android:layout_marginBottom="8dp"
+        android:text="@string/btn_move_dump"
+        android:textSize="13sp"
+        app:layout_constraintBottom_toTopOf="@id/btn_dump"
+        app:layout_constraintStart_toStartOf="parent" />
+
+    <Button
+        android:id="@+id/btn_clear_dump"
+        android:layout_width="wrap_content"
+        android:minWidth="120dp"
+        android:layout_height="40dp"
+        android:layout_marginStart="12dp"
+        android:layout_marginBottom="8dp"
+        android:text="@string/btn_clear_dump"
+        android:textSize="13sp"
+        app:layout_constraintBottom_toTopOf="@id/btn_move_dump"
+        app:layout_constraintStart_toStartOf="parent" />
+
+    <!-- 连续 dump 按钮（左下角，清除按钮上方；点击后置灰显示"连续dump中"，完成恢复） -->
+    <Button
+        android:id="@+id/btn_dump_continuous"
+        android:layout_width="wrap_content"
+        android:minWidth="120dp"
+        android:layout_height="40dp"
+        android:layout_marginStart="12dp"
+        android:layout_marginBottom="8dp"
+        android:text="@string/btn_dump_continuous"
+        android:textSize="13sp"
+        app:layout_constraintBottom_toTopOf="@id/btn_clear_dump"
+        app:layout_constraintStart_toStartOf="parent" />
+
+    <!-- FACEP-012：开始录入按钮（右下角） -->
+    <Button
+        android:id="@+id/btn_start_enroll"
+        android:layout_width="wrap_content"
+        android:minWidth="140dp"
+        android:layout_height="44dp"
+        android:layout_marginEnd="12dp"
+        android:layout_marginBottom="12dp"
+        android:text="@string/btn_start_enroll"
+        android:textSize="14sp"
+        app:layout_constraintBottom_toBottomOf="parent"
+        app:layout_constraintEnd_toEndOf="parent" />
+
+    <!-- FACEP-012：管理已录入人脸按钮（右下角，录入按钮上方） -->
+    <Button
+        android:id="@+id/btn_manage_faces"
+        android:layout_width="wrap_content"
+        android:minWidth="140dp"
+        android:layout_height="44dp"
+        android:layout_marginEnd="12dp"
+        android:layout_marginBottom="8dp"
+        android:text="@string/btn_manage_faces"
+        android:textSize="14sp"
+        app:layout_constraintBottom_toTopOf="@id/btn_start_enroll"
+        app:layout_constraintEnd_toEndOf="parent" />
+
+</androidx.constraintlayout.widget.ConstraintLayout>

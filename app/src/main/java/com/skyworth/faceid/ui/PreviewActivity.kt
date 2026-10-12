@@ -6,9 +6,11 @@ package com.skyworth.faceid.ui
 
 import android.content.Context
 import android.content.SharedPreferences
-import android.graphics.Bitmap
+import android.hardware.HardwareBuffer
 import android.opengl.GLSurfaceView
 import android.os.Bundle
+import android.os.Handler
+import android.os.HandlerThread
 import android.util.Log
 import android.view.View
 import android.widget.Button
@@ -22,8 +24,20 @@ import com.skyworth.faceid.algorithm.FaceEnrollmentManager
 import com.skyworth.faceid.algorithm.FaceIDAlgorithmImpl
 import com.skyworth.faceid.algorithm.FrameProcessor
 import com.skyworth.faceid.algorithm.IFaceIDAlgorithm
+import com.skyworth.faceid.bus.BusHub
+import com.skyworth.faceid.bus.BusPublisher
+import com.skyworth.faceid.bus.ServiceRegistry
 import com.skyworth.faceid.camera.CameraManager
+import com.skyworth.faceid.core.NativeFrameReader
 import com.skyworth.faceid.camera.FaceIDCameraController
+import com.skyworth.faceid.frame.FrameDistributor
+import com.skyworth.faceid.render.FaceOverlayView
+import com.skyworth.faceid.signal.DistractionSourceStore
+import com.skyworth.faceid.signal.DistractionStateMachine
+import com.skyworth.faceid.signal.SignalDispatcher
+import com.skyworth.faceid.signal.VehicleSignalSource
+import com.skyworth.faceid.zone.HeadRayZoneDetector
+import com.skyworth.faceid.zone.RegionConfigLoader
 import java.util.concurrent.Executors
 
 /**
@@ -31,6 +45,11 @@ import java.util.concurrent.Executors
  *
  * 使用 [EvsGL20CameraRenderer] 渲染 EVS 摄像头画面，
  * 通过 [FaceIDCameraController] 管理摄像头取流（含自动重试）。
+ *
+ * 分层重构后职责收窄为：
+ * - 装配各层模块（帧层 [FrameDistributor] / 信号层 [VehicleSignalSource]、[DistractionStateMachine] / 绘制层 [FaceOverlayView]）；
+ * - 负责 UI 展示与交互（按钮、文本、dump 控制）。
+ * 图像采集、帧分发、车速信号、分心判定等逻辑已下沉到对应分层模块。
  */
 class PreviewActivity : AppCompatActivity() {
 
@@ -43,12 +62,16 @@ class PreviewActivity : AppCompatActivity() {
     private lateinit var mPreviewSurface: GLSurfaceView
     private lateinit var mFaceOverlay: FaceOverlayView
     private lateinit var mToggleButton: Button
+    private lateinit var mDumpButton: Button
+    private lateinit var mClearDumpButton: Button
+    private lateinit var mMoveDumpButton: Button
     private lateinit var mStatusText: TextView
     private lateinit var mFaceIdText: TextView
     private lateinit var mFrameRateText: TextView
+    private lateinit var mSpeedText: TextView
 
     // ============================================================
-    // 核心模块
+    // 核心模块（分层）
     // ============================================================
 
     private var mCameraManager: CameraManager? = null
@@ -57,6 +80,29 @@ class PreviewActivity : AppCompatActivity() {
     private var mFaceIDController: FaceIDCameraController? = null
     private var mRenderer: EvsGL20CameraRenderer? = null
     private var mFrameProcessor: FrameProcessor? = null
+
+    /** 帧层：图像帧分发器。 */
+    private var mFrameDistributor: FrameDistributor? = null
+
+    /** 信号层：车机车速信号源。 */
+    private var mVehicleSignal: VehicleSignalSource? = null
+
+    // ============================================================
+    // 消息总线（bus 层）+ 信号分发
+    // ============================================================
+
+    /** 消息总线枢纽。 */
+    private var mBusHub: BusHub? = null
+
+    /** 消息发布端。 */
+    private var mBusPublisher: BusPublisher? = null
+
+    /** 信号分发器（消费 VEHICLE_SPEED / ALGO_RESULT，驱动分心状态机）。 */
+    private var mSignalDispatcher: SignalDispatcher? = null
+
+    /** 信号分发线程（单线程驱动 poll，保证状态机单线程调用）。 */
+    private var mSignalThread: HandlerThread? = null
+    private var mSignalHandler: Handler? = null
 
     /** 算法处理线程池（单线程，避免 GL 线程阻塞）。 */
     private val mAlgoExecutor = Executors.newSingleThreadExecutor { r ->
@@ -79,6 +125,8 @@ class PreviewActivity : AppCompatActivity() {
 
         initViews()
         initCoreModules()
+        initSignalLayer()
+        initFrameLayer()
 
         // 自动开始预览
         startPreview()
@@ -93,22 +141,29 @@ class PreviewActivity : AppCompatActivity() {
         mPreviewSurface = findViewById(R.id.preview_surface)
         mFaceOverlay = findViewById(R.id.face_overlay)
         mToggleButton = findViewById(R.id.btn_toggle)
+        mDumpButton = findViewById(R.id.btn_dump)
+        mClearDumpButton = findViewById(R.id.btn_clear_dump)
+        mMoveDumpButton = findViewById(R.id.btn_move_dump)
         mStatusText = findViewById(R.id.tv_status)
         mFaceIdText = findViewById(R.id.tv_face_id)
         mFrameRateText = findViewById(R.id.tv_frame_rate)
+        mSpeedText = findViewById(R.id.tv_speed)
 
         loadAlgorithmState()
         mToggleButton.setOnClickListener { toggleAlgorithm() }
         mToggleButton.setText(
             if (mAlgorithmEnabled) R.string.btn_algo_on else R.string.btn_algo_off
         )
+        mDumpButton.setOnClickListener { onDumpClick() }
+        mClearDumpButton.setOnClickListener { onClearDumpClick() }
+        mMoveDumpButton.setOnClickListener { onMoveDumpClick() }
     }
 
     /**
      * 初始化核心模块。
      */
     private fun initCoreModules() {
-        // 算法接口 — 使用 FaceID 原生算法
+        // 算法接口 — 使用 FaceID AAR SDK
         mAlgorithm = FaceIDAlgorithmImpl()
 
         // 人脸录入管理器（持久化存储 embedding）
@@ -137,10 +192,6 @@ class PreviewActivity : AppCompatActivity() {
             controller.onFrameSizeChanged = { width, height ->
                 runOnUiThread { resizePreviewSurface(width, height) }
             }
-            // 帧数据处理回调：传入算法进行人脸检测（GL 线程）
-            controller.onFrameData = { hwBuffer, frameW, frameH ->
-                processWithAlgorithm(hwBuffer, frameW, frameH)
-            }
         }
 
         // 摄像头管理器（传入同一个 controller 实例）
@@ -167,6 +218,78 @@ class PreviewActivity : AppCompatActivity() {
         }
     }
 
+    /**
+     * 初始化信号层：消息总线 + 信号分发器 + 车机车速信号源。
+     *
+     * 总线接线：
+     * - [VehicleSignalSource] 车速变化 → 发布到 [ServiceRegistry.Topic.VEHICLE_SPEED]；
+     * - 算法结果 → 发布到 [ServiceRegistry.Topic.ALGO_RESULT]（见 [handleAlgorithmResult]）；
+     * - [SignalDispatcher] 在独立信号线程周期性 [SignalDispatcher.poll] 消费这两个 topic，
+     *   驱动分心状态机（保证单线程调用），并把防抖结果通过 [SignalDispatcher.lastDistraction] 输出。
+     */
+    private fun initSignalLayer() {
+        val hub = BusHub()
+        mBusHub = hub
+        val publisher = BusPublisher(hub)
+        mBusPublisher = publisher
+        // FACEP-016：自研视线落点判定器（SELF 源）+ 数据源开关（默认 SDK，持久化读取）
+        // 区域配置从 assets 的 zone_regions.json 解析（4 点四边形，后续可改）。
+        mSignalDispatcher = SignalDispatcher(
+            hub = hub,
+            publisher = publisher,
+            // 分心判定唯一来源：头姿射线 + Y=680/Z=750 平面 + 最近注意点位
+            headRayDetector = HeadRayZoneDetector(),
+            initialSource = DistractionSourceStore.load(this)
+        )
+
+        mVehicleSignal = VehicleSignalSource(this).also { vs ->
+            vs.onSpeedChanged = { speed ->
+                publisher.publish(ServiceRegistry.Topic.VEHICLE_SPEED, speed)
+            }
+            vs.connect()
+        }
+
+        // 信号分发线程：周期性 poll 总线，驱动分心状态机
+        mSignalThread = HandlerThread("signal-dispatcher").also { it.start() }
+        mSignalHandler = Handler(mSignalThread!!.looper).also { handler ->
+            handler.post(signalPollRunnable)
+        }
+    }
+
+    /** 信号轮询周期（ms）。对应 VEHICLE_SPEED(10Hz)/ALGO_RESULT(20Hz) 的消费节奏。 */
+    private val signalPollRunnable = object : Runnable {
+        override fun run() {
+            val dispatcher = mSignalDispatcher
+            val handler = mSignalHandler
+            if (dispatcher == null || handler == null) return
+            try {
+                dispatcher.poll()
+                val d = dispatcher.lastDistraction
+                runOnUiThread {
+                    mFaceOverlay.setDistracted(d.distracted)
+                    updateSpeedText()
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "signal poll error", e)
+            }
+            handler.postDelayed(this, SIGNAL_POLL_INTERVAL_MS)
+        }
+    }
+
+    /**
+     * 初始化帧层：图像帧分发器，将相机帧路由到算法处理。
+     */
+    private fun initFrameLayer() {
+        val controller = mFaceIDController ?: return
+        val fp = mFrameProcessor ?: return
+        mFrameDistributor = FrameDistributor(
+            frameSource = controller,
+            frameProcessor = fp,
+            readFrame = { hwBuffer, w, h -> readHardwareBuffer(hwBuffer, w, h) },
+            algorithmEnabled = { mAlgorithmEnabled }
+        ).also { it.attach() }
+    }
+
     // ============================================================
     // 算法开关控制
     // ============================================================
@@ -181,6 +304,61 @@ class PreviewActivity : AppCompatActivity() {
         )
         saveAlgorithmState()
         Log.i(TAG, "algorithm ${if (mAlgorithmEnabled) "enabled" else "disabled"}")
+    }
+
+    /**
+     * 手动触发 dump：后台保存最近一帧原始图像，完成后 Toast 提示。
+     * 若系统属性未启用 dump，弹框提示设置系统属性。
+     */
+    private fun onDumpClick() {
+        val algo = mAlgorithm
+        if (algo == null) {
+            Toast.makeText(this, "dump: algorithm not initialized", Toast.LENGTH_SHORT).show()
+            return
+        }
+        if (!algo.isDumpAvailable()) {
+            Toast.makeText(this, "dump: system property disabled, set algorithm_face_dump_enable first", Toast.LENGTH_LONG).show()
+            return
+        }
+        algo.triggerManualDump { ok ->
+            val msg = if (ok) "dump: saved" else "dump: failed"
+            Toast.makeText(this, msg, Toast.LENGTH_SHORT).show()
+        }
+        Log.i(TAG, "onDumpClick: manual dump triggered")
+    }
+
+    /**
+     * 清除 debugDump 文件夹内容，并删除 /sdcard/debugDmsDump 文件夹。
+     */
+    private fun onClearDumpClick() {
+        val algo = mAlgorithm
+        if (algo == null) {
+            Toast.makeText(this, "clear dump: algorithm not initialized", Toast.LENGTH_SHORT).show()
+            return
+        }
+        Toast.makeText(this, "clear dump: running", Toast.LENGTH_SHORT).show()
+        algo.clearDumpDirs { ok ->
+            val msg = if (ok) "clear dump: done" else "clear dump: failed"
+            Toast.makeText(this, msg, Toast.LENGTH_SHORT).show()
+        }
+        Log.i(TAG, "onClearDumpClick: clear triggered")
+    }
+
+    /**
+     * 将 debugDump 中的 png 图像移动到 /sdcard/debugDmsDump 文件夹。
+     */
+    private fun onMoveDumpClick() {
+        val algo = mAlgorithm
+        if (algo == null) {
+            Toast.makeText(this, "move dump: algorithm not initialized", Toast.LENGTH_SHORT).show()
+            return
+        }
+        Toast.makeText(this, "move dump: running", Toast.LENGTH_SHORT).show()
+        algo.moveDumpPngToSdcard { ok ->
+            val msg = if (ok) "move dump: done" else "move dump: failed"
+            Toast.makeText(this, msg, Toast.LENGTH_SHORT).show()
+        }
+        Log.i(TAG, "onMoveDumpClick: move triggered")
     }
 
     // ============================================================
@@ -288,6 +466,18 @@ class PreviewActivity : AppCompatActivity() {
         super.onDestroy()
         stopPreview()
         mAlgorithm?.release()
+        mFrameDistributor?.detach()
+        // 释放信号层与总线
+        mSignalHandler?.removeCallbacksAndMessages(null)
+        mSignalThread?.quitSafely()
+        mSignalThread = null
+        mSignalHandler = null
+        mSignalDispatcher?.close()
+        mSignalDispatcher = null
+        mBusHub?.reset()
+        mBusHub = null
+        mBusPublisher = null
+        mVehicleSignal?.disconnect()
         Log.i(TAG, "onDestroy: done")
     }
 
@@ -310,31 +500,15 @@ class PreviewActivity : AppCompatActivity() {
     private val FACE_HIDE_THRESHOLD = 5
 
     /**
-     * GL 线程回调：立即读取 HardwareBuffer 转为 ByteArray，再提交给算法线程（非阻塞）。
-     * 必须在 GL 线程读取 buffer，因为 EVS 帧回调返回后 buffer 可能被回收。
-     */
-    private fun processWithAlgorithm(hwBuffer: android.hardware.HardwareBuffer, frameW: Int, frameH: Int) {
-        if (!mAlgorithmEnabled) return  // 算法关闭，跳过处理
-
-        val fp = mFrameProcessor ?: return
-        mCurrentFrameW = frameW
-        mCurrentFrameH = frameH
-
-        // 在 GL 线程立即读取 buffer 数据（buffer 此时有效）
-        val data = nativeReadHardwareBuffer(hwBuffer, frameW, frameH)
-        if (data == null) return
-
-        fp.submitFrame(data, frameW, frameH)
-    }
-
-    /**
      * 算法结果回调（AlgoProcessor 线程 → runOnUiThread）。
      * 仅对隐藏做防抖：连续 N 帧无人脸才清除画框。
      * 显示和位置更新不做防抖，保证即时响应。
      */
     private fun handleAlgorithmResult(result: IFaceIDAlgorithm.FaceIDResult) {
-        val frameW = mCurrentFrameW
-        val frameH = mCurrentFrameH
+        // 从帧层读取最近一帧尺寸（FrameDistributor 在接收帧时更新）
+        val fd = mFrameDistributor
+        val frameW = fd?.frameWidth ?: mCurrentFrameW
+        val frameH = fd?.frameHeight ?: mCurrentFrameH
 
         // 更新裁剪窗口（黄色采样框）
         val fp = mFrameProcessor
@@ -352,6 +526,13 @@ class PreviewActivity : AppCompatActivity() {
             // 有人脸 → 即时显示，无防抖
             mNoFaceCount = 0
 
+            // 发布算法结果到总线，SignalDispatcher 在信号线程驱动分心状态机
+            mBusPublisher?.publish(ServiceRegistry.Topic.ALGO_RESULT, result)
+            // 读取最近的分心判定结果（SignalDispatcher 消费总线后异步更新）
+            val distractActive = mSignalDispatcher?.lastDistraction?.distracted ?: false
+            // 分心提示：固定位置绘制（不随人脸移动）
+            mFaceOverlay.setDistracted(distractActive)
+
             val faceId = result.faceId
             val enrolledTotal = mEnrollmentManager?.getCount() ?: 0
             val displayText = getString(R.string.face_id_label) + " " + faceId +
@@ -363,19 +544,36 @@ class PreviewActivity : AppCompatActivity() {
                 Toast.makeText(this, "录入成功: $displayText", Toast.LENGTH_SHORT).show()
             }
 
-            if (result.faceRect != null) {
+            val faceRect = result.faceRect
+            if (faceRect != null) {
                 val isNamed = faceId != "detected" && faceId != "spoof"
                 val overlayType = if (isNamed || faceId == "detected")
                     FaceOverlayView.FaceType.DETECTED
                 else FaceOverlayView.FaceType.SPOOF
                 mFaceOverlay.setFaces(
                     listOf(FaceOverlayView.FaceBox(
-                        rect = result.faceRect,
+                        rect = faceRect,
                         type = overlayType,
                         confidence = result.confidence,
                         label = if (isNamed) faceId else null,
                         keypoints = result.keypoints,
-                        denseLandmarks = result.landmarks
+                        denseLandmarks = result.landmarks,
+                        pitch = result.headposePitch,
+                        yaw = result.headposeYaw,
+                        roll = result.headposeRoll,
+                        gazeValid = result.gazeValid,
+                        gazeYaw = result.gazeYaw,
+                        gazePitch = result.gazePitch,
+                        gazeCalibrated = result.gazeCalibrated,
+                        gazeDistracted = if (distractActive) 1f else 0f,
+                        zoneId = result.zoneId,
+                        // 头姿射线判定输出：视线 Z 轴高度 + 分心点位
+                        gazeZHeight = mSignalDispatcher?.lastGazeZHeight ?: Float.NaN,
+                        pointId = mSignalDispatcher?.lastPointId ?: -1,
+                        // 头朝向相对正视基准的偏差（俯视罗盘）
+                        headDeviation = result.headDeviation,
+                        eyeOpen = result.eyeOpen,
+                        mouthOpen = result.mouthOpen
                     )),
                     frameW, frameH
                 )
@@ -384,12 +582,50 @@ class PreviewActivity : AppCompatActivity() {
         } else {
             // 无人脸 → 防抖隐藏
             mNoFaceCount++
+            // 发布无人脸结果到总线（SignalDispatcher 会 reset 分心状态）
+            mBusPublisher?.publish(ServiceRegistry.Topic.ALGO_RESULT, result)
+            // 清除分心提示（固定位置显示）
+            mFaceOverlay.setDistracted(false)
             if (mNoFaceCount >= FACE_HIDE_THRESHOLD) {
                 mFaceOverlay.clearFaces()
                 mFaceIdText.text = getString(R.string.face_id_label) + " " +
                         getString(R.string.face_id_none)
             }
         }
+    }
+
+    // ============================================================
+    // 分心防抖 + 车速信号（委托给信号层模块）
+    // ============================================================
+
+    /**
+     * 分心多帧/时间防抖状态机。
+     *
+     * 委托给信号层的 [DistractionStateMachine]，逻辑与原内联实现保持一致：
+     *  - 连续分心达到当前车速对应的触发阈值 → 触发分心；
+     *  - 已触发后，连续非分心达到解除阈值 → 解除分心。
+     *
+     * @return 防抖后是否判定为分心（用于 UI 显示）。
+     */
+    /**
+     * 当前车速（km/h），来自信号层。负数表示无数据。
+     */
+    private fun currentSpeedKmh(): Float {
+        return mVehicleSignal?.speedKmh ?: -1f
+    }
+
+    /**
+     * 更新车速/分心阈值档显示（供测试验证分档逻辑）。
+     * 分心档位与阈值来自信号分发器 [SignalDispatcher.lastDistraction]（signal 线程异步更新）。
+     */
+    private fun updateSpeedText() {
+        val speed = currentSpeedKmh()
+        val d = mSignalDispatcher?.lastDistraction
+        val threshMs = d?.activeThresholdMs ?: DistractionStateMachine.TRIGGER_MS_FAST
+        val band = d?.speedBand ?: "fast"
+        val speedStr = if (speed < 0f) "N/A" else String.format("%.1f", speed)
+        mSpeedText.text = getString(R.string.speed_label) +
+                " $speedStr km/h | 分心档: ${band}(${threshMs}ms)"
     }
 
     // ============================================================
@@ -412,14 +648,19 @@ class PreviewActivity : AppCompatActivity() {
         private const val PREFS_NAME = "faceid_prefs"
         private const val KEY_ALGO_ENABLED = "algorithm_enabled"
 
+        /** 信号分发轮询周期（ms）：对应 VEHICLE_SPEED(10Hz)/ALGO_RESULT(20Hz) 消费节奏。 */
+        private const val SIGNAL_POLL_INTERVAL_MS = 50L
+
         init {
-            try {
-                System.loadLibrary("faceid_jni")
-            } catch (_: UnsatisfiedLinkError) { }
+            // native 库加载移交 NativeFrameReader（FACEP-011 公共化）
         }
     }
 
-    private external fun nativeReadHardwareBuffer(
-        hwBuffer: android.hardware.HardwareBuffer, width: Int, height: Int
-    ): ByteArray?
+    /**
+     * JNI 调用读取 HardwareBuffer UYVY 数据到 ByteArray（快速 memcpy）。
+     * 帧读取能力公共化为 NativeFrameReader（FACEP-011）。
+     */
+    private fun readHardwareBuffer(hwBuffer: HardwareBuffer, width: Int, height: Int): ByteArray? {
+        return NativeFrameReader.readHardwareBuffer(hwBuffer, width, height)
+    }
 }

@@ -1,0 +1,85 @@
+<?xml version="1.0" encoding="utf-8"?>
+<androidx.constraintlayout.widget.ConstraintLayout
+    xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="@android:color/black">
+
+    <!-- 预览容器（FrameLayout：resize 生效，保持 1600×1300 画面比例） -->
+    <FrameLayout
+        android:id="@+id/preview_container"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent">
+
+        <!-- 预览 GLSurfaceView -->
+        <android.opengl.GLSurfaceView
+            android:id="@+id/preview_surface"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent" />
+
+        <!-- 人脸框覆盖层 -->
+        <com.skyworth.faceid.render.FaceOverlayView
+            android:id="@+id/face_overlay"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent"
+            android:visibility="gone" />
+    </FrameLayout>
+
+    <!-- 分心状态文本（左上角） -->
+    <TextView
+        android:id="@+id/tv_distraction"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_marginStart="12dp"
+        android:layout_marginTop="12dp"
+        android:text="@string/distraction_status_ok"
+        android:textColor="#00FF00"
+        android:textSize="16sp"
+        android:textStyle="bold"
+        app:layout_constraintTop_toTopOf="parent"
+        app:layout_constraintStart_toStartOf="parent" />
+
+    <!-- 车速信息（右上角） -->
+    <TextView
+        android:id="@+id/tv_speed"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_marginEnd="12dp"
+        android:layout_marginTop="12dp"
+        android:text="@string/distraction_speed_na"
+        android:textColor="#FFFFFF"
+        android:textSize="14sp"
+        app:layout_constraintTop_toTopOf="parent"
+        app:layout_constraintEnd_toEndOf="parent" />
+
+    <!-- 分心数据源切换（FACEP-016：点击切换 SDK/SELF，默认 SDK，持久化） -->
+    <TextView
+        android:id="@+id/tv_distraction_source"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_marginEnd="12dp"
+        android:layout_marginTop="6dp"
+        android:padding="6dp"
+        android:background="#3300FF00"
+        android:clickable="true"
+        android:focusable="true"
+        android:textColor="#00FF00"
+        android:textSize="13sp"
+        app:layout_constraintTop_toBottomOf="@id/tv_speed"
+        app:layout_constraintEnd_toEndOf="parent" />
+
+    <!-- 返回主页按钮 -->
+    <Button
+        android:id="@+id/btn_back_home"
+        android:layout_width="wrap_content"
+        android:minWidth="120dp"
+        android:layout_height="40dp"
+        android:layout_marginStart="12dp"
+        android:layout_marginBottom="12dp"
+        android:text="@string/btn_back_home"
+        android:textSize="13sp"
+        app:layout_constraintBottom_toBottomOf="parent"
+        app:layout_constraintStart_toStartOf="parent" />
+
+</androidx.constraintlayout.widget.ConstraintLayout>

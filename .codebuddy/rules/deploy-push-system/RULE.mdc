@@ -1,0 +1,53 @@
+---
+description: 本项目是系统应用（/system/app/DmsFace），禁止用 adb install / installDebug 安装，部署必须走 Makefile 的 push-system
+alwaysApply: true
+enabled: true
+updatedAt: 2026-09-29T08:41:21.000Z
+provider:
+---
+
+# 部署方式：只能用 `make push-system`
+
+## 硬性规则
+
+**本应用不能 install。** 任何「把当前代码部署/更新到设备上」的操作，一律通过 Makefile 的
+`push-system` 目标完成：
+
+```bash
+make push-system
+```
+
+## 禁止的操作
+
+- `./gradlew :app:installDebug` / `:app:installRelease`
+- `adb install` / `adb install -r -d` / `adb install-multiple`
+- `make install`
+
+原因（`Makefile` 第 66~73 行注释已写明）：`adb install` 装成普通数据应用后
+**无法访问 `libevsservicejni.so` 等 EvsSDK 系统库**，相机取流直接不可用；
+只有把包放进 `/system/app/DmsFace` 并由系统加载其 native lib，才能拿到完整功能。
+`make install` 仅用于快速验证纯 UI 逻辑，**不适用于本项目常规调试**。
+
+## `make push-system` 的完整动作（`Makefile` 第 75~114 行）
+
+1. `gradlew clean` + `assembleRelease`（**必须 clean**，否则 Gradle 会缓存旧 native 库）；
+2. `adb root` → `adb remount`；
+3. push `app-release.apk` → `/system/app/DmsFace/DmsFace.apk`；
+4. 解包 APK 内的 `lib/arm64-v8a/*.so` → `/system/app/DmsFace/lib/arm64/`；
+5. push 模型（`*.dlc` / `manifest.json` / `dms_calibration.json`）→ `/vendor/etc/faceid/`；
+6. 清 `/data/user/0/com.skyworth.faceid/files/models`（强制重新解包 assets）；
+7. `chmod 644` + `chown root:root`（APK、so、模型）；
+8. 清 `oat` 缓存；
+9. **`adb reboot`** + `adb wait-for-device`。
+
+## 执行前须知
+
+- `push-system` 会**重启设备**（第 9 步）且依赖 root，属于重量级操作：执行前先向用户说明，得到确认再跑；
+- 部署完成后用 `make run` 启动应用；
+- 只读排查不受限制，可直接执行：`adb logcat -d ...`、`make log-crash`、`make log-last`、`make pid`、`make dumpsys`、`adb devices`。
+  注意 `make log` / `make log-evs` 是**实时阻塞**的（`adb logcat` 不带 `-d`），不要在前台跑。
+
+## 背景
+
+AI 曾直接执行 `./gradlew :app:installDebug` 并覆盖了设备上的包；用户指出本项目
+**不能 install、必须用 `make push-system`**，并卸载了误装的包。
