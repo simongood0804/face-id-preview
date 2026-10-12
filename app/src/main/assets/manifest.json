@@ -17,23 +17,23 @@
       "inputs": [
         {
           "name": "input.1",
-          "shape": [1, 640, 640, 3],
+          "shape": [1, 448, 448, 3],
           "layout": "NHWC",
           "pipeline": [
-            {"name": "face::nearest_norm_u8", "params": {"height": "640", "width": "640"}}
+            {"name": "face::nearest_norm_u8", "params": {"height": "448", "width": "448"}}
           ]
         }
       ],
       "outputs": [
-        {"name": "443", "shape": [12800, 1],  "dtype": "float32"},
-        {"name": "468", "shape": [3200, 1],   "dtype": "float32"},
-        {"name": "493", "shape": [800, 1],    "dtype": "float32"},
-        {"name": "446", "shape": [12800, 4],  "dtype": "float32"},
-        {"name": "471", "shape": [3200, 4],   "dtype": "float32"},
-        {"name": "496", "shape": [800, 4],    "dtype": "float32"},
-        {"name": "449", "shape": [12800, 10], "dtype": "float32"},
-        {"name": "474", "shape": [3200, 10],  "dtype": "float32"},
-        {"name": "499", "shape": [800, 10],   "dtype": "float32"}
+        {"name": "443", "shape": [6272, 1],  "dtype": "float32"},
+        {"name": "468", "shape": [1568, 1],   "dtype": "float32"},
+        {"name": "493", "shape": [392, 1],   "dtype": "float32"},
+        {"name": "446", "shape": [6272, 4],  "dtype": "float32"},
+        {"name": "471", "shape": [1568, 4],   "dtype": "float32"},
+        {"name": "496", "shape": [392, 4],   "dtype": "float32"},
+        {"name": "449", "shape": [6272, 10], "dtype": "float32"},
+        {"name": "474", "shape": [1568, 10],  "dtype": "float32"},
+        {"name": "499", "shape": [392, 10],  "dtype": "float32"}
       ],
       "config":
         {
@@ -219,12 +219,12 @@
       "id": "behavior_mbv2",
       "name": "Driver Behavior Classifier (MobileNetV2 ROI normal/smoking/phone)",
       "backend": "snpe",
-      "model_path": "/vendor/etc/faceid/behavior_mbv2_v17_int8.dlc",
+      "model_path": "/vendor/etc/faceid/behavior_mbv2_v26r4qat2ep8_int8.dlc",
       "load_strategy": "lazy",
       "inputs": [
         {
           "name": "data",
-          "shape": [1, 128, 128, 3],
+          "shape": [1, 160, 160, 3],
           "layout": "NHWC",
           "dtype": "uint8"
         }

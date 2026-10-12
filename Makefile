@@ -46,8 +46,12 @@ APK_NAME        ?= DmsFace.apk
 # 车机相机命名方案配置文件（App 启动时读一次；按车型推送，不用重编 APK）
 CAMERA_PROFILE  ?= /vendor/etc/faceid/evs_camera_profile.json
 export ORG_GRADLE_PROJECT_appId := $(PACKAGE_NAME)
-# 模型文件（dlc + manifest）源目录与车机 vendor 目标目录
+# 模型文件源目录与车机 vendor 目标目录
+# 注（2026-10-09 资源布局调整）：
+#   .dlc 仍在 assets/models/，而 manifest.json 与 dms_calibration.json 已上移到 assets/ 根。
+#   推送到车机后二者仍须落在同一目录（VENDOR_MODEL_DIR），FaceSDK 以 modelDir 为基准解析。
 MODEL_ASSET_DIR   := app/src/main/assets/models
+ASSET_ROOT_DIR    := app/src/main/assets
 VENDOR_MODEL_DIR  := /vendor/etc/faceid
 
 # ------ PC 侧推流环境（车机推流的对端：MediaMTX + 控制中继）------
@@ -143,7 +147,7 @@ push-system: clean-build
 	adb push lib/arm64-v8a/*.so $(SYSTEM_APP_DIR)/lib/arm64/
 	@echo "$(GREEN)[PUSH-SYSTEM] pushing models (dlc + manifest + calibration) to vendor...$(NC)"
 	adb shell mkdir -p $(VENDOR_MODEL_DIR)
-	adb push $(MODEL_ASSET_DIR)/*.dlc $(MODEL_ASSET_DIR)/manifest.json $(MODEL_ASSET_DIR)/dms_calibration.json $(VENDOR_MODEL_DIR)/
+	adb push $(MODEL_ASSET_DIR)/*.dlc $(ASSET_ROOT_DIR)/manifest.json $(ASSET_ROOT_DIR)/dms_calibration.json $(VENDOR_MODEL_DIR)/
 	adb shell chmod 644 $(VENDOR_MODEL_DIR)/*.dlc $(VENDOR_MODEL_DIR)/manifest.json $(VENDOR_MODEL_DIR)/dms_calibration.json
 	adb shell chown root:root $(VENDOR_MODEL_DIR)/*.dlc $(VENDOR_MODEL_DIR)/manifest.json $(VENDOR_MODEL_DIR)/dms_calibration.json
 	@echo "$(GREEN)[PUSH-SYSTEM] clearing app cache (force re-extract latest assets)...$(NC)"

@@ -223,12 +223,19 @@ class FaceIDAlgorithmImpl : IFaceIDAlgorithm {
     /** 模型文件清单（必须与 manifest.json 中引用的模型一致）。 */
     // 注：face-sdk 1.0.2 已改用 facialPoints(68点) 内部处理眼部，不再需要外部 pfld_eye 模型，
     // 故从清单移除 pfld_eye_int8.dlc（manifest.json 与该 dlc 已同步删除）。
+    //
+    // 2026-10-09（face-sdk 1.0.4）：manifest 同步更新，行为模型换代为
+    // behavior_mbv2_v26r4qat2ep8（旧 behavior_mbv2_v17 已从 assets 删除），并纳入
+    // ptgaze_mpiigaze（眼动）。本清单须与 manifest 严格一致，否则 vendor 目录会因
+    // "看似缺文件"而回退到应用内解压目录（走不到设备上的最新模型）。
     private val REQUIRED_MODEL_FILES = listOf(
         "det_500m_int8.dlc",
         "face_antispoof_int8.dlc",
         "pipnet68_int8.dlc",
         "w600k_mbf_int8.dlc",
         "hopenet_mbv2_int8.dlc",
+        "ptgaze_mpiigaze_int8.dlc",
+        "behavior_mbv2_v26r4qat2ep8_int8.dlc",
         "manifest.json",
         "dms_calibration.json"
     )
@@ -666,33 +673,59 @@ class FaceIDAlgorithmImpl : IFaceIDAlgorithm {
             return DEFAULT_MODEL_DIR
         }
         val dir = File(context.filesDir, MODEL_ASSET_PATH)
+        // 资源就绪判定：dlc 数量 + 两个 json 都在（数量以清单中的 dlc 为准，
+        // 这样升级 manifest 后（模型增减）会自动重新解压，无需清应用数据）
+        val requiredDlcCount = REQUIRED_MODEL_FILES.count { it.endsWith(".dlc") }
         if (dir.exists()) {
             val existing = dir.listFiles() ?: emptyArray()
             val dlcCount = existing.count { it.name.endsWith(".dlc") }
             val hasManifest = existing.any { it.name == "manifest.json" }
-            if (dlcCount > 0 && hasManifest) {
+            val hasCalibration = existing.any { it.name == "dms_calibration.json" }
+            if (dlcCount >= requiredDlcCount && hasManifest && hasCalibration) {
                 return dir.absolutePath
             }
-            Log.w(TAG, "extractModels: incomplete, re-extracting...")
+            Log.w(
+                TAG,
+                "extractModels: incomplete (dlc=$dlcCount/$requiredDlcCount " +
+                    "manifest=$hasManifest calib=$hasCalibration), re-extracting..."
+            )
             dir.deleteRecursively()
             dir.mkdirs()
         }
         dir.mkdirs()
         val assetManager = context.assets
+        // 2026-10-09 资源布局调整：manifest.json 与 dms_calibration.json 由
+        // assets/models/ 上移到 assets/ 根目录；.dlc 仍在 assets/models/。
+        // 但**运行时目录约定不变**：解压后 json 与 dlc 必须落在同一目录，
+        // 因为 FaceSDK.init 以 modelDir 为基准解析 manifest，manifest 内的模型
+        // 路径前缀也会被 patch 成该目录。故这里从两个 assets 位置分别读、写到同一目标目录。
         try {
+            // (1) assets/models/*.dlc
             val allAssets = assetManager.list(MODEL_ASSET_PATH) ?: emptyArray()
-            val modelFiles = allAssets.filter {
-                it.endsWith(".dlc") || it == "manifest.json" || it == "dms_calibration.json"
-            }
-            for (file in modelFiles) {
-                val outFile = File(dir, file)
+            for (file in allAssets.filter { it.endsWith(".dlc") }) {
                 assetManager.open("$MODEL_ASSET_PATH/$file").use { input ->
-                    outFile.outputStream().use { output ->
-                        input.copyTo(output)
+                    File(dir, file).outputStream().use { output -> input.copyTo(output) }
+                }
+            }
+            // (2) assets/*.json（已上移到 assets 根；同时兼容旧布局 models/ 下）
+            for (name in ASSET_ROOT_JSON_FILES) {
+                val srcAsset = if (assetManager.list("")?.contains(name) == true) {
+                    name                                        // 新布局：assets/<name>
+                } else if (assetManager.list(MODEL_ASSET_PATH)?.contains(name) == true) {
+                    "$MODEL_ASSET_PATH/$name"                   // 旧布局：assets/models/<name>
+                } else {
+                    Log.w(TAG, "extractModels: asset not found: $name（已试 assets/ 与 assets/models/）")
+                    null
+                }
+                if (srcAsset != null) {
+                    assetManager.open(srcAsset).use { input ->
+                        File(dir, name).outputStream().use { output -> input.copyTo(output) }
                     }
                 }
             }
-        } catch (_: Exception) { }
+        } catch (e: Exception) {
+            Log.e(TAG, "extractModels: failed", e)
+        }
         return dir.absolutePath
     }
 
@@ -743,6 +776,18 @@ class FaceIDAlgorithmImpl : IFaceIDAlgorithm {
 
         /** VIDEO 模式默认累计录制时长：3 分钟。 */
         const val DEFAULT_VIDEO_DUMP_DURATION_MS = 3 * 60 * 1000L
+
+        /** 标定文件名（2026-10-09 起位于 assets 根目录）。 */
+        private const val CALIBRATION_ASSET_NAME = "dms_calibration.json"
+
+        /**
+         * 需要从 assets 根目录解压的 json 文件清单。
+         *
+         * 2026-10-09 资源布局调整：`manifest.json` 与 `dms_calibration.json` 由
+         * `assets/models/` 上移到 `assets/` 根目录（.dlc 仍留在 `assets/models/`）。
+         * 解压时两者都会落到同一个运行时模型目录，保持 FaceSDK 的目录约定不变。
+         */
+        private val ASSET_ROOT_JSON_FILES = listOf("manifest.json", CALIBRATION_ASSET_NAME)
 
         // ===== 分心时长阈值（法规口径，单位 ms）=====
         /** 车速 ≥50 km/h：ADDW 高速档 3500ms。 */
@@ -1216,21 +1261,51 @@ class FaceIDAlgorithmImpl : IFaceIDAlgorithm {
         val inModelDir = File(mModelDir, "dms_calibration.json")
         if (inModelDir.exists()) return inModelDir.absolutePath
 
-        // 2. 从 assets/models 解压到 filesDir（兜底）
+        // 2. 从 assets 解压到 filesDir（兜底）
+        //    2026-10-09：assets 布局调整，dms_calibration.json 由 assets/models/ 上移到
+        //    assets/ 根目录。这里先试新位置，再回退旧位置，兼容两种布局。
         val ctx = context ?: return null
         val destDir = File(ctx.filesDir, "dms_calibration")
         val dest = File(destDir, "dms_calibration.json")
+        val candidates = listOf(CALIBRATION_ASSET_NAME, "$MODEL_ASSET_PATH/$CALIBRATION_ASSET_NAME")
         return try {
             if (!dest.exists()) {
                 destDir.mkdirs()
-                ctx.assets.open("models/dms_calibration.json").use { input ->
+                val src = candidates.firstOrNull { isAssetPresent(ctx, it) }
+                if (src == null) {
+                    Log.w(TAG, "resolveCalibrationPath: asset not found, tried=$candidates")
+                    return null
+                }
+                ctx.assets.open(src).use { input ->
                     dest.outputStream().use { output -> input.copyTo(output) }
                 }
+                Log.i(TAG, "resolveCalibrationPath: extracted from assets/$src")
             }
             dest.absolutePath
         } catch (e: Exception) {
             Log.e(TAG, "resolveCalibrationPath: assets extract failed", e)
             null
+        }
+    }
+
+    /**
+     * 判断 assets 中是否存在指定路径（支持带 `/` 的嵌套路径）。
+     *
+     * AssetManager 没有"exists"API，只能逐级 list 判断；用于兼容 json 上移后的
+     * 新旧两种布局（assets/xxx.json 与 assets/models/xxx.json）。
+     */
+    private fun isAssetPresent(ctx: Context, assetPath: String): Boolean {
+        return try {
+            val idx = assetPath.lastIndexOf('/')
+            if (idx < 0) {
+                ctx.assets.list("")?.contains(assetPath) == true
+            } else {
+                val dir = assetPath.substring(0, idx)
+                val name = assetPath.substring(idx + 1)
+                ctx.assets.list(dir)?.contains(name) == true
+            }
+        } catch (_: Exception) {
+            false
         }
     }
 
