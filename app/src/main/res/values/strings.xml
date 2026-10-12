@@ -14,6 +14,17 @@
     <string name="dump_timer_format">剩余 %1$d 张：%2$s</string>
     <string name="dump_timer_video_format">剩余 %1$d 秒：%2$s</string>
 
+    <!-- 行为监测 · 时序延时配置 -->
+    <string name="behavior_delay_title">时序判定延时</string>
+    <string name="behavior_delay_hint">进入=连续满足多久才确认；退出=中断多久才恢复。0 表示不延时/不宽限。</string>
+    <string name="behavior_delay_smoke_enter">吸烟 · 进入延时：%1$s</string>
+    <string name="behavior_delay_smoke_exit">吸烟 · 退出延时：%1$s</string>
+    <string name="behavior_delay_phone_enter">打电话 · 进入延时：%1$s</string>
+    <string name="behavior_delay_phone_exit">打电话 · 退出延时：%1$s</string>
+    <string name="behavior_delay_unsaved">无可用算法会话，延时未生效</string>
+    <string name="behavior_delay_zero">0（不延时）</string>
+    <string name="behavior_delay_sec">%1$.1f s</string>
+
     <!-- 连续 dump 输出格式选择 -->
     <string name="dump_mode_title">连续 Dump 格式</string>
     <string name="dump_mode_png">PNG 图片序列</string>

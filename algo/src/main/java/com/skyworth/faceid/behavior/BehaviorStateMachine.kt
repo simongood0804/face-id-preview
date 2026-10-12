@@ -1,175 +1,250 @@
 package com.skyworth.faceid.behavior
 
 /**
- * 行为监测时序判定状态机（抽烟 / 打电话）。
+ * 行为监测时序判定状态机（抽烟 / 打电话），采用**方案 D：双阈值滞回 + 分阶段宽限**。
  *
- * **背景**：face-sdk 输出的 `behavior_class` 是**逐帧结果**，头文件明确
- * "持续时长/报警由 app 侧做时序逻辑，SDK 不计时"。逐帧结果存在抖动
- * （同类行为断续出现、normal↔behavior 频繁切换），直接按帧判定会误报/闪烁。
+ * SDK 只给逐帧行为类别，抖动（单帧误检/漏检）会导致状态频繁跳变，需要时序确认：
+ * - **进入阶段（严格）**：连续满足持续时长才确认，避免单帧误检；
+ * - **退出阶段（宽限）**：已确认后给一段宽限，避免零星丢帧导致状态闪烁。
  *
- * **判据（GB/T 标准，见 docs/behavior_roi_v7.md）**：
- * - **抽烟**：连续 ≥ [SMOKING_HOLD_MS]（2s）
- * - **打电话**：连续 ≥ [PHONE_HOLD_MS]（3s）
+ * 判定口径（默认值，符合 GB/T 41797 对行为响应的要求）：
+ * - 抽烟：连续 ≥ [smokingEnterMs]（默认 2000ms）确认；确认后中断 ≤ [smokingExitMs] 不清除；
+ * - 打电话：连续 ≥ [phoneEnterMs]（默认 3000ms）确认；确认后中断 ≤ [phoneExitMs] 不清除。
  *
- * **防抖方案（业界双阈值滞回 + 分阶段宽限，方案 D）**：
- * - **进入严格**（未确认阶段不给宽限）：需连续达阈值才确认，断续抖动进不来，
- *   严格保持 GB/T 的进入门槛（抽烟 2s / 电话 3s），法规符合性不变；
- * - **退出发宽限**（已确认阶段给宽限）：已确认后短暂非行为（< [EXIT_GRACE_MS]）
- *   仍保持该行为，避免 SDK 单帧漏检造成状态闪烁；持续超过宽限期才解除。
+ * 四个延时均**可运行时调整**（0 ~ [MAX_DELAY_MS]），用于调试与现场标定：
+ * - 进入延时为 0 表示**不延时**，当帧即确认（等价于不做时序确认，退回 SDK 逐帧结果）；
+ * - 退出延时为 0 表示**不宽限**，一旦类别不再匹配立即回落。
  *
- * 宽限期 500ms 远小于 GB/T 的 **≤1.5s 响应要求**，故不影响合规。
+ * 时间基准：调用方传入 `clockMs`（单调时钟，推荐 `System.nanoTime()/1_000_000`），
+ * 按**真实经过时间**累计而非帧数——帧率不稳定时按帧计数会漂移。
  *
- * **状态转移**：
- * ```
- * NORMAL    + 行为       → PENDING（开始计时）
- * PENDING   + 同类行为   → 累计，达阈值则 → CONFIRMED
- * PENDING   + 非同类     → 回 NORMAL（严格，未确认不给宽限）
- * CONFIRMED + 非同类     → 保持 CONFIRMED（宽限期内）
- * CONFIRMED + 非同类 ≥宽限 → 回 NORMAL（真正结束）
- * ```
- *
- * 本类为纯逻辑，不依赖 Android；单调时钟通过 [clockMs] 注入便于测试。
- *
- * 线程安全：非线程安全，需在单一线程内调用。
+ * 线程安全：非线程安全。共享层（[com.skyworth.faceid.core.AlgoSession]）在单线程
+ * `AlgoProcessor` 内调用，配置变更亦须在该线程或加锁语境下进行。
  */
 class BehaviorStateMachine(
-    /** 单调时钟（ms），默认 JVM 单调时钟；可注入便于测试。 */
-    private val clockMs: () -> Long = { System.nanoTime() / 1_000_000 }
+    /** 抽烟进入延时（ms）：连续满足该时长才确认。0 = 不延时。 */
+    initialSmokingEnterMs: Long = DEFAULT_SMOKING_ENTER_MS,
+    /** 抽烟退出延时（ms）：确认后中断不超过该时长则保持。0 = 不宽限。 */
+    initialSmokingExitMs: Long = DEFAULT_EXIT_MS,
+    /** 打电话进入延时（ms）。0 = 不延时。 */
+    initialPhoneEnterMs: Long = DEFAULT_PHONE_ENTER_MS,
+    /** 打电话退出延时（ms）。0 = 不宽限。 */
+    initialPhoneExitMs: Long = DEFAULT_EXIT_MS
 ) {
 
+    /** 延时上限：10 秒（UI 滑块行程与此一致）。 */
     companion object {
-        /** 行为类别：无行为 / 正常。 */
+        /** 正常（无行为）。 */
         const val CLASS_NORMAL = 0
 
-        /** 行为类别：抽烟。 */
+        /** 抽烟。 */
         const val CLASS_SMOKING = 1
 
-        /** 行为类别：打电话。 */
+        /** 打电话。 */
         const val CLASS_PHONE = 2
 
-        /** 抽烟确认时长（ms）：GB/T 标准，持续 ≥2s。 */
-        const val SMOKING_HOLD_MS = 2000L
+        /** 抽烟进入延时默认值（GB/T 41797：抽烟 ≥2s）。 */
+        const val DEFAULT_SMOKING_ENTER_MS = 2000L
 
-        /** 打电话确认时长（ms）：GB/T 标准，持续 ≥3s。 */
-        const val PHONE_HOLD_MS = 3000L
+        /** 打电话进入延时默认值（GB/T 41797：打电话 ≥3s）。 */
+        const val DEFAULT_PHONE_ENTER_MS = 3000L
 
-        /**
-         * 退出宽限期（ms）：**已确认**的行为，短暂非行为不超过该时长时保持状态，
-         * 避免 SDK 逐帧漏检导致界面闪烁。
-         *
-         * 取值 500ms：与 [com.skyworth.faceid.signal.DistractionStateMachine.CLEAR_MS] 一致；
-         * 且远小于 GB/T 的 ≤1.5s 响应要求，不影响合规。
-         */
-        const val EXIT_GRACE_MS = 500L
+        /** 退出宽限默认值（与 DistractionStateMachine.CLEAR_MS 一致，远小于 GB/T 1.5s 响应要求）。 */
+        const val DEFAULT_EXIT_MS = 500L
 
-        /** 宽限计时未启动的标记（[graceSinceMs] 的空值）。 */
-        private const val GRACE_NONE = -1L
+        /** 延时上限：10 秒。 */
+        const val MAX_DELAY_MS = 10_000L
 
-        /** 某类别的确认时长；非行为类返回 0。 */
-        fun holdMsOf(cls: Int): Long = when (cls) {
-            CLASS_SMOKING -> SMOKING_HOLD_MS
-            CLASS_PHONE -> PHONE_HOLD_MS
+        /** 宽限期无暂存类别的哨兵值。 */
+        private const val GRACE_NONE = -1
+
+        /** 取某类别的**默认**进入延时（供日志/UI 初始展示）。 */
+        fun defaultEnterMsOf(cls: Int): Long = when (cls) {
+            CLASS_SMOKING -> DEFAULT_SMOKING_ENTER_MS
+            CLASS_PHONE -> DEFAULT_PHONE_ENTER_MS
+            else -> 0L
+        }
+
+        /** 取某类别的**默认**退出延时（供日志/UI 初始展示）。 */
+        fun defaultExitMsOf(cls: Int): Long = when (cls) {
+            CLASS_SMOKING, CLASS_PHONE -> DEFAULT_EXIT_MS
             else -> 0L
         }
     }
 
-    /** 当前正在累计的类别（逐帧原始类别）。 */
-    private var pendingClass = CLASS_NORMAL
+    // ---- 可运行时调整的四个延时（外部经 setter 修改，做范围钳制）----
+    // 注意：初始值必须引用**构造参数**（initialXxxMs），不能写成 `clamp(smokingEnterMs)`——
+    // 在属性初始化表达式中引用同名属性会被解析为属性自身 getter（此时尚未赋值，读到 0），
+    // 从而把默认延时全部覆盖成 0（曾导致行为状态疯狂翻转）。
 
-    /** 当前累计计时的起始时间戳（ms）。 */
-    private var pendingSinceMs = 0L
+    /** 抽烟进入延时（ms）。 */
+    var smokingEnterMs: Long = clamp(initialSmokingEnterMs)
+        internal set(v) { field = clamp(v); onDelayChanged() }
 
-    /** 已确认输出的行为类别（[CLASS_NORMAL] 表示无行为）。 */
-    private var confirmedClass = CLASS_NORMAL
+    /** 抽烟退出延时（ms）。 */
+    var smokingExitMs: Long = clamp(initialSmokingExitMs)
+        internal set(v) { field = clamp(v); onDelayChanged() }
 
-    /** 已确认类别的确认时间戳（ms），用于日志/时长统计。 */
-    private var confirmedSinceMs = 0L
+    /** 打电话进入延时（ms）。 */
+    var phoneEnterMs: Long = clamp(initialPhoneEnterMs)
+        internal set(v) { field = clamp(v); onDelayChanged() }
+
+    /** 打电话退出延时（ms）。 */
+    var phoneExitMs: Long = clamp(initialPhoneExitMs)
+        internal set(v) { field = clamp(v); onDelayChanged() }
+
+    /** 当前确认后的类别（0=正常 / 1=抽烟 / 2=打电话）。 */
+    private var mConfirmed: Int = CLASS_NORMAL
+
+    /** 进入阶段：当前连续命中的候选类别与其起始时刻。 */
+    private var mCandidate: Int = CLASS_NORMAL
+    private var mCandidateSinceMs: Long = 0L
+
+    /** 退出阶段：宽限期内暂存的上一个已确认类别（[GRACE_NONE] 表示无）。 */
+    private var mGraceClass: Int = GRACE_NONE
+    private var mGraceSinceMs: Long = 0L
 
     /**
-     * 已确认行为的"中断起始时间戳"（ms）；[GRACE_NONE] 表示当前未处于中断中。
+     * 喂入一帧行为类别，返回**确认后**的类别。
      *
-     * 用于退出宽限：已确认行为出现非同类帧时开始计时，累计达到 [EXIT_GRACE_MS]
-     * 才真正解除；期间若同类帧回归则清零（视为漏检）。
+     * @param rawClass SDK 逐帧类别（0=正常 / 1=抽烟 / 2=打电话）。
+     * @param clockMs  单调时钟（ms）。默认取 `System.nanoTime()/1_000_000`。
+     * @return 确认后的类别（[CLASS_NORMAL] / [CLASS_SMOKING] / [CLASS_PHONE]）。
      */
-    private var graceSinceMs = GRACE_NONE
+    fun update(
+        rawClass: Int,
+        clockMs: Long = System.nanoTime() / 1_000_000
+    ): Int {
+        val raw = normalize(rawClass)
 
-    /**
-     * 输入一帧行为类别，返回**时序确认后**的输出类别（带进入严格 + 退出发宽限的防抖）。
-     *
-     * @param rawClass 逐帧行为类别（0=normal 1=smoking 2=phone）；非法值按 [CLASS_NORMAL]
-     * @return 确认后的行为类别：确认达阈值后返回该类别，否则 [CLASS_NORMAL]
-     */
-    fun update(rawClass: Int): Int {
-        val cls = if (rawClass in CLASS_NORMAL..CLASS_PHONE) rawClass else CLASS_NORMAL
-        val now = clockMs()
-
-        // ---- 1. 已确认状态下：退出发宽限 ----
-        // 已确认行为若与当前帧同类，则中断清零（视为漏检回归），保持确认状态；
-        // 若不同类，则开始/继续累计中断时长，达到宽限期才真正解除。
-        if (confirmedClass != CLASS_NORMAL) {
-            if (cls == confirmedClass) {
-                graceSinceMs = GRACE_NONE                       // 同类回归，中断清零
-                pendingClass = cls
-                pendingSinceMs = now
-                return confirmedClass
+        // ---- 正常类别：走退出逻辑（宽限期） ----
+        if (raw == CLASS_NORMAL) {
+            if (mConfirmed == CLASS_NORMAL) {
+                // 本来就没行为：清掉进入中的候选计时
+                mCandidate = CLASS_NORMAL
+                return CLASS_NORMAL
             }
-            // 不同类：累计中断时长
-            if (graceSinceMs == GRACE_NONE) {
-                graceSinceMs = now
+            // 退出延时为 0 → 不宽限，立即回落。
+            // ★ 必须在此**提前返回**：否则下面的宽限逻辑会先"维持一帧旧状态"
+            //   （grace_since 记为当帧，clock-grace_since==0 <= 0 成立），
+            //   使上一帧的偶发命中被多显示一帧；配合进入延时也为 0 时，
+            //   raw 的每一次瞬时脉冲都会被放大成一次可见的状态跳变 → 界面闪烁。
+            val exitMs = exitMsOf(mConfirmed)
+            if (exitMs <= 0L) {
+                clearAll()
+                return CLASS_NORMAL
             }
-            if (now - graceSinceMs < EXIT_GRACE_MS) {
-                // 宽限期内：保持已确认行为（滤掉 SDK 单帧漏检造成的闪烁）
-                return confirmedClass
+            // 已确认行为，当前帧不再匹配 → 起（或延续）宽限计时
+            if (mGraceClass == GRACE_NONE) {
+                mGraceClass = mConfirmed
+                mGraceSinceMs = clockMs
+                // 首帧进入宽限：维持原状态（宽限期本身即"允许中断"的语义）
+                return mConfirmed
             }
-            // 超过宽限期：真正解除
-            confirmedClass = CLASS_NORMAL
-            confirmedSinceMs = now
-            graceSinceMs = GRACE_NONE
-            pendingClass = cls
-            pendingSinceMs = now
-            // 落到下方"未确认"分支处理本帧
-        }
-
-        // ---- 2. 未确认阶段：严格（不给宽限）----
-        if (cls == CLASS_NORMAL) {
-            // 无行为：直接输出正常（进不来就算正常，符合"抖动判为正常"）
-            pendingClass = CLASS_NORMAL
-            pendingSinceMs = now
+            // 宽限期仍未过 → 维持原确认类别（防闪烁）
+            if (clockMs - mGraceSinceMs <= exitMs) {
+                return mConfirmed
+            }
+            // 宽限已过 → 真正回落
+            clearAll()
             return CLASS_NORMAL
         }
 
-        // 类别变化：重置累计计时
-        if (cls != pendingClass) {
-            pendingClass = cls
-            pendingSinceMs = now
+        // ---- 行为类别：走进入逻辑（严格累计） ----
+        // 若与当前已确认类别一致，直接维持（无需重新计时）
+        if (raw == mConfirmed) {
+            // 命中即清宽限（避免"确认后短暂中断又恢复"被误判为退出流程）
+            mGraceClass = GRACE_NONE
+            return mConfirmed
         }
 
-        // 累计达到该行为的确认阈值 → 确认
-        if (now - pendingSinceMs >= holdMsOf(cls)) {
-            confirmedClass = cls
-            confirmedSinceMs = now
-            graceSinceMs = GRACE_NONE
-            return cls
+        // 与已确认类别不同（含从正常进入、或行为间切换）→ 重新累计候选
+        val enterMs = enterMsOf(raw)
+        if (enterMs <= 0L) {
+            // 进入延时为 0：不延时，当帧即确认
+            mConfirmed = raw
+            mCandidate = raw
+            mGraceClass = GRACE_NONE
+            return mConfirmed
         }
-
-        // 尚未满足持续时长：视为无行为（正常）。
-        // 未确认阶段不给宽限，保证断续抖动无法被确认（严格保持 GB/T 进入门槛）。
-        return CLASS_NORMAL
+        if (mCandidate != raw) {
+            // 新的候选类别，从本帧开始计时
+            mCandidate = raw
+            mCandidateSinceMs = clockMs
+            // 若此前有已确认行为处于宽限中，此时直接放弃宽限（切换到新行为）
+            mGraceClass = GRACE_NONE
+            return mConfirmed
+        }
+        // 候选类别连续命中，检查是否达到进入延时
+        if (clockMs - mCandidateSinceMs >= enterMs) {
+            mConfirmed = raw
+            mGraceClass = GRACE_NONE
+            return mConfirmed
+        }
+        return mConfirmed
     }
 
-    /** 当前已确认的行为类别（0=正常）。 */
-    fun confirmed(): Int = confirmedClass
-
-    /** 已确认行为的持续时长（ms）；无行为时为 0。 */
-    fun confirmedDurationMs(): Long =
-        if (confirmedClass == CLASS_NORMAL) 0L else clockMs() - confirmedSinceMs
-
-    /** 复位（如人脸丢失/切页）。 */
+    /**
+     * 复位：清空所有计时与已确认状态（无人脸 / 换驾驶员 / 切页时调用），
+     * 避免残留计时导致后续误判。
+     *
+     * 注：已确认类别由 [clearAll] 一并复位（含 `mConfirmed`），此处无需重复赋值。
+     */
     fun reset() {
-        pendingClass = CLASS_NORMAL
-        pendingSinceMs = 0L
-        confirmedClass = CLASS_NORMAL
-        confirmedSinceMs = 0L
-        graceSinceMs = GRACE_NONE
+        clearAll()
     }
+
+    /** 当前确认后的类别（只读）。 */
+    fun confirmedClass(): Int = mConfirmed
+
+    // ============================================================
+    // 内部
+    // ============================================================
+
+    private fun clearAll() {
+        // ★ 必须一并复位 mConfirmed：
+        //   update() 的退出分支会调用本方法后 return CLASS_NORMAL，若此处不复位，
+        //   内部 mConfirmed 仍停留在旧行为（如打电话=2），下一帧 raw=0 进来时
+        //   `if (mConfirmed == CLASS_NORMAL)` 判断失败 → 再次走退出分支 →
+        //   输出与输入不一致并逐帧翻转（表现为"没打电话却闪打电话中"）。
+        mConfirmed = CLASS_NORMAL
+        mCandidate = CLASS_NORMAL
+        mCandidateSinceMs = 0L
+        mGraceClass = GRACE_NONE
+        mGraceSinceMs = 0L
+    }
+
+    /**
+     * 延时变化时复位全部计时，避免"改大延时后仍按旧起点立即触发"的反直觉行为。
+     *
+     * 必须**整体复位**（含 [mConfirmed]）而不是只清候选/宽限：
+     * 若保留 `mConfirmed` 而清掉 `mGraceClass`，处于"已确认 + 宽限中"的状态会被
+     * 打断——下一帧 `raw==正常` 时因 `mGraceClass == GRACE_NONE` 而**重新起算宽限**，
+     * 相当于把宽限期延长一轮（本该已回落却继续维持）。整体复位后语义明确：
+     * 改延时即重新开始判定，不再沿用任何旧状态。
+     */
+    private fun onDelayChanged() {
+        clearAll()
+    }
+
+    private fun enterMsOf(cls: Int): Long = when (cls) {
+        CLASS_SMOKING -> smokingEnterMs
+        CLASS_PHONE -> phoneEnterMs
+        else -> 0L
+    }
+
+    private fun exitMsOf(cls: Int): Long = when (cls) {
+        CLASS_SMOKING -> smokingExitMs
+        CLASS_PHONE -> phoneExitMs
+        else -> 0L
+    }
+
+    /** 归一化 SDK 类别：非法值一律当正常。 */
+    private fun normalize(cls: Int): Int = when (cls) {
+        CLASS_SMOKING, CLASS_PHONE -> cls
+        else -> CLASS_NORMAL
+    }
+
+    /** 延时范围钳制到 [0, MAX_DELAY_MS]。 */
+    private fun clamp(v: Long): Long = v.coerceIn(0L, MAX_DELAY_MS)
 }

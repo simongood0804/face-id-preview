@@ -51,6 +51,17 @@ class AlgoSession private constructor() {
      */
     private val mBehaviorSm = BehaviorStateMachine()
 
+    /**
+     * 行为状态机读写锁。
+     *
+     * 状态机本身非线程安全，而访问方来自两个线程：
+     * - **算法线程**：`feedTimingModules` 内 `update()`；
+     * - **UI 线程**：`resetTimingModules()`（门开换驾驶员）、`behaviorStateMachine()`
+     *   读取延时值。配置变更经 [setBehaviorDelays] 投递到算法线程，天然串行。
+     * 锁只覆盖"跨线程且可能并发"的路径，不进入算法热路径的额外开销（同一线程重入无竞争）。
+     */
+    private val mBehaviorSmLock = Any()
+
     /** 疲劳状态机读写锁（reset 与规则替换互斥）。 */
     private val mFatigueSmLock = Any()
 
@@ -88,6 +99,9 @@ class AlgoSession private constructor() {
     /** 行为确认类别变化的监听（**算法线程**回调，UI 层请自行切线程）。 */
     @Volatile
     var onBehaviorChanged: ((Int) -> Unit)? = null
+
+    /** 行为诊断探针的帧计数（仅 [feedTimingModules] 单线程访问）。 */
+    private var mBehaviorProbeCount = 0L
 
     // ---- 算法/帧处理 ----
 
@@ -146,11 +160,31 @@ class AlgoSession private constructor() {
     private fun feedTimingModules(result: IFaceIDAlgorithm.FaceIDResult) {
         // ---- 行为时序确认 ----
         val rawClass = result.behaviorClass
+
+        // ★ 诊断探针（每 PROBE_INTERVAL 帧打一次，避免刷屏）：
+        //   每帧**无条件**记录算法原始类别与概率，用于判断"界面抖动"的来源。
+        //   此前只在 confirmed 变化时打日志，存在采样偏差（恰好都采到 raw=0），
+        //   无法区分是"算法 raw 在抖"还是"状态机自己振荡"。
+        //   判读：raw 恒定而 confirmed 翻转 → 状态机问题；
+        //         raw 在 0/1 间交替 → 算法返回值抖动，需算法侧解决。
+        if (mBehaviorProbeCount++ % BEHAVIOR_PROBE_INTERVAL == 0L) {
+            val probs = result.behaviorProbs
+            Log.i(
+                TAG,
+                "behavior probe: raw=${rawClass.toInt()} " +
+                    "probs=${probs?.joinToString(prefix = "[", postfix = "]") { "%.2f".format(it) } ?: "null"} " +
+                    "confirmed=${mBehaviorSm.confirmedClass()} " +
+                    "delays=[sm in=${mBehaviorSm.smokingEnterMs},out=${mBehaviorSm.smokingExitMs} " +
+                    "ph in=${mBehaviorSm.phoneEnterMs},out=${mBehaviorSm.phoneExitMs}]"
+            )
+        }
+
+        // 持锁：resetTimingModules() 可从 UI 线程并发 reset 同一状态机（见 mBehaviorSmLock）
         if (rawClass < 0f) {
-            mBehaviorSm.reset()
+            synchronized(mBehaviorSmLock) { mBehaviorSm.reset() }
             lastBehaviorClass = BehaviorStateMachine.CLASS_NORMAL
         } else {
-            val confirmed = mBehaviorSm.update(rawClass.toInt())
+            val confirmed = synchronized(mBehaviorSmLock) { mBehaviorSm.update(rawClass.toInt()) }
             if (confirmed != lastBehaviorClass) {
                 lastBehaviorClass = confirmed
                 val cb = onBehaviorChanged
@@ -162,13 +196,22 @@ class AlgoSession private constructor() {
 
         // ---- 疲劳判定 ----
         // 用单调时钟（nanoTime），避免 wall clock 被 NTP/校时回拨导致时长异常。
+        //
+        // 持锁原因：[setFatigueRule] 会**整体替换** mFatigueSm、[resetTimingModules] 会
+        // reset() 它，二者可从 UI 线程调用。若此处不持锁，替换/复位可能发生在 update()
+        // 中途（FatigueStateMachine 内部有可变列表），导致状态错乱甚至
+        // ConcurrentModificationException——异常被 FrameProcessor 捕获后会让整轮算法
+        // 循环退出。锁与 setFatigueRule / resetTimingModules 共用，保证互斥。
         val hasFace = result.faceRect != null
-        lastFatigueOutput = mFatigueSm.update(
-            result.eyeOpenRatio,
-            result.mouthOpenRatio,
-            hasFace,
-            System.nanoTime() / 1_000_000
-        )
+        val fatigueOut = synchronized(mFatigueSmLock) {
+            mFatigueSm.update(
+                result.eyeOpenRatio,
+                result.mouthOpenRatio,
+                hasFace,
+                System.nanoTime() / 1_000_000
+            )
+        }
+        lastFatigueOutput = fatigueOut
     }
 
     /**
@@ -190,16 +233,70 @@ class AlgoSession private constructor() {
     fun fatigueRule(): FatigueRule = mFatigueRule
 
     /**
+     * 设置行为监测的**四个判定延时**（ms），范围 0 ~ [BehaviorStateMachine.MAX_DELAY_MS]（10s）。
+     *
+     * - 进入延时为 0 表示**不延时**（当帧即确认）；
+     * - 退出延时为 0 表示**不宽限**（类别不再匹配立即回落）。
+     *
+     * 可在预览运行中实时调整（UI 滑块用）。越界值由状态机内部钳制。
+     *
+     * **线程安全**：状态机由算法线程独占（`feedTimingModules` 内驱动），本方法可从
+     * 任意线程调用——参数会被**投递到算法线程**串行执行，从而与 `update()` 天然互斥，
+     * 避免"UI 线程改字段 / 算法线程读字段"的数据竞争（此前直接赋值，拖动滑块时可能
+     * 读到撕裂的 `mCandidateSinceMs=0`，导致延时被绕过而误确认）。
+     *
+     * @param smokingEnterMs 抽烟进入延时
+     * @param smokingExitMs  抽烟退出延时
+     * @param phoneEnterMs   打电话进入延时
+     * @param phoneExitMs    打电话退出延时
+     */
+    fun setBehaviorDelays(
+        smokingEnterMs: Long,
+        smokingExitMs: Long,
+        phoneEnterMs: Long,
+        phoneExitMs: Long
+    ) {
+        mAlgoExecutor.execute {
+            mBehaviorSm.smokingEnterMs = smokingEnterMs
+            mBehaviorSm.smokingExitMs = smokingExitMs
+            mBehaviorSm.phoneEnterMs = phoneEnterMs
+            mBehaviorSm.phoneExitMs = phoneExitMs
+            Log.i(
+                TAG,
+                "setBehaviorDelays: smoking=[in=${mBehaviorSm.smokingEnterMs}ms,out=${mBehaviorSm.smokingExitMs}ms] " +
+                    "phone=[in=${mBehaviorSm.phoneEnterMs}ms,out=${mBehaviorSm.phoneExitMs}ms]"
+            )
+        }
+    }
+
+    /**
+     * 读取当前行为延时配置的**一致性快照**（供 UI 初始化滑块 / 日志）。
+     *
+     * 返回 `[抽烟进入, 抽烟退出, 打电话进入, 打电话退出]`（ms）。
+     * 持锁读取，避免滑块初始化时读到"改到一半"的撕裂值。
+     *
+     * ⚠ 配置变更**必须**走 [setBehaviorDelays]（投递到算法线程），不要试图直接改状态机。
+     */
+    fun behaviorDelaysSnapshot(): LongArray = synchronized(mBehaviorSmLock) {
+        longArrayOf(
+            mBehaviorSm.smokingEnterMs,
+            mBehaviorSm.smokingExitMs,
+            mBehaviorSm.phoneEnterMs,
+            mBehaviorSm.phoneExitMs
+        )
+    }
+
+    /**
      * 复位时序模块（行为 + 疲劳），清零累计统计。
      *
      * 用于**换驾驶员**（门开）等全局事件：各页面的 `DoorSignalSource` 回调里调用，
      * 与 [onDoorOpened]（眼/嘴校准复位）配套使用。
      */
     fun resetTimingModules() {
-        synchronized(mFatigueSmLock) {
-            mBehaviorSm.reset()
-            mFatigueSm.reset()
-        }
+        // 行为与疲劳各持自己的锁，分别与算法线程的 update() 互斥
+        // （不嵌套两把锁，避免与 feedTimingModules 的顺序形成死锁）。
+        synchronized(mBehaviorSmLock) { mBehaviorSm.reset() }
+        synchronized(mFatigueSmLock) { mFatigueSm.reset() }
         lastBehaviorClass = BehaviorStateMachine.CLASS_NORMAL
         lastFatigueOutput = null
         Log.i(TAG, "resetTimingModules: behavior & fatigue reset")
@@ -220,6 +317,14 @@ class AlgoSession private constructor() {
     }
 
     companion object {
+        /**
+         * 行为诊断探针的打印间隔（帧）：约每 20 帧一次。
+         *
+         * 调试逐帧级问题（如"raw 与 confirmed 不一致"）时可临时置 1（每帧打印），
+         * 但**正式版本必须 ≥20**，否则日志量过大且字符串拼接有额外开销。
+         */
+        private const val BEHAVIOR_PROBE_INTERVAL = 20L
+
         @Volatile
         private var sInstance: AlgoSession? = null
 

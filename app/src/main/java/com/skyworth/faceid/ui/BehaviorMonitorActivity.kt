@@ -4,17 +4,17 @@ import android.hardware.HardwareBuffer
 import android.opengl.GLSurfaceView
 import android.os.Bundle
 import android.util.Log
-import android.view.View
 import android.widget.Button
+import android.widget.SeekBar
 import android.widget.TextView
 import androidx.appcompat.app.AppCompatActivity
+import com.skyworth.faceid.R
 import com.skyworth.faceid.algorithm.IFaceIDAlgorithm
 import com.skyworth.faceid.behavior.BehaviorStateMachine
 import com.skyworth.faceid.core.AlgoSession
 import com.skyworth.faceid.core.FaceOverlayBridge
 import com.skyworth.faceid.core.FrameSession
 import com.skyworth.faceid.core.NativeFrameReader
-import com.skyworth.faceid.R
 
 /**
  * 行为监测页（FACEP-017）。
@@ -29,6 +29,11 @@ import com.skyworth.faceid.R
  * （FACEP-019：行为状态机挂在算法结果入口，谁用都调同一份）：
  * - 抽烟连续 **≥2s**、打电话连续 **≥3s** 才判为对应行为；
  * - 持续时长不足（含逐帧类别抖动/断续）一律判为**正常**。
+ *
+ * **时序延时配置**（本页新增，2026-10）：右下角 4 个滑块分别控制
+ * 吸烟/打电话的**进入**与**退出**延时，行程 0~10s，拖动实时生效：
+ * - 进入延时 = 连续满足多久才确认（0 = 不延时，当帧即确认）；
+ * - 退出延时 = 中断多久才回落（0 = 不宽限，立即回落）。
  */
 class BehaviorMonitorActivity : AppCompatActivity() {
 
@@ -49,6 +54,16 @@ class BehaviorMonitorActivity : AppCompatActivity() {
     /** 最近一次**确认后**的行为类别（仅变化时更新 UI，避免每帧刷；-1=未初始化）。 */
     private var mLastBehaviorClass = -1
 
+    // ---- 时序延时控件（4 个：吸烟/打电话 × 进入/退出）----
+    private lateinit var mTvSmokeEnter: TextView
+    private lateinit var mTvSmokeExit: TextView
+    private lateinit var mTvPhoneEnter: TextView
+    private lateinit var mTvPhoneExit: TextView
+    private lateinit var mSbSmokeEnter: SeekBar
+    private lateinit var mSbSmokeExit: SeekBar
+    private lateinit var mSbPhoneEnter: SeekBar
+    private lateinit var mSbPhoneExit: SeekBar
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_behavior_monitor)
@@ -59,8 +74,78 @@ class BehaviorMonitorActivity : AppCompatActivity() {
             finish()
         }
 
+        setupDelayControls()
+
         Log.i(TAG, "onCreate: done")
     }
+
+    // ============================================================
+    // 时序延时配置（4 个滑块，0~10s）
+    // ============================================================
+
+    /**
+     * 初始化 4 个延时滑块：行程 0~[STEP_COUNT]，按 [BehaviorStateMachine.MAX_DELAY_MS]
+     * 线性映射为毫秒（每档 100ms）。初始值取自共享层状态机的**当前值**，保证与运行态一致。
+     */
+    private fun setupDelayControls() {
+        mTvSmokeEnter = findViewById(R.id.tv_smoke_enter)
+        mTvSmokeExit = findViewById(R.id.tv_smoke_exit)
+        mTvPhoneEnter = findViewById(R.id.tv_phone_enter)
+        mTvPhoneExit = findViewById(R.id.tv_phone_exit)
+        mSbSmokeEnter = findViewById(R.id.sb_smoke_enter)
+        mSbSmokeExit = findViewById(R.id.sb_smoke_exit)
+        mSbPhoneEnter = findViewById(R.id.sb_phone_enter)
+        mSbPhoneExit = findViewById(R.id.sb_phone_exit)
+
+        // 初始值：取共享层当前配置（跨页/跨次进入保持上次设置），持锁快照避免读到撕裂值
+        val d = AlgoSession.get().behaviorDelaysSnapshot()
+        bindDelay(mSbSmokeEnter, mTvSmokeEnter, R.string.behavior_delay_smoke_enter, d[0])
+        bindDelay(mSbSmokeExit, mTvSmokeExit, R.string.behavior_delay_smoke_exit, d[1])
+        bindDelay(mSbPhoneEnter, mTvPhoneEnter, R.string.behavior_delay_phone_enter, d[2])
+        bindDelay(mSbPhoneExit, mTvPhoneExit, R.string.behavior_delay_phone_exit, d[3])
+    }
+
+    /**
+     * 绑定单个滑块：初值 → 文本；拖动时更新文本并**实时下发**到共享层状态机。
+     *
+     * 每档 100ms，行程 [STEP_COUNT] 档 == [BehaviorStateMachine.MAX_DELAY_MS]（10s）。
+     */
+    private fun bindDelay(sb: SeekBar, tv: TextView, labelRes: Int, initialMs: Long) {
+        sb.max = STEP_COUNT
+        val initStep = (initialMs / STEP_MS).toInt().coerceIn(0, STEP_COUNT)
+        sb.progress = initStep
+        tv.text = getString(labelRes, formatSec(initStep * STEP_MS))
+        sb.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
+            override fun onProgressChanged(seekBar: SeekBar?, progress: Int, fromUser: Boolean) {
+                tv.text = getString(labelRes, formatSec(progress * STEP_MS))
+                if (fromUser) applyDelays()   // 拖动即时生效；程序化 setProgress 不触发下发
+            }
+
+            override fun onStartTrackingTouch(seekBar: SeekBar?) = Unit
+            override fun onStopTrackingTouch(seekBar: SeekBar?) = Unit
+        })
+    }
+
+    /**
+     * 把 4 个滑块的当前值下发到共享层状态机（算法线程侧统一生效）。
+     *
+     * 越界值由状态机内部钳制；下发的值会清空状态机当前计时，
+     * 避免"改大延时后仍沿用旧起点立即触发"的反直觉行为。
+     */
+    private fun applyDelays() {
+        val algo = mAlgoSession ?: AlgoSession.get()
+        algo.setBehaviorDelays(
+            smokingEnterMs = mSbSmokeEnter.progress * STEP_MS,
+            smokingExitMs = mSbSmokeExit.progress * STEP_MS,
+            phoneEnterMs = mSbPhoneEnter.progress * STEP_MS,
+            phoneExitMs = mSbPhoneExit.progress * STEP_MS
+        )
+    }
+
+    /** 秒数格式化：0 显示"不延时"，其余保留 1 位小数（如 "2.0 s"）。文案走资源以支持多语言。 */
+    private fun formatSec(ms: Long): String =
+        if (ms <= 0L) getString(R.string.behavior_delay_zero)
+        else getString(R.string.behavior_delay_sec, ms / 1000f)
 
     override fun onStart() {
         super.onStart()
@@ -156,11 +241,13 @@ class BehaviorMonitorActivity : AppCompatActivity() {
         if (confirmed == mLastBehaviorClass) return
         mLastBehaviorClass = confirmed
 
-        // 类别变化时打印完整行为结果（含概率分布），便于核对算法与实际判定
+        // 类别变化时打印完整行为结果（含概率分布与当前生效延时），便于核对算法与实际判定
         val probs = result.behaviorProbsSafe
+        val d = mAlgoSession?.behaviorDelaysSnapshot()
         Log.i(TAG, "behavior: raw=${rawClass.toInt()} confirmed=$confirmed " +
-                "holdMs=${BehaviorStateMachine.holdMsOf(rawClass.toInt())} " +
                 "source=AlgoSession " +
+                "delays=[smoke in=${d?.get(0)}ms out=${d?.get(1)}ms, " +
+                "phone in=${d?.get(2)}ms out=${d?.get(3)}ms] " +
                 (probs?.let {
                     "probs=[normal=%.2f smoking=%.2f phone=%.2f]".format(
                         it.getOrElse(0) { 0f }, it.getOrElse(1) { 0f }, it.getOrElse(2) { 0f })
@@ -212,5 +299,11 @@ class BehaviorMonitorActivity : AppCompatActivity() {
     companion object {
         /** 行为监测模块的算法流程（阶段二：行为识别 flag）。 */
         private val BEHAVIOR_FLAG = atlas.face.sdk.FaceFlag.BEHAVIOR
+
+        /** 延时滑块每档粒度：100ms。 */
+        private const val STEP_MS = 100L
+
+        /** 滑块档数：100 档 × 100ms = 10s（与 [BehaviorStateMachine.MAX_DELAY_MS] 一致）。 */
+        private const val STEP_COUNT = 100
     }
 }
