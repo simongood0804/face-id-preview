@@ -20,7 +20,7 @@ android {
         // ⚠️ 不要随意降到 1：顶替车机预装的 `com.mediapipe.avm`（标定软件）时它的
         // versionCode 是 2，比它低容易被 PackageManager 当降级处理。留出余量。
         versionCode = 3
-        versionName = "1.0.0"
+        versionName = "1.1.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
