@@ -13,13 +13,13 @@ import android.util.Log
  * 约定：MediaMTX 与摄像头切换中继（`server.py`）跑在**同一台 PC** 上，
  * 所以找到中继就等于知道了 MediaMTX 的主机（见 [RelayDiscovery]）。
  *
+ * 持久化：通过 [PushConfigStore] 抽象，默认实现基于 `SharedPreferences`（见
+ * [PushConfigStore.SharedPreferencesPushConfigStore]），与历史行为一致。
  * 读写需在主线程初始化：[init] 在 Activity `onCreate` 调用（与 `CameraPreference` 同款）。
  */
 object PushTarget {
 
     private const val TAG = "PushTarget"
-    private const val PREFS = "faceid_prefs"
-    private const val KEY_HOST = "push_host"
 
     /** 默认对端（历史值，仅作兜底）。 */
     const val DEFAULT_HOST = "192.168.6.233"
@@ -33,6 +33,10 @@ object PushTarget {
     /** 流名（与 MediaMTX、中继的 CSWITCH_STREAM 一致）。 */
     const val STREAM = "test"
 
+    /** 持久化实现；未注入时为 null（只用内存值，不落盘）。 */
+    @Volatile
+    private var store: PushConfigStore? = null
+
     /** 对端主机（IP 或主机名）。 */
     @Volatile
     var host: String = DEFAULT_HOST
@@ -44,30 +48,45 @@ object PushTarget {
     /** 中继基地址（抓 /state 与 POST /switch）。 */
     val relayBase: String get() = "http://$host:$RELAY_PORT"
 
-    /** 从持久化加载（Activity onCreate 调用）。 */
-    fun init(context: Context) {
+    /**
+     * 注入持久化实现并从中加载（Activity onCreate 调用）。
+     *
+     * 也可用 [init] 传入 `Context`，内部会构造默认的 SharedPreferences 实现。
+     */
+    fun init(configStore: PushConfigStore) {
+        store = configStore
         try {
-            val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
-            host = prefs.getString(KEY_HOST, DEFAULT_HOST)?.takeIf { it.isNotBlank() }
-                ?: DEFAULT_HOST
+            host = configStore.loadHost()?.takeIf { it.isNotBlank() } ?: DEFAULT_HOST
             Log.i(TAG, "init: host=$host")
         } catch (e: Exception) {
             Log.w(TAG, "init failed", e)
         }
     }
 
-    /** 保存对端地址（去掉协议前缀与端口，只留主机）。 */
-    fun setHost(context: Context, value: String) {
+    /** 便捷入口：用 `Context` 构造默认 SharedPreferences 实现并加载。 */
+    fun init(context: Context) = init(PushConfigStore.SharedPreferencesPushConfigStore(context))
+
+    /**
+     * 保存对端地址（去掉协议前缀与端口，只留主机）。
+     *
+     * 内存值立即生效；若已注入 [store] 则同时落盘。
+     */
+    fun setHost(value: String) {
         val cleaned = normalize(value)
         if (cleaned.isEmpty()) return
         host = cleaned
         try {
-            context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
-                .edit().putString(KEY_HOST, cleaned).apply()
+            store?.saveHost(cleaned)
             Log.i(TAG, "setHost: host=$cleaned")
         } catch (e: Exception) {
             Log.w(TAG, "setHost failed", e)
         }
+    }
+
+    /** 便捷入口：用 `Context` 构造默认 SharedPreferences 实现后保存。 */
+    fun setHost(context: Context, value: String) {
+        if (store == null) init(context)
+        setHost(value)
     }
 
     /** 容错：允许用户粘贴 `http://1.2.3.4:8081/`、`1.2.3.4:8081` 这类写法。 */

@@ -3,6 +3,7 @@
 #
 # 用法:
 #   make build       编译 APK
+#   make stream-aar  单独编译推流模块 AAR（:stream）
 #   make install     安装到设备（adb install）
 #   make push-system 推送 APK 到 /system/app/（需 root）
 #   make uninstall   卸载应用
@@ -41,6 +42,8 @@ PACKAGE_NAME    ?= com.skyworth.faceid
 # 若写成 `.ui.HomeActivity`，`am start -n <新包名>/.ui.HomeActivity` 会展开成新包名下的类而找不到。
 ACTIVITY_NAME   := com.skyworth.faceid.ui.HomeActivity
 APK_PATH        := app/build/outputs/apk/release/app-release.apk
+# 推流模块 AAR 产物（FACEP-019：推流已下沉为独立 :stream 库模块）
+STREAM_AAR_PATH := stream/build/outputs/aar/stream-release.aar
 SYSTEM_APP_DIR  ?= /system/app/DmsFace
 APK_NAME        ?= DmsFace.apk
 # 车机相机命名方案配置文件（App 启动时读一次；按车型推送，不用重编 APK）
@@ -78,7 +81,7 @@ GREEN  := \033[0;32m
 YELLOW := \033[1;33m
 NC     := \033[0m
 
-.PHONY: build clean-build install push-system uninstall probe-replace push-profile run stop restart \
+.PHONY: build clean-build stream-aar install push-system uninstall probe-replace push-profile run stop restart \
         pc-up pc-check pc-down \
         log log-crash log-evs log-last gpu top mem dumpsys pid \
         clean help test test-class test-suite test-report
@@ -100,6 +103,21 @@ clean-build:
 	@echo "$(GREEN)[CLEAN-BUILD] compiling...$(NC)"
 	JAVA_HOME="$(JAVA_HOME)" ./gradlew assembleRelease --no-daemon --no-build-cache
 	@echo "$(GREEN)[CLEAN-BUILD] done: $(APK_PATH)$(NC)"
+
+## 单独编译推流模块 AAR（:stream，FACEP-019 推流已下沉为独立库模块）
+## 产物: $(STREAM_AAR_PATH)
+## 说明：AAR 内含 libmedia_record_core_shared.so / libdatachannel.so / libmedia_record_jni.so 与推流图谱 assets，
+##       供其它工程以依赖形式接入；本 app 通过 project(":stream") 源码依赖，不受影响。
+stream-aar:
+	@echo "$(GREEN)[STREAM-AAR] assembling :stream:assembleRelease...$(NC)"
+	JAVA_HOME="$(JAVA_HOME)" ./gradlew :stream:assembleRelease --no-daemon --no-build-cache
+	@if [ ! -f "$(STREAM_AAR_PATH)" ]; then \
+		echo "$(RED)[STREAM-AAR] 未找到产物: $(STREAM_AAR_PATH)$(NC)"; exit 1; \
+	fi
+	@echo "$(GREEN)[STREAM-AAR] done: $(STREAM_AAR_PATH)$(NC)"
+	@echo "$(YELLOW)  AAR 内容摘要:$(NC)"
+	@unzip -l "$(STREAM_AAR_PATH)" | grep -E "classes\.jar|AndroidManifest\.xml|jni/.*\.so|assets/.*\.json" || true
+	@echo "$(YELLOW)  大小: $$(du -h "$(STREAM_AAR_PATH)" | awk '{print $$1}')$(NC)"
 
 # =============================================================================
 # 安装与卸载
@@ -398,6 +416,7 @@ help:
 	@echo "--- 构建 ---"
 	@echo "  build          增量编译 Release APK（不清 Gradle 缓存）"
 	@echo "  clean-build    先 clean 再编译 Release APK（确保 native 库等为最新 AAR）"
+	@echo "  stream-aar     单独编译推流模块 AAR（:stream → stream-release.aar）"
 	@echo ""
 	@echo "--- 部署 ---"
 	@echo "  install        安装到设备（adb install）"

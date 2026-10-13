@@ -10,5 +10,5 @@ pluginManagement {
 }
 
 rootProject.name = "FaceIDPreview"
-include(":app", ":algo")
+include(":app", ":algo", ":stream")
 

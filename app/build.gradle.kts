@@ -82,20 +82,12 @@ android {
         unitTests.isIncludeAndroidResources = true
     }
 
-    // 仅编译 HardwareBuffer 读取器（极小 JNI，不依赖算法库）
+    // 仅编译 HardwareBuffer 读取器（取流侧极小 JNI，不依赖算法库/推流库）。
+    // 推流 native 与 media_record 预编译 so 已下沉 :stream（FACEP-019）。
     externalNativeBuild {
         cmake {
             path = file("src/main/cpp/CMakeLists.txt")
             version = "3.18.1"
-        }
-    }
-
-    // media_record 预编译库（app/libs/arm64-v8a/*.so）通过 jniLibs 打包进 APK。
-    // CMake 侧改用 link_directories + `-l` 链接（不用 IMPORTED target），
-    // 避免"IMPORTED 与 jniLibs 重复打包"冲突，也避免 release 下 IMPORTED 库未被稳定打包。
-    sourceSets {
-        getByName("main") {
-            jniLibs.srcDirs("libs")
         }
     }
 
@@ -117,6 +109,9 @@ android {
 dependencies {
     // FACEP-014：算法/总线/逻辑下沉到 :algo 库模块
     implementation(project(":algo"))
+
+    // FACEP-019：推流能力下沉到 :stream 库模块（media_record 引擎 + 中继/配置，取流仍在本 app）
+    implementation(project(":stream"))
 
     // 方案 B（FACEP-014）：face-sdk 由消费方（本 app）自行提供。
     // :algo 以 compileOnly 引用 face-sdk（仅编译期，不打包/不传递），因此这里必须
